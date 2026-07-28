@@ -17,6 +17,8 @@
 
 # production
 /build
+/dist/
+/android/app/src/main/assets/public/
 
 # generated self-hosted OCR assets (created by npm postinstall)
 /public/tesseract/

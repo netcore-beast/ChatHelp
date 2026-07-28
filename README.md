@@ -1,6 +1,6 @@
 # ChatHelp
 
-ChatHelp is a local-first, encrypted web application that helps a person write thoughtful replies for selected professional conversations. The human chooses the context, reviews every draft, and manually copies a response into LinkedIn.
+ChatHelp is a local-first, encrypted web application that helps a person write thoughtful replies for selected professional conversations. The human chooses the context, reviews every draft, and manually copies a response into the selected platform.
 
 ## Privacy architecture
 
@@ -9,7 +9,7 @@ ChatHelp is a local-first, encrypted web application that helps a person write t
 - Llama 3.2 generation through WebLLM in a dedicated browser worker.
 - Local relevance ranking for imported context; no embedding service.
 - Self-hosted Tesseract worker, WebAssembly engine, and English OCR data.
-- Manual screen selection and manual LinkedIn handoff; no account scanning or message automation.
+- Manual screen selection and manual LinkedIn/Gmail/Outlook handoff; no account scanning or message automation.
 - Per-contact retention, encrypted backup/import, lock, and complete erasure.
 - Restrictive CSP and browser permission policy.
 
@@ -37,6 +37,16 @@ Run these commands inside the Codespace:
 
 The test suite covers encrypted storage, wrong-passphrase and tamper rejection, unique AES-GCM IVs, retention, retrieval, prompt-injection boundaries, response parsing, security headers, self-hosted OCR assets, and the create/edit/lock/unlock browser workflow.
 
+## Installable clients and platform support
+
+ChatHelp supports selected LinkedIn, Gmail, Outlook, and other HTTPS conversations without connecting account credentials or automatically sending content. Install the PWA from a supported browser, or download preview Windows and Android artifacts from the **Package installable apps** GitHub Actions workflow.
+
+- Windows: sandboxed Electron Setup and portable executables.
+- Android: Capacitor debug APK for preview testing.
+- Browser/PWA: installable, with an offline application shell after the first successful load.
+
+See [docs/NATIVE_PACKAGING.md](docs/NATIVE_PACKAGING.md) for artifact and signing details. See [docs/CLOUD_LLM_ROADMAP.md](docs/CLOUD_LLM_ROADMAP.md) for the optional, consent-based managed LLM roadmap. Local inference remains the default and free/private tier.
+
 ## Important product boundary
 
-ChatHelp is a drafting assistant, not a LinkedIn automation client. It does not bypass LinkedIn APIs, scrape the account, inject into LinkedIn pages, or send messages. This reduces privacy and account-risk concerns and keeps the user in control.
+ChatHelp is a drafting assistant, not a messaging automation client. It does not bypass platform APIs, scrape accounts, inject into third-party pages, or send messages. This reduces privacy and account-risk concerns and keeps the user in control.

@@ -5,6 +5,8 @@ import { applyRetention } from "@/lib/retention";
 import { buildOutcomeSummary, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
 import { captureVisibleScreen, extractTextFromImage } from "@/lib/localOcr";
 import { generatePrivateDrafts, unloadPrivateModel } from "@/lib/privateAi";
+import { PLATFORM_OPTIONS, platformLabel, safePlatformUrl } from "@/lib/platforms";
+import { PwaInstall } from "@/components/PwaInstall";
 import {
   createVault,
   eraseVault,
@@ -20,6 +22,7 @@ import {
   createEmptyWorkspace,
   newId,
   type Contact,
+  type ConversationPlatform,
   type MessageRole,
   type WorkspaceData,
 } from "@/lib/workspaceTypes";
@@ -128,7 +131,7 @@ export default function ChatHelpApp() {
         <h1 id="vault-title">Your conversations stay under your key.</h1>
         <p className="lede">ChatHelp encrypts the workspace in this browser with AES-256-GCM. Your passphrase is never stored, sent, or recoverable by us.</p>
         <div className="trust-grid">
-          <span>Encrypted at rest</span><span>AI runs on device</span><span>No LinkedIn automation</span>
+          <span>Encrypted at rest</span><span>AI runs on device</span><span>No platform automation</span>
         </div>
         {legacy && !exists && <div className="notice warning"><strong>Privacy upgrade available.</strong> A plaintext workspace from the earlier version was found. Creating the vault will encrypt it and remove the plaintext copy.</div>}
         <label>Passphrase
@@ -144,6 +147,7 @@ export default function ChatHelpApp() {
         <button className="secondary" disabled={busy || passphrase.length < 12} onClick={() => importRef.current?.click()}>Import encrypted backup</button>
         <input ref={importRef} hidden type="file" accept="application/json,.json" onChange={(event) => event.target.files?.[0] && void importBackup(event.target.files[0])} />
         <p className="fine-print"><strong>No recovery:</strong> losing the passphrase means losing the data. This is a deliberate privacy property. Use an encrypted backup and a password manager.</p>
+          <PwaInstall />
       </section>
     </main>
   );
@@ -154,6 +158,7 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
   const [selectedId, setSelectedId] = useState(initial.contacts[0]?.id ?? "");
   const [saveStatus, setSaveStatus] = useState("Encrypted");
   const [newContactName, setNewContactName] = useState("");
+  const [newPlatform, setNewPlatform] = useState<ConversationPlatform>("linkedin");
   const [agenda, setAgenda] = useState("");
   const [drafts, setDrafts] = useState<string[]>([]);
   const [aiStatus, setAiStatus] = useState("");
@@ -192,7 +197,7 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
     const name = newContactName.trim();
     if (!name) return;
     const id = newId("contact");
-    const next: Contact = { id, name, headline: "", profileNotes: "", chat: [], documents: [], outcomes: [], retentionDays: 90 };
+    const next: Contact = { id, name, headline: "", profileNotes: "", platform: newPlatform, platformUrl: "", chat: [], documents: [], outcomes: [], retentionDays: 90 };
     updateWorkspace((current) => ({ ...current, contacts: [...current.contacts, next] }));
     setSelectedId(id);
     setNewContactName("");
@@ -309,23 +314,25 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
   }
 
   const storageSummary = useMemo(() => contact ? contact.chat.length + " messages · " + contact.documents.length + " context files · " + contact.outcomes.length + " outcomes" : "No contact selected", [contact]);
+  const handoffUrl = contact ? safePlatformUrl(contact) : null;
+  const handoffLabel = contact ? platformLabel(contact.platform) : "platform";
 
   return (
     <main className="app-shell">
       <header className="topbar">
         <div><p className="eyebrow">CHATHELP</p><h1>Private conversation studio</h1></div>
-        <div className="top-actions"><span className="save-state">● {saveStatus}</span><button onClick={() => void downloadBackup()}>Encrypted backup</button><button onClick={onLock}>Lock</button></div>
+        <div className="top-actions"><PwaInstall /><span className="save-state">● {saveStatus}</span><button onClick={() => void downloadBackup()}>Encrypted backup</button><button onClick={onLock}>Lock</button></div>
       </header>
       <div className="privacy-strip"><strong>Private mode:</strong> prompts and generated drafts stay in this browser. Model weights are downloaded from the pinned model host on first use; OCR assets are served by ChatHelp. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
       {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
       <div className="workspace-grid">
         <aside className="contacts-panel">
           <h2>People</h2>
-          <div className="inline-form"><input aria-label="New contact name" value={newContactName} onChange={(event) => setNewContactName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addContact()} placeholder="Add a person" /><button onClick={addContact}>Add</button></div>
+          <div className="contact-create"><select aria-label="Conversation platform" value={newPlatform} onChange={(event) => setNewPlatform(event.target.value as ConversationPlatform)}>{PLATFORM_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><div className="inline-form"><input aria-label="New contact name" value={newContactName} onChange={(event) => setNewContactName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addContact()} placeholder="Add a person" /><button onClick={addContact}>Add</button></div></div>
           <nav aria-label="Contacts">
-            {workspace.contacts.map((item) => <button className={item.id === contact?.id ? "contact active" : "contact"} key={item.id} onClick={() => { setSelectedId(item.id); setDrafts([]); }}><span>{item.name.slice(0, 1).toUpperCase()}</span><div><strong>{item.name}</strong><small>{item.headline || "Add profile context"}</small></div></button>)}
+            {workspace.contacts.map((item) => <button className={item.id === contact?.id ? "contact active" : "contact"} key={item.id} onClick={() => { setSelectedId(item.id); setDrafts([]); }}><span>{item.name.slice(0, 1).toUpperCase()}</span><div><strong>{item.name}</strong><small>{platformLabel(item.platform)} · {item.headline || "Add profile context"}</small></div></button>)}
           </nav>
-          {!workspace.contacts.length && <p className="empty">Add one person. ChatHelp never scans your LinkedIn account or other conversations.</p>}
+          {!workspace.contacts.length && <p className="empty">Add one person. ChatHelp never scans your messaging or email accounts.</p>}
         </aside>
 
         <section className="context-panel">
@@ -370,11 +377,11 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
           </div>
           <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={draft + index}><div><span>OPTION {index + 1}</span><div><button onClick={() => void navigator.clipboard.writeText(draft)}>Copy</button><button title="Useful" onClick={() => rateDraft(draft, "useful")}>👍</button><button title="Not useful" onClick={() => rateDraft(draft, "not-useful")}>👎</button></div></div><p>{draft}</p></article>)}</div>
           {contact && <div className="panel-card compact"><h3>Conversation outcome</h3><div className="inline-form"><select value={outcomeResult} onChange={(event) => setOutcomeResult(event.target.value as typeof outcomeResult)}><option value="positive">Positive</option><option value="neutral">Neutral</option><option value="negative">Negative</option></select><input value={outcomeNote} onChange={(event) => setOutcomeNote(event.target.value)} placeholder="What worked or went wrong?" /><button onClick={addOutcome}>Save</button></div></div>}
-          <a className="linkedin-link" href="https://www.linkedin.com/messaging/" target="_blank" rel="noreferrer">Open LinkedIn Messaging for manual review and paste ↗</a>
+          {handoffUrl ? <a className="platform-link" href={handoffUrl} target="_blank" rel="noreferrer">Open {handoffLabel} for manual review and paste ↗</a> : <p className="fine-print">Add a valid HTTPS service URL to enable manual handoff.</p>}
         </section>
       </div>
-      <footer><span>ChatHelp never sends LinkedIn messages automatically.</span><button className="danger-link" onClick={() => void eraseEverything()}>Erase all local data</button></footer>
-      <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Your content:</strong> no chat, profile notes, guidance, outcomes, or drafts are intentionally sent to ChatHelp, LinkedIn, or an AI API.</li><li><strong>Model download:</strong> pinned public model files are fetched on first use. The model host sees normal download metadata such as IP address; it does not receive your prompts.</li><li><strong>Screen capture:</strong> the browser asks you to choose a screen. OCR runs locally with self-hosted assets, and only extracted text is encrypted.</li><li><strong>Limits:</strong> browser malware, a compromised origin, or someone who knows your passphrase can still expose data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
+      <footer><span>ChatHelp never sends platform messages or email automatically.</span><button className="danger-link" onClick={() => void eraseEverything()}>Erase all local data</button></footer>
+      <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Your content:</strong> no chat, profile notes, guidance, outcomes, or drafts are intentionally sent to ChatHelp, any messaging or email platform, or an AI API.</li><li><strong>Model download:</strong> pinned public model files are fetched on first use. The model host sees normal download metadata such as IP address; it does not receive your prompts.</li><li><strong>Screen capture:</strong> the browser asks you to choose a screen. OCR runs locally with self-hosted assets, and only extracted text is encrypted.</li><li><strong>Limits:</strong> browser malware, a compromised origin, or someone who knows your passphrase can still expose data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
     </main>
   );
 }

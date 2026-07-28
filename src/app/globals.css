@@ -52,6 +52,8 @@ p.error { margin: 0; padding: .7rem; border-radius: 8px; }
 .context-panel { border-right: 1px solid var(--line); }
 .draft-panel { background: rgba(255,255,255,.28); }
 .contacts-panel h2, .section-heading h2, .panel-card h2 { margin: 0; font-family: Georgia, serif; }
+.contact-create { display: grid; gap: .45rem; margin: .8rem 0; }
+.contact-create .inline-form { margin: 0; }
 .inline-form { display: flex; gap: .45rem; align-items: center; margin: .8rem 0; }
 .inline-form input { min-width: 0; }
 .inline-form select { width: auto; min-width: 90px; }
@@ -84,7 +86,10 @@ p.error { margin: 0; padding: .7rem; border-radius: 8px; }
 .draft-card span { color: var(--green); letter-spacing: .13em; font-size: .65rem; font-weight: 900; }
 .draft-card button { padding: .35rem .5rem; font-size: .72rem; }
 .draft-card p { margin: .85rem 0 0; line-height: 1.55; }
-.linkedin-link { display: block; padding: .85rem; border: 1px solid #0a66c2; border-radius: 10px; color: #0a66c2; text-align: center; text-decoration: none; font-weight: 800; font-size: .82rem; }
+.platform-link { display: block; padding: .85rem; border: 1px solid var(--green); border-radius: 10px; color: var(--green); text-align: center; text-decoration: none; font-weight: 800; font-size: .82rem; }
+.platform-link:hover { background: var(--mint); }
+.install-button { background: var(--green); color: white; border-color: var(--green); }
+.install-hint { color: var(--muted); font-size: .72rem; }
 .empty, .empty-state { color: var(--muted); line-height: 1.5; font-size: .8rem; }
 .empty-state { min-height: 50vh; display: grid; place-items: center; align-content: center; text-align: center; }
 .empty-state h2 { margin-bottom: 0; color: var(--ink); font-family: Georgia, serif; }
@@ -99,7 +104,7 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
   .workspace-grid { grid-template-columns: 210px 1fr; }
   .draft-panel { grid-column: 1 / -1; border-top: 1px solid var(--line); display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
   .draft-panel > * { margin: 0; }
-  .draft-stack, .linkedin-link { grid-column: 1 / -1; }
+  .draft-stack, .platform-link { grid-column: 1 / -1; }
 }
 @media (max-width: 720px) {
   .topbar { align-items: flex-start; position: static; }

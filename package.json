@@ -10,9 +10,15 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "prepare:ocr": "node scripts/prepare-ocr.mjs",
-    "postinstall": "npm run prepare:ocr"
+    "postinstall": "npm run prepare:ocr && npm run prepare:icons",
+    "prepare:icons": "node scripts/prepare-icons.mjs",
+    "build:native": "cross-env CHATHELP_NATIVE_BUILD=1 next build",
+    "desktop:dir": "npm run build:native && electron-builder --dir --config electron-builder.yml",
+    "package:windows": "npm run build:native && electron-builder --win nsis portable --x64 --config electron-builder.yml",
+    "android:sync": "npm run build:native && cap sync android"
   },
   "dependencies": {
+    "@capacitor/core": "8.4.2",
     "@mlc-ai/web-llm": "0.2.84",
     "@tesseract.js-data/eng": "^1.0.0",
     "next": "16.2.12",
@@ -21,6 +27,8 @@
     "tesseract.js": "7.0.0"
   },
   "devDependencies": {
+    "@capacitor/android": "8.4.2",
+    "@capacitor/cli": "8.4.2",
     "@tailwindcss/postcss": "^4",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
@@ -28,6 +36,9 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitest/coverage-v8": "^4.1.10",
+    "cross-env": "10.1.0",
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3",
     "eslint": "^9",
     "eslint-config-next": "16.2.12",
     "fake-indexeddb": "^6.2.5",
@@ -40,5 +51,6 @@
     "postcss": "8.5.23",
     "sharp": "0.35.3",
     "minimatch": "10.2.4"
-  }
+  },
+  "main": "desktop/main.cjs"
 }

@@ -1,0 +1,27 @@
+appId: com.chathelp.app
+productName: ChatHelp
+copyright: Copyright © 2026 ChatHelp contributors
+asar: true
+directories:
+  output: dist/windows
+files:
+  - desktop/**
+  - package.json
+extraResources:
+  - from: out
+    to: out
+win:
+  icon: public/icon-512.png
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ChatHelp-Setup-4{version}-4{arch}.4{ext}
+portable:
+  artifactName: ChatHelp-Portable-4{version}-4{arch}.4{ext}
+publish: null

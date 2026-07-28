@@ -194,6 +194,8 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
         name: typeof contact.name === "string" ? contact.name.slice(0, 200) : "Unknown contact",
         headline: typeof contact.headline === "string" ? contact.headline.slice(0, 500) : "",
         profileNotes: typeof contact.profileNotes === "string" ? contact.profileNotes.slice(0, 20_000) : "",
+        platform: contact.platform === "gmail" || contact.platform === "outlook" || contact.platform === "other" ? contact.platform : "linkedin",
+        platformUrl: typeof contact.platformUrl === "string" ? contact.platformUrl.slice(0, 2000) : "",
         chat: Array.isArray(contact.chat) ? contact.chat.slice(-1000).map((message, messageIndex) => normalizeMessage(message as Partial<Message>, messageIndex)) : [],
         documents: Array.isArray(contact.documents) ? contact.documents.slice(0, 50).map((document, documentIndex) => {
           const item = document as Record<string, unknown>;

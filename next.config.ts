@@ -26,11 +26,19 @@ const securityHeaders = [
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), display-capture=(self), payment=(), usb=()" },
 ];
 
+const nativeBuild = process.env.CHATHELP_NATIVE_BUILD === "1";
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
-  async headers() {
-    return [{ source: "/(.*)", headers: securityHeaders }];
-  },
+  ...(nativeBuild ? {
+    output: "export" as const,
+    trailingSlash: true,
+    images: { unoptimized: true },
+  } : {
+    async headers() {
+      return [{ source: "/(.*)", headers: securityHeaders }];
+    },
+  }),
 };
 
 export default nextConfig;

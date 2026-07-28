@@ -1,4 +1,5 @@
 export type MessageRole = "me" | "them";
+export type ConversationPlatform = "linkedin" | "gmail" | "outlook" | "other";
 
 export interface Message {
   id: string;
@@ -26,6 +27,8 @@ export interface Contact {
   name: string;
   headline: string;
   profileNotes: string;
+  platform: ConversationPlatform;
+  platformUrl: string;
   chat: Message[];
   documents: ContextDocument[];
   outcomes: Outcome[];
