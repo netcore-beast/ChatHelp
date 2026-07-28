@@ -1,531 +1,380 @@
 "use client";
-/* eslint-disable react-hooks/set-state-in-effect, @next/next/no-img-element */
 
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { applyRetention } from "@/lib/retention";
+import { buildOutcomeSummary, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
+import { captureVisibleScreen, extractTextFromImage } from "@/lib/localOcr";
+import { generatePrivateDrafts, unloadPrivateModel } from "@/lib/privateAi";
 import {
-  generatePrivateDrafts,
-  loadPrivateModel,
-  PRIVATE_MODELS,
-  type PrivateDraft,
-} from "@/lib/privateAi";
-import { recognizeImageLocally } from "@/lib/localOcr";
+  createVault,
+  eraseVault,
+  exportEncryptedBackup,
+  importEncryptedBackup,
+  parseLegacyWorkspace,
+  saveVault,
+  unlockVault,
+  vaultExists,
+  type VaultSession,
+} from "@/lib/secureVault";
+import {
+  createEmptyWorkspace,
+  newId,
+  type Contact,
+  type MessageRole,
+  type WorkspaceData,
+} from "@/lib/workspaceTypes";
 
-type Message = { id: string; sender: "me" | "them"; text: string; date: string };
-type Contact = {
-  id: string;
-  name: string;
-  headline: string;
-  company: string;
-  location: string;
-  relationship: string;
-  notes: string;
-  capturedContext: string;
-  chat: Message[];
-};
-type Guidance = {
-  role: string;
-  goal: string;
-  tone: string;
-  boundaries: string;
-  callToAction: string;
-  background: string;
-};
-type Feedback = { contactId: string; label: string; vote: "up" | "down"; at: string };
-type AiState = "idle" | "loading" | "ready" | "generating" | "error";
-type CaptureState = "idle" | "requesting" | "captured" | "reading" | "review";
+const LEGACY_KEY = "chathelp-private-v2";
+const AUTO_LOCK_MS = 15 * 60 * 1000;
 
-const uid = () => Date.now() + "-" + Math.random().toString(36).slice(2, 9);
-const now = () => new Date().toISOString();
-
-const starterContacts: Contact[] = [{
-  id: "priya-demo",
-  name: "Priya Shah",
-  headline: "VP, Strategic Partnerships",
-  company: "Northstar Labs",
-  location: "Toronto, Canada",
-  relationship: "Met at a growth forum",
-  notes: "Interested in practical AI adoption and partner-led growth. Demo contact — replace this with information you have permission to use.",
-  capturedContext: "",
-  chat: [
-    { id: "p1", sender: "me", text: "Great meeting you at the growth forum, Priya. I enjoyed your point about starting partnerships with a narrow customer problem.", date: "2026-06-10T14:10:00Z" },
-    { id: "p2", sender: "them", text: "Likewise! Teams that define one measurable outcome usually move much faster. Happy to compare notes sometime.", date: "2026-06-10T16:42:00Z" },
-    { id: "p3", sender: "them", text: "We are reviewing how we identify partner opportunities without adding more admin for the team.", date: "2026-06-12T15:31:00Z" },
-  ],
-}];
-
-const defaultGuidance: Guidance = {
-  role: "Founder building a privacy-first relationship assistant",
-  goal: "Explore a small business partnership without sounding transactional",
-  tone: "Warm, concise, curious",
-  boundaries: "Do not exaggerate results. Avoid pressure, hype, fake familiarity, and invented facts.",
-  callToAction: "Ask whether a 20-minute conversation next week would be useful",
-  background: "We help professionals use conversation context to reach out thoughtfully while keeping private messages on their device.",
-};
-
-function lowerFirst(value: string) {
-  const text = value.trim().replace(/[.!?]+$/, "");
-  return text ? text.charAt(0).toLowerCase() + text.slice(1) : "explore a useful next step";
-}
-
-function questionFromCallToAction(value: string) {
-  const cleaned = value.trim().replace(/[.!?]+$/, "");
-  if (!cleaned) return "Would a short conversation next week be useful?";
-  if (/^ask whether /i.test(cleaned)) return cleaned.replace(/^ask whether /i, "Would ").replace(/ would /i, " ") + "?";
-  if (/^ask for /i.test(cleaned)) return "Would you be open to " + cleaned.replace(/^ask for /i, "") + "?";
-  if (/^(would|could|can|are|is|do|does|how|what|when|where|who|why)/i.test(cleaned)) return cleaned + "?";
-  return "Would you be open to " + lowerFirst(cleaned) + "?";
-}
-
-function shortTopic(value: string) {
-  const sentence = value.replace(/s+/g, " ").split(/[.!?]/)[0].trim();
-  if (!sentence) return "the opportunity you mentioned";
-  return sentence.length > 105 ? sentence.slice(0, 102) + "…" : sentence;
-}
-
-function templateDrafts(contact: Contact, guidance: Guidance, agenda: string): PrivateDraft[] {
-  const first = contact.name.split(" ")[0] || "there";
-  const latest = [...contact.chat].reverse().find((message) => message.sender === "them")?.text;
-  const topic = shortTopic(latest || contact.capturedContext || contact.notes);
-  const purpose = lowerFirst(agenda || guidance.goal);
-  const cta = questionFromCallToAction(guidance.callToAction);
-  const background = guidance.background.trim();
-  const organization = contact.company ? "your work at " + contact.company : "the work you are doing";
-  return [
-    {
-      id: uid(),
-      label: "Warm & contextual",
-      text: "Hi " + first + " — your point about “" + topic + "” stayed with me. " + background + " My goal is to " + purpose + ". " + cta,
-      rationale: "Starts from the contact’s latest context before introducing your agenda.",
-    },
-    {
-      id: uid(),
-      label: "Direct & concise",
-      text: "Hi " + first + " — I see a possible fit between " + organization + " and my goal to " + purpose + ". " + cta,
-      rationale: "Makes the relevance and next step easy to evaluate.",
-    },
-    {
-      id: uid(),
-      label: "Curious & low-pressure",
-      text: "Hi " + first + " — how are you thinking about “" + topic + "” now? I am exploring how to " + purpose + ", and your perspective would be genuinely useful. No pressure — " + cta,
-      rationale: "Invites perspective without assuming interest or creating urgency.",
-    },
-  ];
-}
-
-function messagesFromFile(text: string, fileName: string, contactName: string): Message[] {
-  const firstName = contactName.toLowerCase().split(" ")[0];
-  if (fileName.toLowerCase().endsWith(".json")) {
-    const parsed = JSON.parse(text) as unknown;
-    const values = Array.isArray(parsed) ? parsed : (parsed as { messages?: unknown[] }).messages;
-    if (!Array.isArray(values)) throw new Error("JSON must be an array or contain a messages array.");
-    return values.flatMap((item) => {
-      if (typeof item !== "object" || item === null) return [];
-      const value = item as Record<string, unknown>;
-      const body = String(value.text || value.content || value.message || "").trim();
-      if (!body) return [];
-      const sender = String(value.sender || value.from || "").toLowerCase().includes(firstName) ? "them" as const : "me" as const;
-      return [{ id: uid(), sender, text: body, date: String(value.date || value.createdAt || now()) }];
-    });
-  }
-
-  if (fileName.toLowerCase().endsWith(".csv")) {
-    const rows = text.split(/\r?\n/).filter(Boolean).map((line) => line.split(",").map((cell) => cell.trim().replace(/^"|"$/g, "")));
-    const headers = (rows.shift() || []).map((header) => header.toLowerCase());
-    const textIndex = headers.findIndex((header) => /content|message|text/.test(header));
-    const senderIndex = headers.findIndex((header) => /from|sender/.test(header));
-    const dateIndex = headers.findIndex((header) => /date|time/.test(header));
-    if (textIndex < 0) throw new Error("The CSV needs a Content, Message, or Text column.");
-    return rows.flatMap((row) => {
-      const body = row[textIndex]?.trim();
-      if (!body) return [];
-      const sender = String(row[senderIndex] || "").toLowerCase().includes(firstName) ? "them" as const : "me" as const;
-      return [{ id: uid(), sender, text: body, date: row[dateIndex] || now() }];
-    });
-  }
-
-  return text.split(/\r?\n/).flatMap((line, index) => {
-    const trimmed = line.trim();
-    if (!trimmed) return [];
-    const fromThem = trimmed.toLowerCase().startsWith(firstName + ":") || trimmed.toLowerCase().startsWith("them:");
-    const body = trimmed.replace(/^[^:]{1,40}:s*/, "");
-    return [{ id: uid(), sender: fromThem ? "them" as const : "me" as const, text: body, date: new Date(Date.now() - (100 - index) * 60000).toISOString() }];
-  });
-}
-
-function formatDate(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : "Something unexpected happened.";
 }
 
 export default function ChatHelpApp() {
-  const [contacts, setContacts] = useState<Contact[]>(starterContacts);
-  const [activeId, setActiveId] = useState(starterContacts[0].id);
-  const [guidance, setGuidance] = useState<Guidance>(defaultGuidance);
-  const [agenda, setAgenda] = useState("See whether a small pilot could help Northstar identify warm partnership opportunities from existing conversations");
-  const [drafts, setDrafts] = useState<PrivateDraft[]>(() => templateDrafts(starterContacts[0], defaultGuidance, ""));
-  const [feedback, setFeedback] = useState<Feedback[]>([]);
-  const [ready, setReady] = useState(false);
-  const [notice, setNotice] = useState("");
-  const [search, setSearch] = useState("");
-  const [showAdd, setShowAdd] = useState(false);
-  const [showPrivacy, setShowPrivacy] = useState(false);
-  const [showCapture, setShowCapture] = useState(false);
-  const [captureState, setCaptureState] = useState<CaptureState>("idle");
-  const [capturePreview, setCapturePreview] = useState("");
-  const [capturedText, setCapturedText] = useState("");
-  const [captureProgress, setCaptureProgress] = useState(0);
-  const [captureStatus, setCaptureStatus] = useState("");
-  const [modelId, setModelId] = useState(PRIVATE_MODELS[0].id);
-  const [aiState, setAiState] = useState<AiState>("idle");
-  const [aiProgress, setAiProgress] = useState(0);
-  const [aiStatus, setAiStatus] = useState("Not loaded");
-
-  const active = contacts.find((contact) => contact.id === activeId) || contacts[0];
-  const selectedModel = PRIVATE_MODELS.find((model) => model.id === modelId) || PRIVATE_MODELS[0];
-  const recentMessages = active?.chat.slice(-10) || [];
-  const contactFeedback = feedback.filter((item) => item.contactId === activeId);
-  const positiveCount = contactFeedback.filter((item) => item.vote === "up").length;
+  const [checking, setChecking] = useState(true);
+  const [exists, setExists] = useState(false);
+  const [unlocked, setUnlocked] = useState<{ workspace: WorkspaceData; session: VaultSession } | null>(null);
+  const [passphrase, setPassphrase] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [legacy, setLegacy] = useState<WorkspaceData | null>(null);
+  const importRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem("chathelp-private-v2");
-      if (saved) {
-        const data = JSON.parse(saved) as { contacts?: Contact[]; guidance?: Guidance; feedback?: Feedback[]; modelId?: string };
-        if (data.contacts?.length) {
-          const restored = data.contacts.map((contact) => ({ ...contact, capturedContext: contact.capturedContext || "" }));
-          setContacts(restored);
-          setActiveId(restored[0].id);
-          setDrafts(templateDrafts(restored[0], data.guidance || defaultGuidance, ""));
-        }
-        if (data.guidance) setGuidance(data.guidance);
-        if (data.feedback) setFeedback(data.feedback);
-        if (data.modelId && PRIVATE_MODELS.some((model) => model.id === data.modelId)) setModelId(data.modelId);
-      }
-    } catch {
-      setNotice("The saved workspace could not be read, so a fresh workspace was opened.");
-    }
-    setReady(true);
+    void (async () => {
+      setExists(await vaultExists());
+      setLegacy(parseLegacyWorkspace(localStorage.getItem(LEGACY_KEY)));
+      setChecking(false);
+    })();
+  }, []);
+
+  const lock = useCallback(() => {
+    void unloadPrivateModel();
+    setUnlocked(null);
+    setPassphrase("");
+    setConfirmation("");
   }, []);
 
   useEffect(() => {
-    if (ready) localStorage.setItem("chathelp-private-v2", JSON.stringify({ contacts, guidance, feedback, modelId }));
-  }, [contacts, guidance, feedback, modelId, ready]);
-
-  const contextStrength = useMemo(() => {
-    if (!active) return 0;
-    return Math.min(100, 15 + Math.min(active.chat.length * 6, 36) + (active.headline ? 10 : 0) + (active.notes ? 10 : 0) + (active.capturedContext ? 14 : 0) + (guidance.goal ? 8 : 0) + (agenda ? 7 : 0));
-  }, [active, guidance.goal, agenda]);
-
-  function updateContact(patch: Partial<Contact>) {
-    setContacts((items) => items.map((item) => item.id === activeId ? { ...item, ...patch } : item));
-  }
-
-  async function importChat(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file || !active) return;
-    try {
-      const imported = messagesFromFile(await file.text(), file.name, active.name);
-      updateContact({ chat: [...active.chat, ...imported].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()) });
-      setNotice(imported.length + " messages were imported on this device.");
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "The chat file could not be read.");
-    }
-    event.target.value = "";
-  }
-
-  async function importProfile(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file || !active) return;
-    try {
-      const text = await file.text();
-      if (file.name.toLowerCase().endsWith(".json")) {
-        const value = JSON.parse(text) as Record<string, unknown>;
-        updateContact({
-          name: String(value.name || active.name),
-          headline: String(value.headline || value.title || active.headline),
-          company: String(value.company || active.company),
-          location: String(value.location || active.location),
-          notes: String(value.notes || value.summary || active.notes),
-        });
-      } else {
-      updateContact({ notes: [active.notes, text].filter(Boolean).join("\n\n") });
-      }
-      setNotice("Profile context was added locally.");
-    } catch {
-      setNotice("The profile file could not be read.");
-    }
-    event.target.value = "";
-  }
-
-  function addContact(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const contact: Contact = {
-      id: uid(),
-      name: String(form.get("name") || "New contact"),
-      headline: String(form.get("headline") || ""),
-      company: String(form.get("company") || ""),
-      location: "",
-      relationship: String(form.get("relationship") || ""),
-      notes: String(form.get("notes") || ""),
-      capturedContext: "",
-      chat: [],
+    if (!unlocked) return;
+    let timer = window.setTimeout(lock, AUTO_LOCK_MS);
+    const reset = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(lock, AUTO_LOCK_MS);
     };
-    setContacts((items) => [...items, contact]);
-    setActiveId(contact.id);
-    setDrafts(templateDrafts(contact, guidance, agenda));
-    setShowAdd(false);
-  }
+    const events: (keyof WindowEventMap)[] = ["pointerdown", "keydown", "scroll", "touchstart"];
+    events.forEach((event) => window.addEventListener(event, reset, { passive: true }));
+    return () => {
+      window.clearTimeout(timer);
+      events.forEach((event) => window.removeEventListener(event, reset));
+    };
+  }, [lock, unlocked]);
 
-  async function preparePrivateAi() {
-    setAiState("loading");
-    setAiProgress(0);
-    setAiStatus("Starting private model download…");
+  async function createSecureWorkspace() {
+    setError("");
+    if (passphrase !== confirmation) return setError("The passphrases do not match.");
+    setBusy(true);
     try {
-      await loadPrivateModel(modelId, (progress) => {
-        setAiProgress(progress.progress);
-        setAiStatus(progress.text);
-      });
-      setAiState("ready");
-      setAiProgress(1);
-      setAiStatus("Ready on this device");
-      setNotice(selectedModel.name + " is ready. Conversation context stays in this browser.");
-    } catch (error) {
-      setAiState("error");
-      const message = error instanceof Error ? error.message : "The private model could not be loaded.";
-      setAiStatus(message);
-      setNotice(message);
+      const result = await createVault(passphrase, legacy ?? createEmptyWorkspace());
+      if (legacy) localStorage.removeItem(LEGACY_KEY);
+      setUnlocked({ ...result, workspace: applyRetention(result.workspace) });
+      setExists(true);
+    } catch (caught) {
+      setError(formatError(caught));
+    } finally {
+      setBusy(false);
     }
   }
 
-  function feedbackSummary() {
-    const liked = contactFeedback.filter((item) => item.vote === "up").map((item) => item.label);
-    const disliked = contactFeedback.filter((item) => item.vote === "down").map((item) => item.label);
-    return "Previously liked approaches: " + (liked.join(", ") || "none yet") + ". Previously disliked approaches: " + (disliked.join(", ") || "none yet") + ".";
+  async function unlock() {
+    setError("");
+    setBusy(true);
+    try {
+      const result = await unlockVault(passphrase);
+      setUnlocked({ ...result, workspace: applyRetention(result.workspace) });
+    } catch (caught) {
+      setError(formatError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importBackup(file: File) {
+    setError("");
+    setBusy(true);
+    try {
+      const result = await importEncryptedBackup(await file.text(), passphrase);
+      localStorage.removeItem(LEGACY_KEY);
+      setUnlocked({ ...result, workspace: applyRetention(result.workspace) });
+      setExists(true);
+    } catch (caught) {
+      setError(formatError(caught));
+    } finally {
+      if (importRef.current) importRef.current.value = "";
+      setBusy(false);
+    }
+  }
+
+  if (checking) return <main className="vault-shell"><section className="vault-card"><p>Checking this browser for an encrypted workspace…</p></section></main>;
+  if (unlocked) return <UnlockedWorkspace initial={unlocked.workspace} session={unlocked.session} onLock={lock} />;
+
+  return (
+    <main className="vault-shell">
+      <section className="vault-card" aria-labelledby="vault-title">
+        <div className="brand-mark" aria-hidden="true">CH</div>
+        <p className="eyebrow">PRIVATE BY DESIGN</p>
+        <h1 id="vault-title">Your conversations stay under your key.</h1>
+        <p className="lede">ChatHelp encrypts the workspace in this browser with AES-256-GCM. Your passphrase is never stored, sent, or recoverable by us.</p>
+        <div className="trust-grid">
+          <span>Encrypted at rest</span><span>AI runs on device</span><span>No LinkedIn automation</span>
+        </div>
+        {legacy && !exists && <div className="notice warning"><strong>Privacy upgrade available.</strong> A plaintext workspace from the earlier version was found. Creating the vault will encrypt it and remove the plaintext copy.</div>}
+        <label>Passphrase
+          <input type="password" autoComplete={exists ? "current-password" : "new-password"} value={passphrase} onChange={(event) => setPassphrase(event.target.value)} minLength={12} placeholder="At least 12 characters" />
+        </label>
+        {!exists && <label>Confirm passphrase
+          <input type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} minLength={12} />
+        </label>}
+        {error && <p className="error" role="alert">{error}</p>}
+        <button className="primary" disabled={busy || passphrase.length < 12 || (!exists && confirmation.length < 12)} onClick={() => void (exists ? unlock() : createSecureWorkspace())}>
+          {busy ? "Working…" : exists ? "Unlock private workspace" : "Create encrypted workspace"}
+        </button>
+        <button className="secondary" disabled={busy || passphrase.length < 12} onClick={() => importRef.current?.click()}>Import encrypted backup</button>
+        <input ref={importRef} hidden type="file" accept="application/json,.json" onChange={(event) => event.target.files?.[0] && void importBackup(event.target.files[0])} />
+        <p className="fine-print"><strong>No recovery:</strong> losing the passphrase means losing the data. This is a deliberate privacy property. Use an encrypted backup and a password manager.</p>
+      </section>
+    </main>
+  );
+}
+
+function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceData; session: VaultSession; onLock: () => void }) {
+  const [workspace, setWorkspace] = useState(() => applyRetention(initial));
+  const [selectedId, setSelectedId] = useState(initial.contacts[0]?.id ?? "");
+  const [saveStatus, setSaveStatus] = useState("Encrypted");
+  const [newContactName, setNewContactName] = useState("");
+  const [agenda, setAgenda] = useState("");
+  const [drafts, setDrafts] = useState<string[]>([]);
+  const [aiStatus, setAiStatus] = useState("");
+  const [appError, setAppError] = useState("");
+  const [chatPaste, setChatPaste] = useState("");
+  const [messageBody, setMessageBody] = useState("");
+  const [messageRole, setMessageRole] = useState<MessageRole>("them");
+  const [outcomeNote, setOutcomeNote] = useState("");
+  const [outcomeResult, setOutcomeResult] = useState<"positive" | "neutral" | "negative">("positive");
+  const documentRef = useRef<HTMLInputElement>(null);
+
+  const contact = workspace.contacts.find((item) => item.id === selectedId) ?? workspace.contacts[0] ?? null;
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setSaveStatus("Encrypting…");
+      void saveVault(applyRetention(workspace), session).then(() => setSaveStatus("Encrypted"), (error) => {
+        setSaveStatus("Save failed");
+        setAppError(formatError(error));
+      });
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [session, workspace]);
+
+  function updateWorkspace(updater: (current: WorkspaceData) => WorkspaceData) {
+    setSaveStatus("Unsaved changes");
+    setWorkspace((current) => updater(current));
+  }
+
+  function updateContact(updater: (current: Contact) => Contact) {
+    if (!contact) return;
+    updateWorkspace((current) => ({ ...current, contacts: current.contacts.map((item) => item.id === contact.id ? updater(item) : item) }));
+  }
+
+  function addContact() {
+    const name = newContactName.trim();
+    if (!name) return;
+    const id = newId("contact");
+    const next: Contact = { id, name, headline: "", profileNotes: "", chat: [], documents: [], outcomes: [], retentionDays: 90 };
+    updateWorkspace((current) => ({ ...current, contacts: [...current.contacts, next] }));
+    setSelectedId(id);
+    setNewContactName("");
+  }
+
+  function deleteContact() {
+    if (!contact || !window.confirm("Permanently delete this contact and all of their local context?")) return;
+    const remaining = workspace.contacts.filter((item) => item.id !== contact.id);
+    updateWorkspace((current) => ({ ...current, contacts: remaining, feedback: current.feedback.filter((item) => item.contactId !== contact.id) }));
+    setSelectedId(remaining[0]?.id ?? "");
+    setDrafts([]);
+  }
+
+  async function downloadBackup() {
+    setAppError("");
+    try {
+      await saveVault(applyRetention(workspace), session);
+      const contents = await exportEncryptedBackup();
+      const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "chathelp-encrypted-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (error) { setAppError(formatError(error)); }
+  }
+
+  async function eraseEverything() {
+    if (!window.confirm("Erase the encrypted vault from this browser? Export a backup first if you may need it.")) return;
+    await eraseVault();
+    localStorage.removeItem(LEGACY_KEY);
+    onLock();
+    window.location.reload();
+  }
+
+  async function importDocument(file: File) {
+    if (!contact) return;
+    const validation = validateContextFile(file);
+    if (validation) return setAppError(validation);
+    try {
+      let text = await file.text();
+      if (file.name.toLowerCase().endsWith(".json")) text = JSON.stringify(JSON.parse(text), null, 2);
+      updateContact((current) => ({ ...current, documents: [...current.documents, { id: newId("document"), name: file.name, text: text.slice(0, 100_000), createdAt: new Date().toISOString() }] }));
+    } catch { setAppError("That context file could not be read safely."); }
+    if (documentRef.current) documentRef.current.value = "";
+  }
+
+  async function captureContext() {
+    if (!contact) return;
+    setAppError("");
+    try {
+      setAiStatus("Waiting for you to choose a visible window or tab…");
+      const image = await captureVisibleScreen();
+      const text = await extractTextFromImage(image, setAiStatus);
+      if (!text) throw new Error("No readable text was found in the selected screen.");
+      updateContact((current) => ({ ...current, documents: [...current.documents, { id: newId("capture"), name: "User-selected screen capture", text: text.slice(0, 100_000), createdAt: new Date().toISOString() }] }));
+      setAiStatus("Capture processed locally and encrypted.");
+    } catch (error) {
+      setAiStatus("");
+      setAppError(formatError(error));
+    }
+  }
+
+  function importChat() {
+    if (!contact || !chatPaste.trim()) return;
+    const messages = chatPaste.split(/\n+/).map((line) => line.trim()).filter(Boolean).map((line, index) => {
+      const mine = /^(me|i):\s*/i.test(line);
+      return { id: newId("message"), role: mine ? "me" as const : "them" as const, body: line.replace(/^[^:]{1,40}:\s*/, "").slice(0, 20_000), createdAt: new Date(Date.now() + index).toISOString() };
+    });
+    updateContact((current) => ({ ...current, chat: [...current.chat, ...messages].slice(-1000) }));
+    setChatPaste("");
+  }
+
+  function addMessage() {
+    if (!contact || !messageBody.trim()) return;
+    updateContact((current) => ({ ...current, chat: [...current.chat, { id: newId("message"), role: messageRole, body: messageBody.trim().slice(0, 20_000), createdAt: new Date().toISOString() }] }));
+    setMessageBody("");
   }
 
   async function generate() {
-    if (!active) return;
-    if (aiState !== "ready") {
-      setDrafts(templateDrafts(active, guidance, agenda));
-      setNotice("Created transparent local templates. Load the private AI for model-generated options.");
-      return;
-    }
-    setAiState("generating");
-    setAiStatus("Thinking privately on this device…");
-    try {
-      const result = await generatePrivateDrafts({
-        contact: {
-          name: active.name,
-          headline: active.headline,
-          company: active.company,
-          location: active.location,
-          relationship: active.relationship,
-          notes: active.notes,
-          capturedContext: active.capturedContext,
-        },
-        recentMessages: active.chat.slice(-14).map(({ sender, text, date }) => ({ sender, text, date })),
-        guidance,
-        agenda,
-        feedbackSummary: feedbackSummary(),
-      });
-      setDrafts(result);
-      setNotice("Three messages were generated locally. Review every detail before using one.");
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Private generation failed.");
-    } finally {
-      setAiState("ready");
-      setAiStatus("Ready on this device");
-    }
-  }
-
-  async function takeOneShotCapture() {
-    setShowCapture(true);
-    setCaptureState("requesting");
-    setCapturePreview("");
-    setCapturedText("");
-    setCaptureStatus("Waiting for your browser selection…");
-    let stream: MediaStream | null = null;
-    try {
-      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-      const video = document.createElement("video");
-      video.srcObject = stream;
-      video.muted = true;
-      video.playsInline = true;
-      await new Promise<void>((resolve, reject) => {
-        video.onloadedmetadata = () => resolve();
-        video.onerror = () => reject(new Error("The selected screen could not be read."));
-      });
-      await video.play();
-      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-      const scale = Math.min(1, 1800 / Math.max(video.videoWidth, 1));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
-      canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
-      const context = canvas.getContext("2d");
-      if (!context) throw new Error("A capture canvas could not be created.");
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
-      setCapturePreview(canvas.toDataURL("image/jpeg", 0.88));
-      setCaptureState("captured");
-      setCaptureStatus("One frame captured. The screen stream is stopped.");
-    } catch (error) {
-      setCaptureState("idle");
-      setCaptureStatus(error instanceof Error ? error.message : "Screen capture was cancelled.");
-    } finally {
-      stream?.getTracks().forEach((track) => track.stop());
-    }
-  }
-
-  async function readCapture() {
-    if (!capturePreview) return;
-    setCaptureState("reading");
-    setCaptureProgress(0);
-    try {
-      const text = await recognizeImageLocally(capturePreview, (progress) => {
-        setCaptureProgress(progress.progress);
-        setCaptureStatus(progress.status);
-      });
-      setCapturedText(text);
-      setCaptureState("review");
-      setCaptureStatus("Review and remove anything you do not want to keep.");
-    } catch (error) {
-      setCaptureState("captured");
-      setCaptureStatus(error instanceof Error ? error.message : "Local text recognition failed.");
-    }
-  }
-
-  function saveReviewedCapture() {
-    if (!active || !capturedText.trim()) return;
-    updateContact({ capturedContext: [active.capturedContext, capturedText.trim()].filter(Boolean).join("\n\n") });
-    setShowCapture(false);
-    setCapturePreview("");
-    setCapturedText("");
-    setNotice("Reviewed capture text was added to this contact on this device.");
-  }
-
-  function vote(draft: PrivateDraft, vote: "up" | "down") {
-    setFeedback((items) => [...items, { contactId: activeId, label: draft.label, vote, at: now() }]);
-    setNotice(vote === "up" ? "Saved as a preferred local pattern." : "Saved as a pattern to avoid next time.");
-  }
-
-  async function copyDraft(text: string) {
-    await navigator.clipboard.writeText(text);
-    setNotice("Copied. Paste it manually after reviewing it in LinkedIn.");
-  }
-
-  function eraseWorkspace() {
-    localStorage.removeItem("chathelp-private-v2");
-    localStorage.removeItem("chathelp-private-v1");
-    setContacts([]);
-    setFeedback([]);
+    if (!contact || !agenda.trim()) return;
+    setAppError("");
     setDrafts([]);
-    setShowPrivacy(false);
-    setNotice("ChatHelp workspace data was erased from this browser.");
+    try {
+      const query = [agenda, contact.profileNotes, contact.chat.slice(-8).map((item) => item.body).join(" ")].join(" ");
+      const relevant = selectRelevantContext(contact.documents, query);
+      const feedbackSummary = workspace.feedback.filter((item) => item.contactId === contact.id).slice(-20).map((item) => item.rating + ": " + item.note).join("\n");
+      const nextDrafts = await generatePrivateDrafts(workspace.modelId, {
+        contact,
+        guidance: workspace.guidance,
+        latestQuestion: agenda,
+        retrievedContext: relevant,
+        feedbackSummary,
+        outcomeSummary: buildOutcomeSummary(contact),
+      }, setAiStatus);
+      setDrafts(nextDrafts);
+      setAiStatus("Generated locally. Nothing was sent to a message API.");
+    } catch (error) {
+      setAiStatus("");
+      setAppError(formatError(error));
+    }
   }
 
-  if (!ready) return <main className="loading"><span>CH</span><p>Opening your private workspace…</p></main>;
+  function rateDraft(draft: string, rating: "useful" | "not-useful") {
+    if (!contact) return;
+    const note = window.prompt("Optional: what should ChatHelp learn from this draft?", "") ?? "";
+    updateWorkspace((current) => ({ ...current, feedback: [...current.feedback, { id: newId("feedback"), contactId: contact.id, draft: draft.slice(0, 2000), rating, note: note.slice(0, 1000), createdAt: new Date().toISOString() }].slice(-1000) }));
+  }
 
-  return <main className="app-shell" id="top">
-    <header className="topbar">
-      <a className="brand" href="#top"><span className="brand-mark">CH</span><span>ChatHelp<small>Private conversation copilot</small></span></a>
-      <div className="top-actions">
-        <span className="privacy-pill"><i /> No AI API · device-only inference</span>
-        <button className="button secondary" onClick={() => setShowPrivacy(true)}>Privacy</button>
-        <a className="button linkedin" href="https://www.linkedin.com/messaging/" target="_blank" rel="noreferrer">Open LinkedIn ↗</a>
-      </div>
-    </header>
+  function addOutcome() {
+    if (!contact) return;
+    updateContact((current) => ({ ...current, outcomes: [...current.outcomes, { id: newId("outcome"), result: outcomeResult, note: outcomeNote.trim().slice(0, 2000), createdAt: new Date().toISOString() }].slice(-200) }));
+    setOutcomeNote("");
+  }
 
-    {notice && <div className="toast" role="status"><span>{notice}</span><button onClick={() => setNotice("")} aria-label="Dismiss">×</button></div>}
+  const storageSummary = useMemo(() => contact ? contact.chat.length + " messages · " + contact.documents.length + " context files · " + contact.outcomes.length + " outcomes" : "No contact selected", [contact]);
 
-    <section className="workspace">
-      <aside className="people-panel">
-        <div className="panel-heading"><div><span className="eyebrow">People</span><h2>One person at a time</h2></div><button className="icon-button" onClick={() => setShowAdd(true)} aria-label="Add person">+</button></div>
-        <label className="search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search people" /></label>
-        <div className="contact-list">
-          {contacts.filter((contact) => (contact.name + " " + contact.company + " " + contact.headline).toLowerCase().includes(search.toLowerCase())).map((contact) => <button key={contact.id} className={"contact-card " + (contact.id === activeId ? "active" : "")} onClick={() => { setActiveId(contact.id); setDrafts(templateDrafts(contact, guidance, agenda)); }}>
-            <span className="avatar">{contact.name.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>
-            <span><strong>{contact.name}</strong><small>{contact.headline || contact.company || "Add context"}</small></span>
-            <i>{contact.chat.length}</i>
-          </button>)}
-          {!contacts.length && <div className="empty-state"><strong>Your workspace is empty</strong><p>Add a person to begin.</p><button className="button primary" onClick={() => setShowAdd(true)}>Add person</button></div>}
-        </div>
-        <div className="local-card"><span>01</span><div><strong>Stored in this browser</strong><p>Contacts, guidance, feedback, and reviewed capture text stay in local storage.</p></div></div>
-      </aside>
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div><p className="eyebrow">CHATHELP</p><h1>Private conversation studio</h1></div>
+        <div className="top-actions"><span className="save-state">● {saveStatus}</span><button onClick={() => void downloadBackup()}>Encrypted backup</button><button onClick={onLock}>Lock</button></div>
+      </header>
+      <div className="privacy-strip"><strong>Private mode:</strong> prompts and generated drafts stay in this browser. Model weights are downloaded from the pinned model host on first use; OCR assets are served by ChatHelp. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
+      {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
+      <div className="workspace-grid">
+        <aside className="contacts-panel">
+          <h2>People</h2>
+          <div className="inline-form"><input aria-label="New contact name" value={newContactName} onChange={(event) => setNewContactName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addContact()} placeholder="Add a person" /><button onClick={addContact}>Add</button></div>
+          <nav aria-label="Contacts">
+            {workspace.contacts.map((item) => <button className={item.id === contact?.id ? "contact active" : "contact"} key={item.id} onClick={() => { setSelectedId(item.id); setDrafts([]); }}><span>{item.name.slice(0, 1).toUpperCase()}</span><div><strong>{item.name}</strong><small>{item.headline || "Add profile context"}</small></div></button>)}
+          </nav>
+          {!workspace.contacts.length && <p className="empty">Add one person. ChatHelp never scans your LinkedIn account or other conversations.</p>}
+        </aside>
 
-      {active ? <>
         <section className="context-panel">
-          <div className="person-header">
-            <div className="avatar large">{active.name.split(" ").map((part) => part[0]).slice(0, 2).join("")}</div>
-            <div><span className="eyebrow">Selected person</span><h1>{active.name}</h1><p>{[active.headline, active.company, active.location].filter(Boolean).join(" · ") || "Add profile context below"}</p></div>
-            <div className="strength"><span>Context</span><strong>{contextStrength}%</strong></div>
-          </div>
-
-          <div className="profile-grid">
-            <label><span>Headline</span><input value={active.headline} onChange={(event) => updateContact({ headline: event.target.value })} /></label>
-            <label><span>Company</span><input value={active.company} onChange={(event) => updateContact({ company: event.target.value })} /></label>
-            <label><span>Relationship</span><input value={active.relationship} onChange={(event) => updateContact({ relationship: event.target.value })} /></label>
-            <label><span>Location</span><input value={active.location} onChange={(event) => updateContact({ location: event.target.value })} /></label>
-            <label className="full"><span>Profile notes</span><textarea rows={3} value={active.notes} onChange={(event) => updateContact({ notes: event.target.value })} /></label>
-          </div>
-
-          <div className="capture-card">
-            <div><span className="eyebrow">Bring your own context</span><h3>Capture once, review, then keep locally</h3><p>No background recording. No LinkedIn scraping. The browser asks you to choose a tab or window every time.</p></div>
-            <div className="capture-actions"><button className="button primary" onClick={takeOneShotCapture}>One-shot capture</button><label className="button secondary file-button">Import profile<input type="file" accept=".json,.txt,.md" onChange={importProfile} /></label></div>
-          </div>
-
-          {active.capturedContext && <details className="reviewed-context"><summary>Reviewed capture context</summary><textarea rows={5} value={active.capturedContext} onChange={(event) => updateContact({ capturedContext: event.target.value })} /></details>}
-
-          <div className="conversation-heading"><div><span className="eyebrow">Conversation</span><h2>Recent messages</h2></div><label className="button secondary file-button">Import chat<input type="file" accept=".json,.csv,.txt" onChange={importChat} /></label></div>
-          <div className="chat-window">
-            {recentMessages.map((message) => <div className={"message-row " + message.sender} key={message.id}><div className="message"><p>{message.text}</p><small>{message.sender === "me" ? "You" : active.name.split(" ")[0]} · {formatDate(message.date)}</small></div></div>)}
-            {!recentMessages.length && <div className="empty-chat"><strong>No messages yet</strong><p>Import a user-controlled export, JSON, CSV, or text file.</p></div>}
-          </div>
+          {contact ? <>
+            <div className="section-heading"><div><p className="eyebrow">SELECTED PERSON</p><h2>{contact.name}</h2><small>{storageSummary}</small></div><button className="danger-link" onClick={deleteContact}>Delete</button></div>
+            <div className="panel-card">
+              <h3>Profile context</h3>
+              <label>Name<input value={contact.name} onChange={(event) => updateContact((current) => ({ ...current, name: event.target.value.slice(0, 200) }))} /></label>
+              <label>Headline<input value={contact.headline} onChange={(event) => updateContact((current) => ({ ...current, headline: event.target.value.slice(0, 500) }))} placeholder="Role, company, shared interests" /></label>
+              <label>Notes<textarea value={contact.profileNotes} onChange={(event) => updateContact((current) => ({ ...current, profileNotes: event.target.value.slice(0, 20_000) }))} placeholder="Only add what is relevant and appropriate." /></label>
+              <div className="button-row"><button onClick={() => void captureContext()}>Capture a screen you choose</button><button onClick={() => documentRef.current?.click()}>Import context file</button><input ref={documentRef} hidden type="file" accept=".txt,.md,.json,text/plain,application/json" onChange={(event) => event.target.files?.[0] && void importDocument(event.target.files[0])} /></div>
+              {contact.documents.map((document) => <div className="document-row" key={document.id}><div><strong>{document.name}</strong><small>{document.text.length.toLocaleString()} encrypted characters</small></div><button aria-label={"Delete " + document.name} onClick={() => updateContact((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== document.id) }))}>Remove</button></div>)}
+            </div>
+            <div className="panel-card">
+              <h3>Chat context</h3>
+              <textarea value={chatPaste} onChange={(event) => setChatPaste(event.target.value)} placeholder={"Paste selected lines only, for example:\nMe: Great to reconnect\nAlex: Likewise—how is the new role?"} />
+              <button onClick={importChat}>Import pasted lines</button>
+              <div className="inline-form"><select value={messageRole} onChange={(event) => setMessageRole(event.target.value as MessageRole)}><option value="them">Them</option><option value="me">Me</option></select><input value={messageBody} onChange={(event) => setMessageBody(event.target.value)} placeholder="Add one message" /><button onClick={addMessage}>Add</button></div>
+              <div className="chat-list">{contact.chat.slice(-12).map((message) => <div className={message.role === "me" ? "bubble mine" : "bubble"} key={message.id}><small>{message.role === "me" ? "You" : contact.name}</small>{message.body}</div>)}</div>
+            </div>
+            <div className="panel-card compact">
+              <h3>Retention</h3>
+              <label>Automatically remove dated context after<select value={contact.retentionDays} onChange={(event) => updateContact((current) => ({ ...current, retentionDays: Number(event.target.value) as Contact["retentionDays"] }))}><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option><option value={0}>Keep until I delete it</option></select></label>
+            </div>
+          </> : <div className="empty-state"><div className="brand-mark">1</div><h2>Add a person to begin</h2><p>Only context you deliberately paste, import, or capture will be used.</p></div>}
         </section>
 
-        <aside className="coach-panel">
-          <div className="coach-heading"><span className="eyebrow">Private AI studio</span><h2>Write with context, not guesswork.</h2><p>Model inference happens locally through WebGPU. Model weights download from the model host; your private context is not included in that request.</p></div>
-
-          <div className="model-card">
-            <div className="model-title"><span className={"status-dot " + aiState} /><div><strong>{aiState === "ready" || aiState === "generating" ? "Private AI ready" : "Choose your private model"}</strong><small>{aiStatus}</small></div></div>
-            <select value={modelId} onChange={(event) => { setModelId(event.target.value); setAiState("idle"); setAiStatus("Not loaded"); }} disabled={aiState === "loading" || aiState === "generating"}>
-              {PRIVATE_MODELS.map((model) => <option value={model.id} key={model.id}>{model.name}</option>)}
-            </select>
-            <p>{selectedModel.description} First download: {selectedModel.approximateDownload}; later use is cached by the browser.</p>
-            {(aiState === "loading" || aiState === "generating") && <div className="progress"><span style={{ width: Math.round(aiProgress * 100) + "%" }} /></div>}
-            {aiState !== "ready" && aiState !== "generating" && <button className="button model-button" onClick={preparePrivateAi} disabled={aiState === "loading"}>{aiState === "loading" ? "Downloading…" : "Download & load private AI"}</button>}
+        <section className="draft-panel">
+          <div className="panel-card guidance-card"><p className="eyebrow">YOUR PLAYBOOK</p><h2>Personal guidance</h2>
+            <label>Your role<input value={workspace.guidance.role} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, role: event.target.value } }))} /></label>
+            <label>Goal<textarea value={workspace.guidance.objective} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, objective: event.target.value } }))} /></label>
+            <label>Voice<input value={workspace.guidance.voice} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: event.target.value } }))} /></label>
+            <label>Boundaries<textarea value={workspace.guidance.boundaries} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, boundaries: event.target.value } }))} /></label>
           </div>
-
-          <label className="field"><span>What do you want to achieve?</span><textarea rows={3} value={agenda} onChange={(event) => setAgenda(event.target.value)} /></label>
-          <div className="guidance-block"><div><span className="eyebrow">Your communication guide</span><strong>{guidance.tone}</strong></div>
-            <label className="field"><span>Your role</span><input value={guidance.role} onChange={(event) => setGuidance({ ...guidance, role: event.target.value })} /></label>
-            <label className="field"><span>Goal</span><textarea rows={2} value={guidance.goal} onChange={(event) => setGuidance({ ...guidance, goal: event.target.value })} /></label>
-            <label className="field"><span>Tone</span><input value={guidance.tone} onChange={(event) => setGuidance({ ...guidance, tone: event.target.value })} /></label>
-            <label className="field"><span>Background to use</span><textarea rows={3} value={guidance.background} onChange={(event) => setGuidance({ ...guidance, background: event.target.value })} /></label>
-            <label className="field"><span>Boundaries</span><textarea rows={3} value={guidance.boundaries} onChange={(event) => setGuidance({ ...guidance, boundaries: event.target.value })} /></label>
-            <label className="field"><span>Preferred next step</span><input value={guidance.callToAction} onChange={(event) => setGuidance({ ...guidance, callToAction: event.target.value })} /></label>
+          <div className="panel-card compose-card">
+            <p className="eyebrow">PRIVATE AI</p><h2>Draft the next reply</h2>
+            <label>Question or agenda<textarea value={agenda} onChange={(event) => setAgenda(event.target.value)} placeholder="What did they ask, and what do you want this reply to accomplish?" /></label>
+            <label>Local model<select value={workspace.modelId} onChange={(event) => updateWorkspace((current) => ({ ...current, modelId: event.target.value }))}><option value="Llama-3.2-3B-Instruct-q4f16_1-MLC">Llama 3.2 3B · stronger</option><option value="Llama-3.2-1B-Instruct-q4f16_1-MLC">Llama 3.2 1B · lighter</option></select></label>
+            <button className="primary" disabled={!contact || !agenda.trim() || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("Capture processed"))} onClick={() => void generate()}>Generate 3 private drafts</button>
+            {aiStatus && <p className="status" aria-live="polite">{aiStatus}</p>}
+            <p className="fine-print">First use downloads pinned model weights. Generation then runs in a dedicated browser worker. Review every draft before sending.</p>
           </div>
-
-          <button className="button generate" onClick={generate} disabled={aiState === "loading" || aiState === "generating"}>{aiState === "generating" ? "Generating privately…" : aiState === "ready" ? "Generate 3 private AI drafts" : "Generate 3 local templates"}</button>
-          {aiState !== "ready" && <p className="template-note">Templates are deterministic and clearly labelled; load the model for true AI generation.</p>}
-
-          <div className="draft-list">
-            {drafts.map((draft, index) => <article className="draft-card" key={draft.id}>
-              <div className="draft-top"><span><i>{String(index + 1).padStart(2, "0")}</i>{draft.label}</span><button onClick={() => copyDraft(draft.text)}>Copy</button></div>
-              <p>{draft.text}</p><small>{draft.rationale}</small>
-              <div className="draft-feedback"><span>Help local personalization</span><button onClick={() => vote(draft, "up")} aria-label="Useful">Useful</button><button onClick={() => vote(draft, "down")} aria-label="Not useful">Not useful</button></div>
-            </article>)}
-          </div>
-          <div className="learning-card"><span>✦</span><div><strong>Local preference memory</strong><p>{contactFeedback.length ? positiveCount + " of " + contactFeedback.length + " ratings were useful. This summary is included in future local prompts; the base model is not secretly retrained." : "Rate drafts to tell future local prompts which approaches to favor."}</p></div></div>
-        </aside>
-      </> : <section className="no-contact"><span className="brand-mark">CH</span><h1>Add a person to start</h1><p>ChatHelp works with only the contact you select.</p></section>}
-    </section>
-
-    <footer><span>ChatHelp is not affiliated with LinkedIn. You control what context is captured and must review every draft.</span><span>No API calls to LinkedIn · No auto-send · No hidden recording</span></footer>
-
-    {showAdd && <div className="modal-backdrop"><form className="modal" onSubmit={addContact}><button type="button" className="modal-close" onClick={() => setShowAdd(false)}>×</button><span className="eyebrow">New workspace</span><h2>Add one person</h2><p>Only add information you have permission to use.</p><label className="field"><span>Name</span><input name="name" required autoFocus /></label><label className="field"><span>Headline</span><input name="headline" /></label><label className="field"><span>Company</span><input name="company" /></label><label className="field"><span>How you know them</span><input name="relationship" /></label><label className="field"><span>Initial notes</span><textarea name="notes" rows={4} /></label><button className="button primary full-button" type="submit">Create private workspace</button></form></div>}
-
-    {showPrivacy && <div className="modal-backdrop"><section className="modal privacy-modal"><button className="modal-close" onClick={() => setShowPrivacy(false)}>×</button><span className="eyebrow">Privacy center</span><h2>What leaves this browser?</h2><div className="privacy-points"><article><b>01</b><div><strong>Your conversation context does not</strong><p>Chats, notes, guidance, captures, prompts, drafts, and feedback are kept in browser storage and passed only to the on-device model.</p></div></article><article><b>02</b><div><strong>Model files are downloaded</strong><p>The selected open model is downloaded from WebLLM’s configured model host and cached. The download request does not contain your conversation data.</p></div></article><article><b>03</b><div><strong>Screen permission is never persistent</strong><p>The browser requires a user gesture and selection for each capture. ChatHelp takes one frame and stops every track immediately.</p></div></article><article><b>04</b><div><strong>Sending is always manual</strong><p>ChatHelp never reads the LinkedIn DOM, injects controls, pastes, or sends messages on your behalf.</p></div></article></div><button className="danger-link" onClick={eraseWorkspace}>Erase this browser workspace</button></section></div>}
-
-    {showCapture && <div className="modal-backdrop"><section className="modal capture-modal"><button className="modal-close" onClick={() => setShowCapture(false)}>×</button><span className="eyebrow">Explicit one-shot capture</span><h2>Review before keeping anything</h2><p>Choose only a tab or window you are authorized to capture. Website terms and other people’s privacy still apply.</p>{capturePreview ? <img src={capturePreview} alt="One-shot screen capture preview" /> : <div className="capture-placeholder"><span>▣</span><strong>{captureState === "requesting" ? "Choose a tab or window in the browser prompt" : "No image captured"}</strong></div>}<div className="capture-status"><span>{captureStatus}</span>{captureState === "reading" && <strong>{Math.round(captureProgress * 100)}%</strong>}</div>{captureState === "captured" && <button className="button primary full-button" onClick={readCapture}>Extract text locally</button>}{captureState === "review" && <><label className="field"><span>Review and redact extracted text</span><textarea rows={10} value={capturedText} onChange={(event) => setCapturedText(event.target.value)} /></label><button className="button primary full-button" onClick={saveReviewedCapture} disabled={!capturedText.trim()}>Add reviewed text to {active.name}</button></>}</section></div>}
-  </main>;
+          <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={draft + index}><div><span>OPTION {index + 1}</span><div><button onClick={() => void navigator.clipboard.writeText(draft)}>Copy</button><button title="Useful" onClick={() => rateDraft(draft, "useful")}>👍</button><button title="Not useful" onClick={() => rateDraft(draft, "not-useful")}>👎</button></div></div><p>{draft}</p></article>)}</div>
+          {contact && <div className="panel-card compact"><h3>Conversation outcome</h3><div className="inline-form"><select value={outcomeResult} onChange={(event) => setOutcomeResult(event.target.value as typeof outcomeResult)}><option value="positive">Positive</option><option value="neutral">Neutral</option><option value="negative">Negative</option></select><input value={outcomeNote} onChange={(event) => setOutcomeNote(event.target.value)} placeholder="What worked or went wrong?" /><button onClick={addOutcome}>Save</button></div></div>}
+          <a className="linkedin-link" href="https://www.linkedin.com/messaging/" target="_blank" rel="noreferrer">Open LinkedIn Messaging for manual review and paste ↗</a>
+        </section>
+      </div>
+      <footer><span>ChatHelp never sends LinkedIn messages automatically.</span><button className="danger-link" onClick={() => void eraseEverything()}>Erase all local data</button></footer>
+      <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Your content:</strong> no chat, profile notes, guidance, outcomes, or drafts are intentionally sent to ChatHelp, LinkedIn, or an AI API.</li><li><strong>Model download:</strong> pinned public model files are fetched on first use. The model host sees normal download metadata such as IP address; it does not receive your prompts.</li><li><strong>Screen capture:</strong> the browser asks you to choose a screen. OCR runs locally with self-hosted assets, and only extracted text is encrypted.</li><li><strong>Limits:</strong> browser malware, a compromised origin, or someone who knows your passphrase can still expose data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
+    </main>
+  );
 }
