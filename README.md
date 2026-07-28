@@ -1,104 +1,87 @@
 # ChatHelp
 
-ChatHelp is a privacy-first web workspace for preparing thoughtful LinkedIn outreach from the context a user intentionally provides. It works with one selected person at a time and keeps imported chat history, profile notes, personal guidance, generated drafts, and feedback in browser local storage.
+ChatHelp is a privacy-first web workspace for preparing thoughtful professional outreach from context a user intentionally supplies. It works with one selected person at a time, runs its language model in the browser, and never sends a message automatically.
 
-## MVP capabilities
+## What is implemented
 
-- LinkedIn OpenID Connect for the signed-in user's identity only
-- One-person-at-a-time relationship workspaces
-- Local chat import from CSV, JSON, or text
-- Local profile context import from JSON, Markdown, or text
-- A reusable personal communication guide: role, goal, tone, background, boundaries, and preferred call to action
-- Three response approaches generated from the selected person's recent messages, profile context, the user's guidance, and the current agenda
-- Draft copying and positive/negative feedback
-- Device-local response memory and a privacy center with one-click erasure
-- Responsive web layout ready for desktop, tablet, and mobile browsers
+- On-device language generation with WebLLM and WebGPU; no external completion API.
+- Llama 3.2 3B Instruct as the recommended private model and a 1B fallback for lower-memory devices.
+- Three distinct message approaches generated from recent chat, profile context, a personal communication guide, the current agenda, and local feedback.
+- Transparent deterministic templates when the private model is not loaded.
+- Explicit one-shot screen capture using the browser's native permission picker.
+- Local OCR with Tesseract.js, followed by mandatory review/redaction before text is saved.
+- Chat import from JSON, CSV, and text; profile context import from JSON, Markdown, and text.
+- Device-local contacts, guidance, reviewed capture text, drafts, and preference history.
+- Manual copy for pasting after review.
+- A privacy center and one-click workspace erasure.
+- Responsive desktop and mobile web UI.
 
-## Why chat/profile import is required
+## Privacy boundary
 
-LinkedIn's self-service developer access permits OpenID Connect sign-in and the authenticated member's basic profile. Reading another member's profile, connections, or private messages requires restricted LinkedIn partner permissions. ChatHelp does not scrape LinkedIn or bypass those controls.
+ChatHelp does not use a hosted AI/LLM API. Conversation context is passed only to the model running in the browser.
 
-The compliant MVP flow is:
+The first model load downloads public model files from WebLLM's configured model host and caches them. The download is approximately 2.3 GB for the recommended model or 0.9 GB for the lightweight model. Private prompts and relationship data are not sent with that download.
 
-1. Link LinkedIn for the user's own identity (optional).
-2. Select one person.
-3. Import that person's messages from a user-controlled LinkedIn data export, CSV, JSON, or text file.
-4. Add profile context manually or through a local file.
-5. Add personal guidance and the outreach agenda.
-6. Generate, copy, and rate private drafts.
+The current workspace is stored in browser localStorage and is not yet encrypted at rest. It is specific to the browser profile and device. Clearing browser data removes it.
 
-## Privacy model
+Read the detailed design and source research in docs/PRIVATE_AI_ARCHITECTURE.md.
 
-- Relationship data is not sent to a ChatHelp database.
-- The current MVP uses browser local storage only.
-- LinkedIn access tokens are used only during the OAuth callback and are not stored.
-- The short-lived LinkedIn identity cookie is HTTP-only and HMAC-signed.
-- Secrets are supplied through environment variables and must never be committed.
-- The Privacy Center can erase all local ChatHelp data.
+## Why ChatHelp does not automate LinkedIn
 
-Browser storage is device- and browser-profile-specific. Clearing browser data removes the workspace. A future encrypted sync feature should be opt-in and use user-held encryption keys.
+LinkedIn's published rules prohibit third-party software and browser extensions that scrape or copy profile/service data, modify the site, or automate activity. ChatHelp therefore does not:
+
+- call LinkedIn APIs;
+- request or store LinkedIn credentials or tokens;
+- read the LinkedIn DOM;
+- inject a Grammarly-style overlay into LinkedIn;
+- record in the background;
+- paste or send a message automatically.
+
+The compliant workflow is user-controlled: open LinkedIn, optionally take an explicit one-shot capture or import approved context, review/redact it, generate locally, copy a reviewed draft, and paste it manually.
 
 ## Codespaces development
 
-The repository includes a dev-container definition. In GitHub Codespaces, dependencies install with `npm ci`.
+All project commands should run in GitHub Codespaces. The repository includes a dev-container definition.
 
-```bash
-npm run dev
-```
+Install exactly from the lockfile:
 
-Open port `3000` from the Codespaces Ports panel.
+    npm ci
 
-Validation:
+Start the development server:
 
-```bash
-npm run lint
-npm run build
-```
+    npm run dev
 
-## LinkedIn identity configuration
+Open forwarded port 3000 from the Codespaces Ports panel.
 
-Create an app in the LinkedIn Developer Portal and enable **Sign In with LinkedIn using OpenID Connect**. Copy `.env.example` to `.env.local` inside the Codespace and set:
+Validate:
 
-```dotenv
-LINKEDIN_CLIENT_ID=
-LINKEDIN_CLIENT_SECRET=
-NEXT_PUBLIC_APP_URL=https://your-public-origin.example
-SESSION_SECRET=
-```
+    npm run lint
+    npm run build
+    npm audit --omit=dev
 
-Register this exact callback URL in the LinkedIn app:
+## Browser requirements
 
-```text
-https://your-public-origin.example/api/linkedin/callback
-```
+Private model generation requires a current browser with WebGPU enabled and enough memory for the selected model. If WebGPU is unavailable, ChatHelp keeps the transparent local-template workflow available.
 
-The basic private drafting workspace works without LinkedIn OAuth configuration.
+Screen capture requires HTTPS, a user gesture, and browser permission every time. OCR runs locally but can make mistakes; always review extracted text.
 
-## Import formats
+## Data formats
 
-Chat CSV files should include a message column named `Content`, `Message`, or `Text`. Optional sender and date columns may be named `From`/`Sender` and `Date`/`Time`.
+Chat JSON can be an array or an object containing a messages array. Each message can include sender/from, text/content/message, and date/createdAt.
 
-Chat JSON can be an array or an object with a `messages` array:
+CSV should include a Content, Message, or Text column. Optional sender and date columns may be named From/Sender and Date/Time.
 
-```json
-{
-  "messages": [
-    { "sender": "Priya", "text": "Happy to compare notes.", "date": "2026-06-12" },
-    { "sender": "Me", "text": "Would next Tuesday work?", "date": "2026-06-13" }
-  ]
-}
-```
-
-Profile JSON can include `name`, `headline`, `company`, `location`, `profileUrl`, `notes`, or `summary`.
+Profile JSON can include name, headline/title, company, location, notes, or summary.
 
 ## Roadmap
 
-1. Harden the web MVP with automated interaction tests and encrypted backup/export.
-2. Add an optional in-browser language model for WebGPU-capable devices, keeping conversation inference local.
-3. Add explicit per-contact retention settings and detailed response outcome tracking.
-4. Introduce an installable Progressive Web App.
-5. Reuse the web domain and data model in an Android client after the web workflows mature.
+1. Dedicated Web Worker inference.
+2. Encrypted IndexedDB and encrypted local backup.
+3. Self-hosted, pinned model artifacts with integrity metadata.
+4. Local retrieval over user-approved guidance and research documents.
+5. Outcome notes and per-contact retention controls.
+6. Installable PWA, followed later by an Android client reusing the same data model.
 
 ## Important
 
-ChatHelp is not affiliated with LinkedIn. Users are responsible for having the right to use imported conversation and profile information and for reviewing every draft before sending it.
+ChatHelp is not affiliated with LinkedIn. Users are responsible for having permission to use captured or imported information, following website terms, verifying OCR, and reviewing every generated message before use.
