@@ -21,7 +21,7 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
-  artifactName: ChatHelp-Setup-4{version}-4{arch}.4{ext}
+  artifactName: ChatHelp-Setup-${version}-${arch}.${ext}
 portable:
-  artifactName: ChatHelp-Portable-4{version}-4{arch}.4{ext}
+  artifactName: ChatHelp-Portable-${version}-${arch}.${ext}
 publish: null
