@@ -3,6 +3,8 @@ name: Package installable apps
 on:
   workflow_dispatch:
   push:
+    branches:
+      - "codex/private-ai"
     tags:
       - "v*"
 
