@@ -1,0 +1,324 @@
+"use client";
+
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+
+type Message = { id: string; sender: "me" | "them"; text: string; date: string };
+type Contact = {
+  id: string;
+  name: string;
+  headline: string;
+  company: string;
+  location: string;
+  relationship: string;
+  profileUrl: string;
+  notes: string;
+  chat: Message[];
+};
+type Guidance = {
+  role: string;
+  goal: string;
+  tone: string;
+  boundaries: string;
+  callToAction: string;
+  background: string;
+};
+type Draft = { id: string; label: string; text: string; rationale: string };
+type Feedback = { draftId: string; contactId: string; vote: "up" | "down"; label: string; at: string };
+type LinkedInStatus = { configured: boolean; connected: boolean; profile?: { name?: string; picture?: string; email?: string } };
+
+const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const today = () => new Date().toISOString();
+
+const starterContacts: Contact[] = [
+  {
+    id: "priya-demo",
+    name: "Priya Shah",
+    headline: "VP, Strategic Partnerships",
+    company: "Northstar Labs",
+    location: "Toronto, Canada",
+    relationship: "Former conference connection",
+    profileUrl: "",
+    notes: "Interested in practical AI adoption and partner-led growth. Example contact — replace with your own data.",
+    chat: [
+      { id: "p1", sender: "me", text: "Great meeting you at the growth forum, Priya. I enjoyed your point about starting partnerships with a narrow customer problem.", date: "2026-06-10T14:10:00Z" },
+      { id: "p2", sender: "them", text: "Likewise! The teams that define one measurable outcome usually move much faster. Happy to compare notes sometime.", date: "2026-06-10T16:42:00Z" },
+      { id: "p3", sender: "me", text: "I would like that. We have been helping small teams turn support conversations into qualified partnership signals.", date: "2026-06-12T13:05:00Z" },
+      { id: "p4", sender: "them", text: "That sounds relevant. We are reviewing how we identify partner opportunities without adding more admin for the team.", date: "2026-06-12T15:31:00Z" },
+    ],
+  },
+];
+
+const defaultGuidance: Guidance = {
+  role: "Founder building a privacy-first relationship assistant",
+  goal: "Explore a small business partnership without sounding transactional",
+  tone: "Warm, concise, curious",
+  boundaries: "Do not exaggerate results. Avoid pressure, hype, or fake familiarity.",
+  callToAction: "Ask for a 20-minute conversation next week",
+  background: "We help professionals use conversation context to reach out thoughtfully while keeping private messages on their device.",
+};
+
+function parseCsv(input: string) {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let value = "";
+  let quoted = false;
+  for (let i = 0; i < input.length; i += 1) {
+    const char = input[i];
+    if (char === '"' && quoted && input[i + 1] === '"') { value += '"'; i += 1; }
+    else if (char === '"') quoted = !quoted;
+    else if (char === "," && !quoted) { row.push(value); value = ""; }
+    else if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && input[i + 1] === "\n") i += 1;
+      row.push(value); if (row.some(Boolean)) rows.push(row); row = []; value = "";
+    } else value += char;
+  }
+  row.push(value); if (row.some(Boolean)) rows.push(row);
+  return rows;
+}
+
+function messagesFromFile(text: string, fileName: string, contactName: string): Message[] {
+  if (fileName.toLowerCase().endsWith(".json")) {
+    const parsed = JSON.parse(text);
+    const list = Array.isArray(parsed) ? parsed : parsed.messages;
+    if (!Array.isArray(list)) throw new Error("JSON must contain a messages array.");
+    return list.map((item: Record<string, unknown>) => ({
+      id: uid(),
+      sender: String(item.sender || item.from || "").toLowerCase().includes(contactName.toLowerCase().split(" ")[0]) ? "them" : "me",
+      text: String(item.text || item.content || item.message || ""),
+      date: String(item.date || item.createdAt || today()),
+    })).filter((item: Message) => item.text.trim());
+  }
+  if (fileName.toLowerCase().endsWith(".csv")) {
+    const rows = parseCsv(text);
+    const headers = (rows.shift() || []).map((header) => header.trim().toLowerCase());
+    const find = (names: string[]) => names.map((name) => headers.findIndex((header) => header.includes(name))).find((index) => index !== -1) ?? -1;
+    const contentIndex = find(["content", "message", "text"]);
+    const fromIndex = find(["from", "sender"]);
+    const dateIndex = find(["date", "time"]);
+    if (contentIndex < 0) throw new Error("Could not find a message/content column in this CSV.");
+    const first = contactName.toLowerCase().split(" ")[0];
+    return rows.map((cells) => ({
+      id: uid(), sender: String(cells[fromIndex] || "").toLowerCase().includes(first) ? "them" : "me",
+      text: cells[contentIndex] || "", date: cells[dateIndex] || today(),
+    })).filter((item) => item.text.trim());
+  }
+  return text.split(/\n{2,}|\r?\n(?=(?:Me|You|Them|[A-Z][a-z]+):)/).map((line, index) => {
+    const trimmed = line.trim();
+    const fromThem = trimmed.toLowerCase().startsWith(contactName.toLowerCase().split(" ")[0]) || trimmed.toLowerCase().startsWith("them:");
+    return { id: uid(), sender: fromThem ? "them" as const : "me" as const, text: trimmed.replace(/^[^:]{1,30}:\s*/, ""), date: new Date(Date.now() - (100 - index) * 60000).toISOString() };
+  }).filter((item) => item.text);
+}
+
+function cleanTopic(text: string) {
+  const sentence = text.replace(/\s+/g, " ").split(/[.!?]/)[0].trim();
+  return sentence.length > 92 ? `${sentence.slice(0, 89)}…` : sentence.toLowerCase();
+}
+
+function createDrafts(contact: Contact, guide: Guidance, agenda: string): Draft[] {
+  const first = contact.name.split(" ")[0];
+  const incoming = [...contact.chat].reverse().find((message) => message.sender === "them")?.text || contact.notes || `their work at ${contact.company || "their organization"}`;
+  const topic = cleanTopic(incoming);
+  const purpose = agenda.trim() || guide.goal.trim() || "explore whether there is a useful way to collaborate";
+  const context = contact.company ? `your work at ${contact.company}` : "the work you are doing";
+  const cta = guide.callToAction.trim() || "Would a short conversation next week be useful?";
+  const background = guide.background.trim() || "I am exploring a practical collaboration that could be useful to both sides.";
+  return [
+    {
+      id: uid(), label: "Warm & contextual",
+      text: `Hi ${first} — your note about ${topic || context} stayed with me. ${background} I’d value your perspective as I ${purpose.toLowerCase()}. ${cta.endsWith("?") ? cta : `${cta}?`}`,
+      rationale: "Builds from the latest message before introducing your agenda.",
+    },
+    {
+      id: uid(), label: "Direct & concise",
+      text: `Hi ${first}, I’ve been thinking about ${context} and a possible fit around ${purpose.toLowerCase()}. ${background} ${cta.endsWith("?") ? cta : `${cta}?`}`,
+      rationale: "States the relevance early and keeps the request easy to evaluate.",
+    },
+    {
+      id: uid(), label: "Curious & low-pressure",
+      text: `Hi ${first} — I’m curious how you’re thinking about ${topic || "this area"} now. I’m working toward ${purpose.toLowerCase()}, and your experience would be genuinely helpful. No pitch — ${cta.charAt(0).toLowerCase()}${cta.slice(1).replace(/\?$/, "")}?`,
+      rationale: "Leads with a thoughtful question and reduces perceived pressure.",
+    },
+  ];
+}
+
+export default function ChatHelpApp() {
+  const [contacts, setContacts] = useState<Contact[]>(starterContacts);
+  const [activeId, setActiveId] = useState(starterContacts[0].id);
+  const [guide, setGuide] = useState<Guidance>(defaultGuidance);
+  const [agenda, setAgenda] = useState("See whether a small pilot could help Northstar identify warm partnership opportunities from existing conversations.");
+  const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [feedback, setFeedback] = useState<Feedback[]>([]);
+  const [ready, setReady] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [showPrivacy, setShowPrivacy] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [linkedIn, setLinkedIn] = useState<LinkedInStatus>({ configured: false, connected: false });
+
+  const active = contacts.find((contact) => contact.id === activeId) || contacts[0];
+  const latestMessages = active?.chat.slice(-8) || [];
+  const positive = feedback.filter((item) => item.vote === "up").length;
+  const score = feedback.length ? Math.round((positive / feedback.length) * 100) : 0;
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("chathelp-private-v1");
+      if (saved) {
+        const data = JSON.parse(saved);
+        if (data.contacts?.length) { setContacts(data.contacts); setActiveId(data.contacts[0].id); }
+        if (data.guide) setGuide(data.guide);
+        if (data.feedback) setFeedback(data.feedback);
+      }
+    } catch { setNotice("Your saved workspace could not be read. A fresh workspace was opened."); }
+    setReady(true);
+    fetch("/api/linkedin/status").then((response) => response.json()).then(setLinkedIn).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (ready) localStorage.setItem("chathelp-private-v1", JSON.stringify({ contacts, guide, feedback }));
+  }, [contacts, guide, feedback, ready]);
+
+  useEffect(() => { if (active) setDrafts(createDrafts(active, guide, agenda)); }, [activeId]);
+
+  const contextStrength = useMemo(() => {
+    if (!active) return 0;
+    return Math.min(100, 15 + Math.min(active.chat.length * 7, 42) + (active.headline ? 12 : 0) + (active.notes ? 12 : 0) + (guide.goal ? 10 : 0) + (agenda ? 9 : 0));
+  }, [active, guide.goal, agenda]);
+
+  function updateContact(patch: Partial<Contact>) {
+    setContacts((items) => items.map((item) => item.id === activeId ? { ...item, ...patch } : item));
+  }
+
+  async function importChat(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]; if (!file || !active) return;
+    try {
+      const imported = messagesFromFile(await file.text(), file.name, active.name);
+      updateContact({ chat: [...active.chat, ...imported].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()) });
+      setNotice(`${imported.length} messages imported locally. Nothing was uploaded.`);
+    } catch (error) { setNotice(error instanceof Error ? error.message : "This chat file could not be imported."); }
+    event.target.value = "";
+  }
+
+  async function importProfile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]; if (!file || !active) return;
+    try {
+      const text = await file.text();
+      if (file.name.toLowerCase().endsWith(".json")) {
+        const item = JSON.parse(text);
+        updateContact({ name: item.name || active.name, headline: item.headline || item.title || active.headline, company: item.company || active.company, location: item.location || active.location, profileUrl: item.profileUrl || item.url || active.profileUrl, notes: item.notes || item.summary || active.notes });
+      } else updateContact({ notes: `${active.notes}\n${text}`.trim() });
+      setNotice("Profile context added to this device-only workspace.");
+    } catch { setNotice("This profile file could not be read."); }
+    event.target.value = "";
+  }
+
+  function addContact(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const contact: Contact = { id: uid(), name: String(form.get("name") || "New contact"), headline: String(form.get("headline") || ""), company: String(form.get("company") || ""), location: String(form.get("location") || ""), relationship: String(form.get("relationship") || ""), profileUrl: String(form.get("profileUrl") || ""), notes: String(form.get("notes") || ""), chat: [] };
+    setContacts((items) => [...items, contact]); setActiveId(contact.id); setShowAdd(false); setDrafts([]);
+  }
+
+  function vote(draft: Draft, voteValue: "up" | "down") {
+    setFeedback((items) => [...items, { draftId: draft.id, contactId: activeId, vote: voteValue, label: draft.label, at: today() }]);
+    setNotice(voteValue === "up" ? "Saved as a useful pattern for future drafts." : "Noted. Future guidance will favor other structures.");
+  }
+
+  function eraseWorkspace() {
+    localStorage.removeItem("chathelp-private-v1"); setContacts([]); setFeedback([]); setDrafts([]); setShowPrivacy(false); setNotice("All ChatHelp data was erased from this browser.");
+  }
+
+  if (!ready) return <main className="loading-screen"><div className="pulse-mark">CH</div><p>Opening your private workspace…</p></main>;
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <a className="brand" href="#top"><span className="brand-mark">CH</span><span>ChatHelp<small>Private relationship intelligence</small></span></a>
+        <div className="top-actions">
+          <span className="local-badge"><i /> Device-only data</span>
+          <button className="button ghost" onClick={() => setShowPrivacy(true)}>Privacy center</button>
+          {linkedIn.connected ? <span className="linkedin-connected"><b>in</b> {linkedIn.profile?.name || "LinkedIn connected"}</span> : <a className="button linkedin" href="/api/linkedin/auth"><b>in</b> Link LinkedIn</a>}
+        </div>
+      </header>
+
+      {notice && <div className="toast" role="status"><span>{notice}</span><button onClick={() => setNotice("")} aria-label="Dismiss">×</button></div>}
+
+      <section className="workspace" id="top">
+        <aside className="people-panel">
+          <div className="panel-heading"><div><span className="eyebrow">People</span><h2>Your conversations</h2></div><button className="icon-button" onClick={() => setShowAdd(true)} aria-label="Add person">+</button></div>
+          <label className="search-box"><span>⌕</span><input placeholder="Search people" aria-label="Search people" /></label>
+          <div className="contact-list">
+            {contacts.map((contact) => <button key={contact.id} className={`contact-card ${contact.id === activeId ? "active" : ""}`} onClick={() => setActiveId(contact.id)}>
+              <span className="avatar">{contact.name.split(" ").map((word) => word[0]).slice(0, 2).join("")}</span>
+              <span><strong>{contact.name}</strong><small>{contact.headline || contact.company || "Add profile context"}</small></span>
+              <i>{contact.chat.length}</i>
+            </button>)}
+            {!contacts.length && <div className="empty-small"><strong>No people yet</strong><p>Add one person to begin.</p></div>}
+          </div>
+          <div className="privacy-card"><span className="lock">⌾</span><div><strong>Your data stays here</strong><p>Profiles, chats, guidance, and feedback are stored only in this browser.</p></div></div>
+        </aside>
+
+        {active ? <>
+          <section className="conversation-panel">
+            <div className="person-header">
+              <span className="avatar large">{active.name.split(" ").map((word) => word[0]).slice(0, 2).join("")}</span>
+              <div><span className="eyebrow">Selected relationship</span><h1>{active.name}</h1><p>{[active.headline, active.company, active.location].filter(Boolean).join(" · ") || "Add profile details for stronger suggestions"}</p></div>
+              {active.profileUrl && <a className="external-link" href={active.profileUrl} target="_blank" rel="noreferrer">View profile ↗</a>}
+            </div>
+
+            <div className="context-strip">
+              <div><span>Context strength</span><strong>{contextStrength}%</strong></div><div className="meter"><i style={{ width: `${contextStrength}%` }} /></div>
+              <button onClick={() => setShowGuide(true)}>Improve context</button>
+            </div>
+
+            <div className="chat-window">
+              <div className="section-title"><div><span className="eyebrow">Conversation</span><h2>Recent history</h2></div><label className="button subtle upload">Import chat<input type="file" accept=".csv,.json,.txt" onChange={importChat} /></label></div>
+              {latestMessages.length ? <div className="message-list">{latestMessages.map((message) => <div key={message.id} className={`message-row ${message.sender}`}><div className="message"><span>{message.sender === "me" ? "You" : active.name.split(" ")[0]}</span><p>{message.text}</p><time>{new Date(message.date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time></div></div>)}</div> : <div className="empty-chat"><strong>No chat history yet</strong><p>Import a LinkedIn data export, CSV, JSON, or pasted text file for this person.</p></div>}
+            </div>
+
+            <div className="profile-context">
+              <div><span className="eyebrow">Profile context</span><h2>What should ChatHelp know?</h2><p>{active.notes || "Add role, interests, shared history, and anything relevant to this outreach."}</p></div>
+              <label className="button ghost upload">Add profile file<input type="file" accept=".json,.txt,.md" onChange={importProfile} /></label>
+            </div>
+          </section>
+
+          <aside className="coach-panel">
+            <div className="coach-intro"><span className="eyebrow accent">Private drafting studio</span><h2>Turn context into a thoughtful next message.</h2><p>Three approaches, grounded in this relationship—not generic outreach.</p></div>
+            <label className="field"><span>What do you want to accomplish?</span><textarea value={agenda} onChange={(event) => setAgenda(event.target.value)} rows={3} /></label>
+            <div className="guide-summary"><div><span>Your guidance</span><strong>{guide.tone}</strong><p>{guide.goal}</p></div><button onClick={() => setShowGuide(true)}>Edit</button></div>
+            <button className="button primary generate" onClick={() => setDrafts(createDrafts(active, guide, agenda))}><span>✦</span> Generate 3 private drafts</button>
+
+            <div className="draft-list">
+              {drafts.map((draft, index) => <article className="draft-card" key={draft.id}>
+                <div className="draft-top"><span><i>{index + 1}</i>{draft.label}</span><button onClick={() => { navigator.clipboard.writeText(draft.text); setNotice("Draft copied."); }}>Copy</button></div>
+                <p>{draft.text}</p>
+                <small>{draft.rationale}</small>
+                <div className="draft-actions"><span>Would you send this?</span><button onClick={() => vote(draft, "up")} aria-label="Useful draft">Yes</button><button onClick={() => vote(draft, "down")} aria-label="Not useful">Not yet</button></div>
+              </article>)}
+            </div>
+
+            <div className="learning-card"><div className="learning-head"><span className="spark">✦</span><div><span className="eyebrow">Response memory</span><h3>{feedback.length ? `${score}% useful so far` : "Learning starts with your feedback"}</h3></div></div>
+              <ul><li>Uses the latest message before introducing your goal</li><li>Respects your “{guide.tone}” voice</li><li>{feedback.length ? `${feedback.length} draft ratings saved on this device` : "Rate drafts to improve future structures"}</li></ul>
+            </div>
+          </aside>
+        </> : <section className="no-contact"><span className="brand-mark">CH</span><h1>Add a person to start</h1><p>ChatHelp works one relationship at a time so you control exactly what context is used.</p><button className="button primary" onClick={() => setShowAdd(true)}>Add your first person</button></section>}
+      </section>
+
+      <footer><span>ChatHelp MVP · Private by design</span><span>LinkedIn is a registered trademark of LinkedIn Corporation. ChatHelp is not affiliated with LinkedIn.</span></footer>
+
+      {showGuide && <div className="modal-backdrop" onMouseDown={() => setShowGuide(false)}><section className="drawer" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setShowGuide(false)}>×</button><span className="eyebrow accent">Personal guidance</span><h2>Teach ChatHelp how you communicate.</h2><p>This document stays on your device and influences every suggestion.</p>
+        <label className="field"><span>Your role or point of view</span><input value={guide.role} onChange={(event) => setGuide({ ...guide, role: event.target.value })} /></label>
+        <label className="field"><span>Primary goal</span><textarea rows={2} value={guide.goal} onChange={(event) => setGuide({ ...guide, goal: event.target.value })} /></label>
+        <label className="field"><span>Tone</span><input value={guide.tone} onChange={(event) => setGuide({ ...guide, tone: event.target.value })} /></label>
+        <label className="field"><span>Your background / value</span><textarea rows={3} value={guide.background} onChange={(event) => setGuide({ ...guide, background: event.target.value })} /></label>
+        <label className="field"><span>Boundaries</span><textarea rows={2} value={guide.boundaries} onChange={(event) => setGuide({ ...guide, boundaries: event.target.value })} /></label>
+        <label className="field"><span>Preferred call to action</span><input value={guide.callToAction} onChange={(event) => setGuide({ ...guide, callToAction: event.target.value })} /></label>
+        <button className="button primary" onClick={() => { setShowGuide(false); if (active) setDrafts(createDrafts(active, guide, agenda)); }}>Save guidance</button>
+      </section></div>}
+
+      {showAdd && <div className="modal-backdrop"><form className="modal" onSubmit={addContact}><button type="button" className="modal-close" onClick={() => setShowAdd(false)}>×</button><span className="eyebrow accent">New relationship</span><h2>Add one person</h2><p>Only add people whose context you want ChatHelp to use.</p><div className="form-grid"><label className="field"><span>Name</span><input name="name" required autoFocus /></label><label className="field"><span>Company</span><input name="company" /></label><label className="field full"><span>Headline / role</span><input name="headline" /></label><label className="field"><span>Location</span><input name="location" /></label><label className="field"><span>Relationship</span><input name="relationship" /></label><label className="field full"><span>LinkedIn profile URL</span><input name="profileUrl" type="url" /></label><label className="field full"><span>Notes and shared context</span><textarea name="notes" rows={3} /></label></div><button className="button primary" type="submit">Create private workspace</button></form></div>}
+
+      {showPrivacy && <div className="modal-backdrop"><section className="modal privacy-modal"><button className="modal-close" onClick={() => setShowPrivacy(false)}>×</button><span className="eyebrow accent">Privacy center</span><h2>You remain in control.</h2><div className="privacy-points"><article><b>01</b><div><strong>Local by default</strong><p>Imported messages, profiles, guidance, drafts, and ratings stay in this browser’s local storage.</p></div></article><article><b>02</b><div><strong>One person at a time</strong><p>Only the selected person’s context is used to create a response.</p></div></article><article><b>03</b><div><strong>LinkedIn-aware, not a scraper</strong><p>Identity linking uses official sign-in. Restricted LinkedIn messages and profiles are never scraped.</p></div></article></div><button className="danger-link" onClick={eraseWorkspace}>Erase all local ChatHelp data</button></section></div>}
+    </main>
+  );
+}
