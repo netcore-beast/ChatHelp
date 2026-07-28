@@ -6,6 +6,7 @@ import { buildOutcomeSummary, selectRelevantContext, validateContextFile } from 
 import { captureVisibleScreen, extractTextFromImage } from "@/lib/localOcr";
 import { generatePrivateDrafts, unloadPrivateModel } from "@/lib/privateAi";
 import { PLATFORM_OPTIONS, platformLabel, safePlatformUrl } from "@/lib/platforms";
+import { LinkedInTestWizard } from "@/components/LinkedInTestWizard";
 import { PwaInstall } from "@/components/PwaInstall";
 import {
   createVault,
@@ -159,6 +160,7 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
   const [saveStatus, setSaveStatus] = useState("Encrypted");
   const [newContactName, setNewContactName] = useState("");
   const [newPlatform, setNewPlatform] = useState<ConversationPlatform>("linkedin");
+  const [wizardOpen, setWizardOpen] = useState(false);
   const [agenda, setAgenda] = useState("");
   const [drafts, setDrafts] = useState<string[]>([]);
   const [aiStatus, setAiStatus] = useState("");
@@ -188,9 +190,43 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
     setWorkspace((current) => updater(current));
   }
 
+  function updateContactById(contactId: string, updater: (current: Contact) => Contact) {
+    updateWorkspace((current) => ({
+      ...current,
+      contacts: current.contacts.map((item) => item.id === contactId ? updater(item) : item),
+    }));
+  }
+
   function updateContact(updater: (current: Contact) => Contact) {
     if (!contact) return;
-    updateWorkspace((current) => ({ ...current, contacts: current.contacts.map((item) => item.id === contact.id ? updater(item) : item) }));
+    updateContactById(contact.id, updater);
+  }
+
+  function saveWizardProfile(profile: { name: string; headline: string; notes: string }): string {
+    const existingId = contact?.platform === "linkedin" ? contact.id : "";
+    const contactId = existingId || newId("contact");
+    const nextContact: Contact = {
+      id: contactId,
+      name: profile.name.trim() || "LinkedIn contact",
+      headline: profile.headline.trim(),
+      profileNotes: profile.notes.trim(),
+      platform: "linkedin",
+      platformUrl: "",
+      chat: [],
+      documents: [],
+      outcomes: [],
+      retentionDays: 90,
+    };
+
+    updateWorkspace((current) => ({
+      ...current,
+      contacts: current.contacts.some((item) => item.id === contactId)
+        ? current.contacts.map((item) => item.id === contactId ? { ...item, name: nextContact.name, headline: nextContact.headline, profileNotes: nextContact.profileNotes, platform: "linkedin" } : item)
+        : [...current.contacts, nextContact],
+    }));
+    setSelectedId(contactId);
+    setDrafts([]);
+    return contactId;
   }
 
   function addContact() {
@@ -245,29 +281,42 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
     if (documentRef.current) documentRef.current.value = "";
   }
 
-  async function captureContext() {
-    if (!contact) return;
+  async function captureContextFor(contactId: string) {
     setAppError("");
     try {
       setAiStatus("Waiting for you to choose a visible window or tab…");
       const image = await captureVisibleScreen();
       const text = await extractTextFromImage(image, setAiStatus);
       if (!text) throw new Error("No readable text was found in the selected screen.");
-      updateContact((current) => ({ ...current, documents: [...current.documents, { id: newId("capture"), name: "User-selected screen capture", text: text.slice(0, 100_000), createdAt: new Date().toISOString() }] }));
+      updateContactById(contactId, (current) => ({
+        ...current,
+        documents: [...current.documents, { id: newId("capture"), name: "User-selected screen capture", text: text.slice(0, 100_000), createdAt: new Date().toISOString() }],
+      }));
       setAiStatus("Capture processed locally and encrypted.");
     } catch (error) {
       setAiStatus("");
       setAppError(formatError(error));
+      throw error;
     }
+  }
+
+  async function captureContext() {
+    if (!contact) return;
+    try { await captureContextFor(contact.id); } catch { /* The user-facing error is already shown. */ }
+  }
+
+  function importChatFor(contactId: string, text: string) {
+    if (!text.trim()) return;
+    const messages = text.split(/\n+/).map((line) => line.trim()).filter(Boolean).map((line, index) => {
+      const mine = /^(me|i):\s*/i.test(line);
+      return { id: newId("message"), role: mine ? "me" as const : "them" as const, body: line.replace(/^[^:]{1,40}:\s*/, "").slice(0, 20_000), createdAt: new Date(Date.now() + index).toISOString() };
+    });
+    updateContactById(contactId, (current) => ({ ...current, chat: [...current.chat, ...messages].slice(-1000) }));
   }
 
   function importChat() {
     if (!contact || !chatPaste.trim()) return;
-    const messages = chatPaste.split(/\n+/).map((line) => line.trim()).filter(Boolean).map((line, index) => {
-      const mine = /^(me|i):\s*/i.test(line);
-      return { id: newId("message"), role: mine ? "me" as const : "them" as const, body: line.replace(/^[^:]{1,40}:\s*/, "").slice(0, 20_000), createdAt: new Date(Date.now() + index).toISOString() };
-    });
-    updateContact((current) => ({ ...current, chat: [...current.chat, ...messages].slice(-1000) }));
+    importChatFor(contact.id, chatPaste);
     setChatPaste("");
   }
 
@@ -277,21 +326,23 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
     setMessageBody("");
   }
 
-  async function generate() {
-    if (!contact || !agenda.trim()) return;
+  async function generate(agendaOverride?: string, contactIdOverride?: string) {
+    const activeContact = workspace.contacts.find((item) => item.id === contactIdOverride) ?? contact;
+    const requestAgenda = (agendaOverride ?? agenda).trim();
+    if (!activeContact || !requestAgenda) return;
     setAppError("");
     setDrafts([]);
     try {
-      const query = [agenda, contact.profileNotes, contact.chat.slice(-8).map((item) => item.body).join(" ")].join(" ");
-      const relevant = selectRelevantContext(contact.documents, query);
-      const feedbackSummary = workspace.feedback.filter((item) => item.contactId === contact.id).slice(-20).map((item) => item.rating + ": " + item.note).join("\n");
+      const query = [requestAgenda, activeContact.profileNotes, activeContact.chat.slice(-8).map((item) => item.body).join(" ")].join(" ");
+      const relevant = selectRelevantContext(activeContact.documents, query);
+      const feedbackSummary = workspace.feedback.filter((item) => item.contactId === activeContact.id).slice(-20).map((item) => item.rating + ": " + item.note).join("\n");
       const nextDrafts = await generatePrivateDrafts(workspace.modelId, {
-        contact,
+        contact: activeContact,
         guidance: workspace.guidance,
-        latestQuestion: agenda,
+        latestQuestion: requestAgenda,
         retrievedContext: relevant,
         feedbackSummary,
-        outcomeSummary: buildOutcomeSummary(contact),
+        outcomeSummary: buildOutcomeSummary(activeContact),
       }, setAiStatus);
       setDrafts(nextDrafts);
       setAiStatus("Generated locally. Nothing was sent to a message API.");
@@ -321,7 +372,7 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
     <main className="app-shell">
       <header className="topbar">
         <div><p className="eyebrow">CHATHELP</p><h1>Private conversation studio</h1></div>
-        <div className="top-actions"><PwaInstall /><span className="save-state">● {saveStatus}</span><button onClick={() => void downloadBackup()}>Encrypted backup</button><button onClick={onLock}>Lock</button></div>
+        <div className="top-actions"><button className="wizard-launch" data-testid="open-linkedin-test-wizard" onClick={() => setWizardOpen(true)}>Guided LinkedIn test</button><PwaInstall /><span className="save-state">● {saveStatus}</span><button onClick={() => void downloadBackup()}>Encrypted backup</button><button onClick={onLock}>Lock</button></div>
       </header>
       <div className="privacy-strip"><strong>Private mode:</strong> prompts and generated drafts stay in this browser. Model weights are downloaded from the pinned model host on first use; OCR assets are served by ChatHelp. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
       {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
@@ -357,7 +408,7 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
               <h3>Retention</h3>
               <label>Automatically remove dated context after<select value={contact.retentionDays} onChange={(event) => updateContact((current) => ({ ...current, retentionDays: Number(event.target.value) as Contact["retentionDays"] }))}><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option><option value={0}>Keep until I delete it</option></select></label>
             </div>
-          </> : <div className="empty-state"><div className="brand-mark">1</div><h2>Add a person to begin</h2><p>Only context you deliberately paste, import, or capture will be used.</p></div>}
+          </> : <div className="empty-state"><div className="brand-mark">1</div><h2>Add a person to begin</h2><p>Only context you deliberately paste, import, or capture will be used.</p><button className="primary" onClick={() => setWizardOpen(true)}>Start guided LinkedIn test</button></div>}
         </section>
 
         <section className="draft-panel">
@@ -381,6 +432,22 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
         </section>
       </div>
       <footer><span>ChatHelp never sends platform messages or email automatically.</span><button className="danger-link" onClick={() => void eraseEverything()}>Erase all local data</button></footer>
+      {wizardOpen && <LinkedInTestWizard
+        initialContact={contact}
+        guidance={workspace.guidance}
+        drafts={drafts}
+        aiStatus={aiStatus}
+        onClose={() => setWizardOpen(false)}
+        onSaveProfile={saveWizardProfile}
+        onCapture={captureContextFor}
+        onImportChat={importChatFor}
+        onGuidanceChange={(field, value) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, [field]: value } }))}
+        onGenerate={async (contactId, nextAgenda) => {
+          setSelectedId(contactId);
+          setAgenda(nextAgenda);
+          await generate(nextAgenda, contactId);
+        }}
+      />}
       <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Your content:</strong> no chat, profile notes, guidance, outcomes, or drafts are intentionally sent to ChatHelp, any messaging or email platform, or an AI API.</li><li><strong>Model download:</strong> pinned public model files are fetched on first use. The model host sees normal download metadata such as IP address; it does not receive your prompts.</li><li><strong>Screen capture:</strong> the browser asks you to choose a screen. OCR runs locally with self-hosted assets, and only extracted text is encrypted.</li><li><strong>Limits:</strong> browser malware, a compromised origin, or someone who knows your passphrase can still expose data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
     </main>
   );

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { platformLabel, safePlatformUrl } from "@/lib/platforms";
+import { platformLabel, safeLinkedInProfileUrl, safePlatformUrl } from "@/lib/platforms";
 import type { Contact } from "@/lib/workspaceTypes";
 
 const contact = (platform: Contact["platform"], platformUrl = ""): Contact => ({
@@ -31,5 +31,13 @@ describe("platform handoff", () => {
   it("provides safe labels for migrated and unknown values", () => {
     expect(platformLabel("gmail")).toBe("Gmail");
     expect(platformLabel(undefined)).toBe("LinkedIn");
+  });
+
+  it("accepts only direct HTTPS LinkedIn member profile links", () => {
+    expect(safeLinkedInProfileUrl("https://linkedin.com/in/alex-example/?trk=test#about")).toBe("https://www.linkedin.com/in/alex-example");
+    expect(safeLinkedInProfileUrl("http://www.linkedin.com/in/alex-example")).toBeNull();
+    expect(safeLinkedInProfileUrl("https://example.com/in/alex-example")).toBeNull();
+    expect(safeLinkedInProfileUrl("https://www.linkedin.com/company/example")).toBeNull();
+    expect(safeLinkedInProfileUrl("javascript:alert(1)")).toBeNull();
   });
 });

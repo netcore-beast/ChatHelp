@@ -6,7 +6,7 @@ import { createEmptyWorkspace, type Contact } from "../src/lib/workspaceTypes";
 
 const now = Date.parse("2026-07-28T12:00:00.000Z");
 const contact: Contact = {
-  id: "c1", name: "Alex", headline: "VP Partnerships", profileNotes: "Works in logistics", retentionDays: 30,
+  id: "c1", name: "Alex", headline: "VP Partnerships", profileNotes: "Works in logistics", platform: "linkedin", platformUrl: "", retentionDays: 30,
   chat: [
     { id: "old", role: "them", body: "old", createdAt: "2026-06-01T00:00:00.000Z" },
     { id: "new", role: "them", body: "new", createdAt: "2026-07-20T00:00:00.000Z" },

@@ -13,7 +13,36 @@ const DEFAULT_URLS: Record<Exclude<ConversationPlatform, "other">, string> = {
   outlook: "https://outlook.office.com/mail/",
 };
 
-export function platformLabel(platform: ConversationPlatform): string {
+export function safeLinkedInProfileUrl(value: string): string | null {
+  if (!value.trim()) return null;
+
+  try {
+    const url = new URL(value.trim());
+    const host = url.hostname.toLowerCase();
+    const normalizedPath = url.pathname.replace(/\/+$/, "");
+    const pathParts = normalizedPath.split("/").filter(Boolean);
+
+    if (
+      url.protocol !== "https:" ||
+      (host !== "linkedin.com" && host !== "www.linkedin.com") ||
+      pathParts.length !== 2 ||
+      pathParts[0] !== "in" ||
+      !pathParts[1]
+    ) {
+      return null;
+    }
+
+    url.hostname = "www.linkedin.com";
+    url.pathname = normalizedPath;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+export function platformLabel(platform: ConversationPlatform | undefined): string {
   return PLATFORM_OPTIONS.find((option) => option.value === platform)?.shortLabel ?? "LinkedIn";
 }
 

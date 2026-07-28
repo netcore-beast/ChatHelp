@@ -50,3 +50,8 @@ See [docs/NATIVE_PACKAGING.md](docs/NATIVE_PACKAGING.md) for artifact and signin
 ## Important product boundary
 
 ChatHelp is a drafting assistant, not a messaging automation client. It does not bypass platform APIs, scrape accounts, inject into third-party pages, or send messages. This reduces privacy and account-risk concerns and keeps the user in control.
+
+
+## Guided LinkedIn profile test
+
+After unlocking the vault, choose **Guided LinkedIn test** to walk through one explicitly selected profile and conversation. The profile URL is temporary, context capture/paste is user-directed, generation is local, and the final message is reviewed and sent manually. See [docs/LINKEDIN_TEST_WIZARD.md](docs/LINKEDIN_TEST_WIZARD.md).
