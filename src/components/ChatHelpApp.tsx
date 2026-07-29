@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyRetention } from "@/lib/retention";
 import { buildOutcomeSummary, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
 import { captureVisibleScreen, extractTextFromImage } from "@/lib/localOcr";
-import { generatePrivateDrafts, unloadPrivateModel } from "@/lib/privateAi";
+import { CPU_FALLBACK_MODEL_ID, generatePrivateDrafts, unloadPrivateModel } from "@/lib/privateAi";
 import { PLATFORM_OPTIONS, platformLabel, safePlatformUrl } from "@/lib/platforms";
 import { LinkedInTestWizard } from "@/components/LinkedInTestWizard";
 import { PwaInstall } from "@/components/PwaInstall";
@@ -452,10 +452,10 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
           <div className="panel-card compose-card">
             <p className="eyebrow">PRIVATE AI</p><h2>Draft the next reply</h2>
             <label>Question or agenda<textarea value={agenda} onChange={(event) => setAgenda(event.target.value)} placeholder="What did they ask, and what do you want this reply to accomplish?" /></label>
-            <label>Local model<select value={workspace.modelId} onChange={(event) => updateWorkspace((current) => ({ ...current, modelId: event.target.value }))}><option value="Llama-3.2-3B-Instruct-q4f16_1-MLC">Llama 3.2 3B · stronger</option><option value="Llama-3.2-1B-Instruct-q4f16_1-MLC">Llama 3.2 1B · lighter</option></select></label>
+            <label>Local model<select value={workspace.modelId} onChange={(event) => updateWorkspace((current) => ({ ...current, modelId: event.target.value }))}><option value="Llama-3.2-3B-Instruct-q4f16_1-MLC">Llama 3.2 3B · stronger WebGPU</option><option value="Llama-3.2-1B-Instruct-q4f16_1-MLC">Llama 3.2 1B · lighter WebGPU</option><option value={CPU_FALLBACK_MODEL_ID}>Qwen 2.5 0.5B · maximum compatibility CPU/WASM</option></select></label>
             <button className="primary" disabled={!contact || !agenda.trim() || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("Capture processed"))} onClick={() => void generate()}>Generate 3 private drafts</button>
             {aiStatus && <p className="status" aria-live="polite">{aiStatus}</p>}
-            <p className="fine-print">First use downloads pinned model weights. Generation then runs in a dedicated browser worker. Review every draft before sending.</p>
+            <p className="fine-print">Uses the selected Llama model with WebGPU, or choose Qwen CPU/WASM for maximum compatibility. If WebGPU is unavailable, ChatHelp switches to CPU/WASM automatically. First use downloads pinned weights; prompts never go to the model host. Review every draft before sending.</p>
           </div>
           <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={draft + index}><div><span>OPTION {index + 1}</span><div><button onClick={() => void navigator.clipboard.writeText(draft)}>Copy</button><button title="Useful" onClick={() => rateDraft(draft, "useful")}>👍</button><button title="Not useful" onClick={() => rateDraft(draft, "not-useful")}>👎</button></div></div><p>{draft}</p></article>)}</div>
           {contact && <div className="panel-card compact"><h3>Conversation outcome</h3><div className="inline-form"><select value={outcomeResult} onChange={(event) => setOutcomeResult(event.target.value as typeof outcomeResult)}><option value="positive">Positive</option><option value="neutral">Neutral</option><option value="negative">Negative</option></select><input value={outcomeNote} onChange={(event) => setOutcomeNote(event.target.value)} placeholder="What worked or went wrong?" /><button onClick={addOutcome}>Save</button></div></div>}
