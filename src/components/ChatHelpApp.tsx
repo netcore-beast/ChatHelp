@@ -30,6 +30,19 @@ import {
 
 const LEGACY_KEY = "chathelp-private-v2";
 const AUTO_LOCK_MS = 15 * 60 * 1000;
+const STORAGE_CHECK_TIMEOUT_MS = 8_000;
+
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Secure browser storage did not respond in time.")), timeoutMs);
+  });
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : "Something unexpected happened.";
@@ -42,16 +55,33 @@ export default function ChatHelpApp() {
   const [passphrase, setPassphrase] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [error, setError] = useState("");
+  const [startupError, setStartupError] = useState("");
   const [busy, setBusy] = useState(false);
   const [legacy, setLegacy] = useState<WorkspaceData | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    let active = true;
     void (async () => {
-      setExists(await vaultExists());
-      setLegacy(parseLegacyWorkspace(localStorage.getItem(LEGACY_KEY)));
-      setChecking(false);
+      try {
+        const found = await withTimeout(vaultExists(), STORAGE_CHECK_TIMEOUT_MS);
+        let legacyWorkspace: WorkspaceData | null = null;
+        try {
+          legacyWorkspace = parseLegacyWorkspace(localStorage.getItem(LEGACY_KEY));
+        } catch {
+          // Legacy localStorage is optional. The encrypted IndexedDB vault remains the source of truth.
+        }
+        if (active) {
+          setExists(found);
+          setLegacy(legacyWorkspace);
+        }
+      } catch (caught) {
+        if (active) setStartupError(formatError(caught));
+      } finally {
+        if (active) setChecking(false);
+      }
     })();
+    return () => { active = false; };
   }, []);
 
   const lock = useCallback(() => {
@@ -122,6 +152,7 @@ export default function ChatHelpApp() {
   }
 
   if (checking) return <main className="vault-shell"><section className="vault-card"><p>Checking this browser for an encrypted workspace…</p></section></main>;
+  if (startupError) return <main className="vault-shell"><section className="vault-card" aria-labelledby="storage-error-title"><div className="brand-mark" aria-hidden="true">!</div><p className="eyebrow">SECURE STORAGE UNAVAILABLE</p><h1 id="storage-error-title">ChatHelp could not open the encrypted workspace.</h1><p className="lede">Close other ChatHelp tabs or installed-app windows, confirm this site is allowed to store data, then retry. Your existing encrypted data has not been erased.</p><p className="error" role="alert">{startupError}</p><button className="primary" onClick={() => window.location.reload()}>Retry secure storage</button><p className="fine-print">Do not clear site data if you need an existing vault. If this continues, copy the browser console error for support.</p></section></main>;
   if (unlocked) return <UnlockedWorkspace initial={unlocked.workspace} session={unlocked.session} onLock={lock} />;
 
   return (

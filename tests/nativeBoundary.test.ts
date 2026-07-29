@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { injectCspIntoHtml } from "../scripts/inject-static-csp.mjs";
 
 const read = (path: string) => readFileSync(path, "utf8");
 
@@ -28,5 +30,15 @@ describe("installable client boundaries", () => {
     expect(worker).toContain('request.method !== "GET"');
     expect(worker).not.toContain("indexedDB");
     expect(worker).not.toContain("localStorage");
+  });
+
+  it("hash-authorizes static bootstrap scripts without unsafe-inline", () => {
+    const source = "self.__next_f.push(['test'])";
+    const hash = createHash("sha256").update(source, "utf8").digest("base64");
+    const html = injectCspIntoHtml(`<html><head></head><body><script>${source}</script><script src="/_next/app.js"></script></body></html>`);
+    expect(html).toContain('http-equiv="Content-Security-Policy"');
+    expect(html).toContain(`'sha256-${hash}'`);
+    expect(html).toContain("script-src 'self' 'wasm-unsafe-eval'");
+    expect(html).not.toContain("script-src 'self' 'unsafe-inline'");
   });
 });

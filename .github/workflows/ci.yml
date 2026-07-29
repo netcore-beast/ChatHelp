@@ -22,4 +22,12 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      - name: Verify live CSP and hydration bootstrap
+        run: |
+          npm start > /tmp/chathelp-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID' EXIT
+          npm run verify:live-csp
+      - run: npm run build:native
+      - run: npm run verify:static-csp
       - run: npm audit --omit=dev --audit-level=high

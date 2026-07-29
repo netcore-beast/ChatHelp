@@ -28,6 +28,13 @@ OCR worker, WebAssembly engine, and English language files are copied into the a
 - No analytics, advertising SDK, telemetry endpoint, remote OCR, or remote code execution.
 - CI lint, unit tests, encrypted-vault tamper tests, DOM workflow tests, production build, and production dependency audit.
 
+## Browser startup protection
+
+- The server-rendered web app issues a unique CSP nonce for each request and authorizes only the matching Next.js scripts.
+- Windows, Android, and other static packages receive a build-time SHA-256 allow-list for every inline bootstrap script.
+- Secure-storage startup is time-bounded. If IndexedDB is blocked or unavailable, ChatHelp shows a recovery screen instead of waiting forever; retrying does not erase an existing vault.
+- Development origins are limited to localhost and GitHub Codespaces preview domains. This allow-list is only used by the development server.
+
 ## Honest limits
 
 No browser application can promise absolute security. Content is readable in memory while the vault is unlocked. A compromised application origin, malicious browser extension, device malware, someone with the passphrase, or a future dependency vulnerability could expose it. Browser storage can also be cleared by the user or operating system. Encryption does not protect a screen that another person can see.

@@ -34,14 +34,35 @@ function base64ToBytes(value: string): Uint8Array {
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
+    if (typeof indexedDB === "undefined") {
+      reject(new Error("This browser does not provide encrypted local storage."));
+      return;
+    }
+
     const request = indexedDB.open(DB_NAME, DB_VERSION);
+    let settled = false;
+    const finish = (action: () => void) => {
+      if (settled) return;
+      settled = true;
+      globalThis.clearTimeout(timer);
+      action();
+    };
+    const timer = globalThis.setTimeout(() => finish(() => reject(new Error("Secure browser storage did not respond. Close other ChatHelp tabs and retry."))), 8_000);
+
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(STORE_NAME)) {
         request.result.createObjectStore(STORE_NAME);
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("Unable to open secure storage"));
+    request.onsuccess = () => {
+      if (settled) {
+        request.result.close();
+        return;
+      }
+      finish(() => resolve(request.result));
+    };
+    request.onerror = () => finish(() => reject(request.error ?? new Error("Unable to open secure storage")));
+    request.onblocked = () => finish(() => reject(new Error("Secure storage is blocked by another ChatHelp tab. Close other ChatHelp windows and retry.")));
   });
 }
 
