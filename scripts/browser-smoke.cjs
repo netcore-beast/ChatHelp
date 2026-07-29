@@ -26,9 +26,9 @@ app.whenReady().then(async () => {
     show: false,
     webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: false },
   });
-  window.webContents.on("console-message", (_event, details) => {
-    const message = typeof details?.message === "string" ? details.message : String(details ?? "");
-    if (/Content Security Policy|Uncaught|ReferenceError|TypeError/i.test(message)) errors.push(message);
+  window.webContents.on("console-message", (event) => {
+    const message = typeof event.message === "string" ? event.message : "";
+    if (/Content Security Policy|hydration|hydrated but|Uncaught|ReferenceError|TypeError/i.test(message)) errors.push(message);
   });
   window.webContents.on("did-fail-load", (_event, code, description) => errors.push(`Load failed ${code}: ${description}`));
 

@@ -38,6 +38,12 @@ describe("deployment security boundary", () => {
     expect(layout).not.toContain('httpEquiv="Content-Security-Policy"');
   });
 
+  it("tolerates browser extensions changing root attributes before hydration", async () => {
+    const layout = await readFile("src/app/layout.tsx", "utf8");
+    expect(layout).toMatch(/<html[\s\S]*suppressHydrationWarning/);
+    expect(layout).toContain("<body suppressHydrationWarning>");
+  });
+
   it("packages OCR code, engine, and language data on the app origin", async () => {
     await expect(access("public/tesseract/worker.min.js")).resolves.toBeUndefined();
     await expect(access("public/tesseract-core/tesseract-core-lstm.wasm.js")).resolves.toBeUndefined();
