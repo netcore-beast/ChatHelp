@@ -1,3 +1,494 @@
 "use client";
-/* Local browser storage is restored after hydration and active-contact drafts are synchronized intentionally. */
-/* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */  import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";  type Message = { id: string; sender: "me" | "them"; text: string; date: string }; type Contact = {   id: string;   name: string;   headline: string;   company: string;   location: string;   relationship: string;   profileUrl: string;   notes: string;   chat: Message[]; }; type Guidance = {   role: string;   goal: string;   tone: string;   boundaries: string;   callToAction: string;   background: string; }; type Draft = { id: string; label: string; text: string; rationale: string }; type Feedback = { draftId: string; contactId: string; vote: "up" | "down"; label: string; at: string }; type LinkedInStatus = { configured: boolean; connected: boolean; profile?: { name?: string; picture?: string; email?: string } };  const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; const today = () => new Date().toISOString();  const starterContacts: Contact[] = [   {     id: "priya-demo",     name: "Priya Shah",     headline: "VP, Strategic Partnerships",     company: "Northstar Labs",     location: "Toronto, Canada",     relationship: "Former conference connection",     profileUrl: "",     notes: "Interested in practical AI adoption and partner-led growth. Example contact — replace with your own data.",     chat: [       { id: "p1", sender: "me", text: "Great meeting you at the growth forum, Priya. I enjoyed your point about starting partnerships with a narrow customer problem.", date: "2026-06-10T14:10:00Z" },       { id: "p2", sender: "them", text: "Likewise! The teams that define one measurable outcome usually move much faster. Happy to compare notes sometime.", date: "2026-06-10T16:42:00Z" },       { id: "p3", sender: "me", text: "I would like that. We have been helping small teams turn support conversations into qualified partnership signals.", date: "2026-06-12T13:05:00Z" },       { id: "p4", sender: "them", text: "That sounds relevant. We are reviewing how we identify partner opportunities without adding more admin for the team.", date: "2026-06-12T15:31:00Z" },     ],   }, ];  const defaultGuidance: Guidance = {   role: "Founder building a privacy-first relationship assistant",   goal: "Explore a small business partnership without sounding transactional",   tone: "Warm, concise, curious",   boundaries: "Do not exaggerate results. Avoid pressure, hype, or fake familiarity.",   callToAction: "Ask for a 20-minute conversation next week",   background: "We help professionals use conversation context to reach out thoughtfully while keeping private messages on their device.", };  function parseCsv(input: string) {   const rows: string[][] = [];   let row: string[] = [];   let value = "";   let quoted = false;   for (let i = 0; i < input.length; i += 1) {     const char = input[i];     if (char === '"' && quoted && input[i + 1] === '"') { value += '"'; i += 1; }     else if (char === '"') quoted = !quoted;     else if (char === "," && !quoted) { row.push(value); value = ""; }     else if ((char === "\n" || char === "\r") && !quoted) {       if (char === "\r" && input[i + 1] === "\n") i += 1;       row.push(value); if (row.some(Boolean)) rows.push(row); row = []; value = "";     } else value += char;   }   row.push(value); if (row.some(Boolean)) rows.push(row);   return rows; }  function messagesFromFile(text: string, fileName: string, contactName: string): Message[] {   if (fileName.toLowerCase().endsWith(".json")) {     const parsed = JSON.parse(text);     const list = Array.isArray(parsed) ? parsed : parsed.messages;     if (!Array.isArray(list)) throw new Error("JSON must contain a messages array.");     return list.map((item: Record<string, unknown>): Message => ({       id: uid(),       sender: String(item.sender || item.from || "").toLowerCase().includes(contactName.toLowerCase().split(" ")[0]) ? "them" : "me",       text: String(item.text || item.content || item.message || ""),       date: String(item.date || item.createdAt || today()),     })).filter((item: Message) => item.text.trim());   }   if (fileName.toLowerCase().endsWith(".csv")) {     const rows = parseCsv(text);     const headers = (rows.shift() || []).map((header) => header.trim().toLowerCase());     const find = (names: string[]) => names.map((name) => headers.findIndex((header) => header.includes(name))).find((index) => index !== -1) ?? -1;     const contentIndex = find(["content", "message", "text"]);     const fromIndex = find(["from", "sender"]);     const dateIndex = find(["date", "time"]);     if (contentIndex < 0) throw new Error("Could not find a message/content column in this CSV.");     const first = contactName.toLowerCase().split(" ")[0];     return rows.map((cells): Message => ({       id: uid(), sender: String(cells[fromIndex] || "").toLowerCase().includes(first) ? "them" : "me",       text: cells[contentIndex] || "", date: cells[dateIndex] || today(),     })).filter((item) => item.text.trim());   }   return text.split(/\n{2,}|\r?\n(?=(?:Me|You|Them|[A-Z][a-z]+):)/).map((line, index) => {     const trimmed = line.trim();     const fromThem = trimmed.toLowerCase().startsWith(contactName.toLowerCase().split(" ")[0]) || trimmed.toLowerCase().startsWith("them:");     return { id: uid(), sender: fromThem ? "them" as const : "me" as const, text: trimmed.replace(/^[^:]{1,30}:\s*/, ""), date: new Date(Date.now() - (100 - index) * 60000).toISOString() };   }).filter((item) => item.text); }  function cleanTopic(text: string) {   const sentence = text.replace(/\s+/g, " ").split(/[.!?]/)[0].trim();   return sentence.length > 92 ? `${sentence.slice(0, 89)}…` : sentence.toLowerCase(); }  function createDrafts(contact: Contact, guide: Guidance, agenda: string): Draft[] {   const first = contact.name.split(" ")[0];   const incoming = [...contact.chat].reverse().find((message) => message.sender === "them")?.text || contact.notes || `their work at ${contact.company || "their organization"}`;   const topic = cleanTopic(incoming);   const purpose = agenda.trim() || guide.goal.trim() || "explore whether there is a useful way to collaborate";   const context = contact.company ? `your work at ${contact.company}` : "the work you are doing";   const cta = guide.callToAction.trim() || "Would a short conversation next week be useful?";   const background = guide.background.trim() || "I am exploring a practical collaboration that could be useful to both sides.";   return [     {       id: uid(), label: "Warm & contextual",       text: `Hi ${first} — your note about ${topic || context} stayed with me. ${background} I’d value your perspective as I ${purpose.toLowerCase()}. ${cta.endsWith("?") ? cta : `${cta}?`}`,       rationale: "Builds from the latest message before introducing your agenda.",     },     {       id: uid(), label: "Direct & concise",       text: `Hi ${first}, I’ve been thinking about ${context} and a possible fit around ${purpose.toLowerCase()}. ${background} ${cta.endsWith("?") ? cta : `${cta}?`}`,       rationale: "States the relevance early and keeps the request easy to evaluate.",     },     {       id: uid(), label: "Curious & low-pressure",       text: `Hi ${first} — I’m curious how you’re thinking about ${topic || "this area"} now. I’m working toward ${purpose.toLowerCase()}, and your experience would be genuinely helpful. No pitch — ${cta.charAt(0).toLowerCase()}${cta.slice(1).replace(/\?$/, "")}?`,       rationale: "Leads with a thoughtful question and reduces perceived pressure.",     },   ]; }  function rankDrafts(drafts: Draft[], history: Feedback[]) {   const score = (label: string) => history.filter((item) => item.label === label).reduce((total, item) => total + (item.vote === "up" ? 1 : -1), 0);   return [...drafts].sort((a, b) => score(b.label) - score(a.label)); }  export default function ChatHelpApp() {   const [contacts, setContacts] = useState<Contact[]>(starterContacts);   const [activeId, setActiveId] = useState(starterContacts[0].id);   const [guide, setGuide] = useState<Guidance>(defaultGuidance);   const [agenda, setAgenda] = useState("See whether a small pilot could help Northstar identify warm partnership opportunities from existing conversations.");   const [drafts, setDrafts] = useState<Draft[]>(() => createDrafts(starterContacts[0], defaultGuidance, ""));   const [feedback, setFeedback] = useState<Feedback[]>([]);   const [ready, setReady] = useState(false);   const [showAdd, setShowAdd] = useState(false);   const [showPrivacy, setShowPrivacy] = useState(false);   const [showGuide, setShowGuide] = useState(false);   const [notice, setNotice] = useState("");   const [linkedIn, setLinkedIn] = useState<LinkedInStatus>({ configured: false, connected: false });   const [query, setQuery] = useState("");    const active = contacts.find((contact) => contact.id === activeId) || contacts[0];   const latestMessages = active?.chat.slice(-8) || [];   const positive = feedback.filter((item) => item.vote === "up").length;   const score = feedback.length ? Math.round((positive / feedback.length) * 100) : 0;    useEffect(() => {     try {       const saved = localStorage.getItem("chathelp-private-v1");       if (saved) {         const data = JSON.parse(saved);         if (data.contacts?.length) { setContacts(data.contacts); setActiveId(data.contacts[0].id); setDrafts(rankDrafts(createDrafts(data.contacts[0], data.guide || defaultGuidance, ""), data.feedback || [])); }         if (data.guide) setGuide(data.guide);         if (data.feedback) setFeedback(data.feedback);       }     } catch { setNotice("Your saved workspace could not be read. A fresh workspace was opened."); }     const linkResult = new URLSearchParams(window.location.search).get("linkedin");     if (linkResult === "setup-required") setNotice("LinkedIn identity linking is ready for app credentials. Add the environment values documented in README.");     if (linkResult === "failed") setNotice("LinkedIn sign-in could not be completed. No conversation data was shared.");     if (linkResult === "connected") setNotice("LinkedIn identity connected. Access tokens were not stored.");     setReady(true);     fetch("/api/linkedin/status").then((response) => response.json()).then(setLinkedIn).catch(() => undefined);   }, []);    useEffect(() => {     if (ready) localStorage.setItem("chathelp-private-v1", JSON.stringify({ contacts, guide, feedback }));   }, [contacts, guide, feedback, ready]);    useEffect(() => { if (active) setDrafts(rankDrafts(createDrafts(active, guide, agenda), feedback)); }, [activeId]);    const contextStrength = useMemo(() => {     if (!active) return 0;     return Math.min(100, 15 + Math.min(active.chat.length * 7, 42) + (active.headline ? 12 : 0) + (active.notes ? 12 : 0) + (guide.goal ? 10 : 0) + (agenda ? 9 : 0));   }, [active, guide.goal, agenda]);    function updateContact(patch: Partial<Contact>) {     setContacts((items) => items.map((item) => item.id === activeId ? { ...item, ...patch } : item));   }    async function importChat(event: ChangeEvent<HTMLInputElement>) {     const file = event.target.files?.[0]; if (!file || !active) return;     try {       const imported = messagesFromFile(await file.text(), file.name, active.name);       updateContact({ chat: [...active.chat, ...imported].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()) });       setNotice(`${imported.length} messages imported locally. Nothing was uploaded.`);     } catch (error) { setNotice(error instanceof Error ? error.message : "This chat file could not be imported."); }     event.target.value = "";   }    async function importProfile(event: ChangeEvent<HTMLInputElement>) {     const file = event.target.files?.[0]; if (!file || !active) return;     try {       const text = await file.text();       if (file.name.toLowerCase().endsWith(".json")) {         const item = JSON.parse(text);         updateContact({ name: item.name || active.name, headline: item.headline || item.title || active.headline, company: item.company || active.company, location: item.location || active.location, profileUrl: item.profileUrl || item.url || active.profileUrl, notes: item.notes || item.summary || active.notes });       } else updateContact({ notes: `${active.notes}\n${text}`.trim() });       setNotice("Profile context added to this device-only workspace.");     } catch { setNotice("This profile file could not be read."); }     event.target.value = "";   }    function addContact(event: FormEvent<HTMLFormElement>) {     event.preventDefault();     const form = new FormData(event.currentTarget);     const contact: Contact = { id: uid(), name: String(form.get("name") || "New contact"), headline: String(form.get("headline") || ""), company: String(form.get("company") || ""), location: String(form.get("location") || ""), relationship: String(form.get("relationship") || ""), profileUrl: String(form.get("profileUrl") || ""), notes: String(form.get("notes") || ""), chat: [] };     setContacts((items) => [...items, contact]); setActiveId(contact.id); setShowAdd(false); setDrafts(rankDrafts(createDrafts(contact, guide, agenda), feedback));   }    function vote(draft: Draft, voteValue: "up" | "down") {     setFeedback((items) => [...items, { draftId: draft.id, contactId: activeId, vote: voteValue, label: draft.label, at: today() }]);     setNotice(voteValue === "up" ? "Saved as a useful pattern for future drafts." : "Noted. Future guidance will favor other structures.");   }    function eraseWorkspace() {     localStorage.removeItem("chathelp-private-v1"); setContacts([]); setFeedback([]); setDrafts([]); setShowPrivacy(false); setNotice("All ChatHelp data was erased from this browser.");   }    if (!ready) return <main className="loading-screen"><div className="pulse-mark">CH</div><p>Opening your private workspace…</p></main>;    return (     <main className="app-shell">       <header className="topbar">         <a className="brand" href="#top"><span className="brand-mark">CH</span><span>ChatHelp<small>Private relationship intelligence</small></span></a>         <div className="top-actions">           <span className="local-badge"><i /> Device-only data</span>           <button className="button ghost" onClick={() => setShowPrivacy(true)}>Privacy center</button>           {linkedIn.connected ? <button className="linkedin-connected" onClick={async () => { await fetch("/api/linkedin/disconnect", { method: "POST" }); setLinkedIn({ ...linkedIn, connected: false }); setNotice("LinkedIn identity disconnected."); }}><b>in</b> {linkedIn.profile?.name || "LinkedIn connected"}</button> : <a className="button linkedin" href="/api/linkedin/auth"><b>in</b> Link LinkedIn</a>}         </div>       </header>        {notice && <div className="toast" role="status"><span>{notice}</span><button onClick={() => setNotice("")} aria-label="Dismiss">×</button></div>}        <section className="workspace" id="top">         <aside className="people-panel">           <div className="panel-heading"><div><span className="eyebrow">People</span><h2>Your conversations</h2></div><button className="icon-button" onClick={() => setShowAdd(true)} aria-label="Add person">+</button></div>           <label className="search-box"><span>⌕</span><input placeholder="Search people" aria-label="Search people" value={query} onChange={(event) => setQuery(event.target.value)} /></label>           <div className="contact-list">             {contacts.filter((contact) => `${contact.name} ${contact.headline} ${contact.company}`.toLowerCase().includes(query.toLowerCase())).map((contact) => <button key={contact.id} className={`contact-card ${contact.id === activeId ? "active" : ""}`} onClick={() => { setActiveId(contact.id); setDrafts(rankDrafts(createDrafts(contact, guide, agenda), feedback)); }}>               <span className="avatar">{contact.name.split(" ").map((word) => word[0]).slice(0, 2).join("")}</span>               <span><strong>{contact.name}</strong><small>{contact.headline || contact.company || "Add profile context"}</small></span>               <i>{contact.chat.length}</i>             </button>)}             {!contacts.length && <div className="empty-small"><strong>No people yet</strong><p>Add one person to begin.</p></div>}           </div>           <div className="privacy-card"><span className="lock">⌾</span><div><strong>Your data stays here</strong><p>Profiles, chats, guidance, and feedback are stored only in this browser.</p></div></div>         </aside>          {active ? <>           <section className="conversation-panel">             <div className="person-header">               <span className="avatar large">{active.name.split(" ").map((word) => word[0]).slice(0, 2).join("")}</span>               <div><span className="eyebrow">Selected relationship</span><h1>{active.name}</h1><p>{[active.headline, active.company, active.location].filter(Boolean).join(" · ") || "Add profile details for stronger suggestions"}</p></div>               {active.profileUrl && <a className="external-link" href={active.profileUrl} target="_blank" rel="noreferrer">View profile ↗</a>}             </div>              <div className="context-strip">               <div><span>Context strength</span><strong>{contextStrength}%</strong></div><div className="meter"><i style={{ width: `${contextStrength}%` }} /></div>               <button onClick={() => setShowGuide(true)}>Improve context</button>             </div>              <div className="chat-window">               <div className="section-title"><div><span className="eyebrow">Conversation</span><h2>Recent history</h2></div><label className="button subtle upload">Import chat<input type="file" accept=".csv,.json,.txt" onChange={importChat} /></label></div>               {latestMessages.length ? <div className="message-list">{latestMessages.map((message) => <div key={message.id} className={`message-row ${message.sender}`}><div className="message"><span>{message.sender === "me" ? "You" : active.name.split(" ")[0]}</span><p>{message.text}</p><time>{new Date(message.date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time></div></div>)}</div> : <div className="empty-chat"><strong>No chat history yet</strong><p>Import a LinkedIn data export, CSV, JSON, or pasted text file for this person.</p></div>}             </div>              <div className="profile-context">               <div><span className="eyebrow">Profile context</span><h2>What should ChatHelp know?</h2><p>{active.notes || "Add role, interests, shared history, and anything relevant to this outreach."}</p></div>               <label className="button ghost upload">Add profile file<input type="file" accept=".json,.txt,.md" onChange={importProfile} /></label>             </div>           </section>            <aside className="coach-panel">             <div className="coach-intro"><span className="eyebrow accent">Private drafting studio</span><h2>Turn context into a thoughtful next message.</h2><p>Three approaches, grounded in this relationship—not generic outreach.</p></div>             <label className="field"><span>What do you want to accomplish?</span><textarea value={agenda} onChange={(event) => setAgenda(event.target.value)} rows={3} /></label>             <div className="guide-summary"><div><span>Your guidance</span><strong>{guide.tone}</strong><p>{guide.goal}</p></div><button onClick={() => setShowGuide(true)}>Edit</button></div>             <button className="button primary generate" onClick={() => setDrafts(rankDrafts(createDrafts(active, guide, agenda), feedback))}><span>✦</span> Generate 3 private drafts</button>              <div className="draft-list">               {drafts.map((draft, index) => <article className="draft-card" key={draft.id}>                 <div className="draft-top"><span><i>{index + 1}</i>{draft.label}</span><button onClick={() => { navigator.clipboard.writeText(draft.text); setNotice("Draft copied."); }}>Copy</button></div>                 <p>{draft.text}</p>                 <small>{draft.rationale}</small>                 <div className="draft-actions"><span>Would you send this?</span><button onClick={() => vote(draft, "up")} aria-label="Useful draft">Yes</button><button onClick={() => vote(draft, "down")} aria-label="Not useful">Not yet</button></div>               </article>)}             </div>              <div className="learning-card"><div className="learning-head"><span className="spark">✦</span><div><span className="eyebrow">Response memory</span><h3>{feedback.length ? `${score}% useful so far` : "Learning starts with your feedback"}</h3></div></div>               <ul><li>Uses the latest message before introducing your goal</li><li>Respects your “{guide.tone}” voice</li><li>{feedback.length ? `${feedback.length} draft ratings saved on this device` : "Rate drafts to improve future structures"}</li></ul>             </div>           </aside>         </> : <section className="no-contact"><span className="brand-mark">CH</span><h1>Add a person to start</h1><p>ChatHelp works one relationship at a time so you control exactly what context is used.</p><button className="button primary" onClick={() => setShowAdd(true)}>Add your first person</button></section>}       </section>        <footer><span>ChatHelp MVP · Private by design</span><span>LinkedIn is a registered trademark of LinkedIn Corporation. ChatHelp is not affiliated with LinkedIn.</span></footer>        {showGuide && <div className="modal-backdrop" onMouseDown={() => setShowGuide(false)}><section className="drawer" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setShowGuide(false)}>×</button><span className="eyebrow accent">Personal guidance</span><h2>Teach ChatHelp how you communicate.</h2><p>This document stays on your device and influences every suggestion.</p>         <label className="field"><span>Your role or point of view</span><input value={guide.role} onChange={(event) => setGuide({ ...guide, role: event.target.value })} /></label>         <label className="field"><span>Primary goal</span><textarea rows={2} value={guide.goal} onChange={(event) => setGuide({ ...guide, goal: event.target.value })} /></label>         <label className="field"><span>Tone</span><input value={guide.tone} onChange={(event) => setGuide({ ...guide, tone: event.target.value })} /></label>         <label className="field"><span>Your background / value</span><textarea rows={3} value={guide.background} onChange={(event) => setGuide({ ...guide, background: event.target.value })} /></label>         <label className="field"><span>Boundaries</span><textarea rows={2} value={guide.boundaries} onChange={(event) => setGuide({ ...guide, boundaries: event.target.value })} /></label>         <label className="field"><span>Preferred call to action</span><input value={guide.callToAction} onChange={(event) => setGuide({ ...guide, callToAction: event.target.value })} /></label>         <button className="button primary" onClick={() => { setShowGuide(false); if (active) setDrafts(rankDrafts(createDrafts(active, guide, agenda), feedback)); }}>Save guidance</button>       </section></div>}        {showAdd && <div className="modal-backdrop"><form className="modal" onSubmit={addContact}><button type="button" className="modal-close" onClick={() => setShowAdd(false)}>×</button><span className="eyebrow accent">New relationship</span><h2>Add one person</h2><p>Only add people whose context you want ChatHelp to use.</p><div className="form-grid"><label className="field"><span>Name</span><input name="name" required autoFocus /></label><label className="field"><span>Company</span><input name="company" /></label><label className="field full"><span>Headline / role</span><input name="headline" /></label><label className="field"><span>Location</span><input name="location" /></label><label className="field"><span>Relationship</span><input name="relationship" /></label><label className="field full"><span>LinkedIn profile URL</span><input name="profileUrl" type="url" /></label><label className="field full"><span>Notes and shared context</span><textarea name="notes" rows={3} /></label></div><button className="button primary" type="submit">Create private workspace</button></form></div>}        {showPrivacy && <div className="modal-backdrop"><section className="modal privacy-modal"><button className="modal-close" onClick={() => setShowPrivacy(false)}>×</button><span className="eyebrow accent">Privacy center</span><h2>You remain in control.</h2><div className="privacy-points"><article><b>01</b><div><strong>Local by default</strong><p>Imported messages, profiles, guidance, drafts, and ratings stay in this browser’s local storage.</p></div></article><article><b>02</b><div><strong>One person at a time</strong><p>Only the selected person’s context is used to create a response.</p></div></article><article><b>03</b><div><strong>LinkedIn-aware, not a scraper</strong><p>Identity linking uses official sign-in. Restricted LinkedIn messages and profiles are never scraped.</p></div></article></div><button className="danger-link" onClick={eraseWorkspace}>Erase all local ChatHelp data</button></section></div>}     </main>   ); }
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { applyRetention } from "@/lib/retention";
+import { buildOutcomeSummary, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
+import { captureVisibleScreen, extractTextFromImage } from "@/lib/localOcr";
+import { CLOUDFLARE_MODEL_NAME, CPU_FALLBACK_MODEL_ID, generatePrivateDrafts, unloadPrivateModel } from "@/lib/privateAi";
+import { PLATFORM_OPTIONS, platformLabel, safePlatformUrl } from "@/lib/platforms";
+import { LinkedInTestWizard } from "@/components/LinkedInTestWizard";
+import { PwaInstall } from "@/components/PwaInstall";
+import {
+  createVault,
+  eraseVault,
+  exportEncryptedBackup,
+  importEncryptedBackup,
+  parseLegacyWorkspace,
+  saveVault,
+  unlockVault,
+  vaultExists,
+  type VaultSession,
+} from "@/lib/secureVault";
+import {
+  CLOUDFLARE_MODEL_ID,
+  createEmptyWorkspace,
+  newId,
+  type Contact,
+  type ConversationPlatform,
+  type MessageRole,
+  type WorkspaceData,
+} from "@/lib/workspaceTypes";
+
+const LEGACY_KEY = "chathelp-private-v2";
+const AUTO_LOCK_MS = 15 * 60 * 1000;
+const STORAGE_CHECK_TIMEOUT_MS = 8_000;
+
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Secure browser storage did not respond in time.")), timeoutMs);
+  });
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : "Something unexpected happened.";
+}
+
+export default function ChatHelpApp() {
+  const [checking, setChecking] = useState(true);
+  const [exists, setExists] = useState(false);
+  const [unlocked, setUnlocked] = useState<{ workspace: WorkspaceData; session: VaultSession } | null>(null);
+  const [passphrase, setPassphrase] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [error, setError] = useState("");
+  const [startupError, setStartupError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [legacy, setLegacy] = useState<WorkspaceData | null>(null);
+  const importRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const found = await withTimeout(vaultExists(), STORAGE_CHECK_TIMEOUT_MS);
+        let legacyWorkspace: WorkspaceData | null = null;
+        try {
+          legacyWorkspace = parseLegacyWorkspace(localStorage.getItem(LEGACY_KEY));
+        } catch {
+          // Legacy localStorage is optional. The encrypted IndexedDB vault remains the source of truth.
+        }
+        if (active) {
+          setExists(found);
+          setLegacy(legacyWorkspace);
+        }
+      } catch (caught) {
+        if (active) setStartupError(formatError(caught));
+      } finally {
+        if (active) setChecking(false);
+      }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  const lock = useCallback(() => {
+    void unloadPrivateModel();
+    setUnlocked(null);
+    setPassphrase("");
+    setConfirmation("");
+  }, []);
+
+  useEffect(() => {
+    if (!unlocked) return;
+    let timer = window.setTimeout(lock, AUTO_LOCK_MS);
+    const reset = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(lock, AUTO_LOCK_MS);
+    };
+    const events: (keyof WindowEventMap)[] = ["pointerdown", "keydown", "scroll", "touchstart"];
+    events.forEach((event) => window.addEventListener(event, reset, { passive: true }));
+    return () => {
+      window.clearTimeout(timer);
+      events.forEach((event) => window.removeEventListener(event, reset));
+    };
+  }, [lock, unlocked]);
+
+  async function createSecureWorkspace() {
+    setError("");
+    if (passphrase !== confirmation) return setError("The passphrases do not match.");
+    setBusy(true);
+    try {
+      const result = await createVault(passphrase, legacy ?? createEmptyWorkspace());
+      if (legacy) localStorage.removeItem(LEGACY_KEY);
+      setUnlocked({ ...result, workspace: applyRetention(result.workspace) });
+      setExists(true);
+    } catch (caught) {
+      setError(formatError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function unlock() {
+    setError("");
+    setBusy(true);
+    try {
+      const result = await unlockVault(passphrase);
+      setUnlocked({ ...result, workspace: applyRetention(result.workspace) });
+    } catch (caught) {
+      setError(formatError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importBackup(file: File) {
+    setError("");
+    setBusy(true);
+    try {
+      const result = await importEncryptedBackup(await file.text(), passphrase);
+      localStorage.removeItem(LEGACY_KEY);
+      setUnlocked({ ...result, workspace: applyRetention(result.workspace) });
+      setExists(true);
+    } catch (caught) {
+      setError(formatError(caught));
+    } finally {
+      if (importRef.current) importRef.current.value = "";
+      setBusy(false);
+    }
+  }
+
+  if (checking) return <main className="vault-shell"><section className="vault-card"><p>Checking this browser for an encrypted workspace…</p></section></main>;
+  if (startupError) return <main className="vault-shell"><section className="vault-card" aria-labelledby="storage-error-title"><div className="brand-mark" aria-hidden="true">!</div><p className="eyebrow">SECURE STORAGE UNAVAILABLE</p><h1 id="storage-error-title">ChatHelp could not open the encrypted workspace.</h1><p className="lede">Close other ChatHelp tabs or installed-app windows, confirm this site is allowed to store data, then retry. Your existing encrypted data has not been erased.</p><p className="error" role="alert">{startupError}</p><button className="primary" onClick={() => window.location.reload()}>Retry secure storage</button><p className="fine-print">Do not clear site data if you need an existing vault. If this continues, copy the browser console error for support.</p></section></main>;
+  if (unlocked) return <UnlockedWorkspace initial={unlocked.workspace} session={unlocked.session} onLock={lock} />;
+
+  return (
+    <main className="vault-shell">
+      <section className="vault-card" aria-labelledby="vault-title">
+        <div className="brand-mark" aria-hidden="true">CH</div>
+        <p className="eyebrow">PRIVATE BY DESIGN</p>
+        <h1 id="vault-title">Your conversations stay under your key.</h1>
+        <p className="lede">ChatHelp encrypts the workspace in this browser with AES-256-GCM. Your passphrase is never stored, sent, or recoverable by us.</p>
+        <div className="trust-grid">
+          <span>Encrypted at rest</span><span>Cloud AI is opt-in</span><span>No platform automation</span>
+        </div>
+        {legacy && !exists && <div className="notice warning"><strong>Privacy upgrade available.</strong> A plaintext workspace from the earlier version was found. Creating the vault will encrypt it and remove the plaintext copy.</div>}
+        <label>Passphrase
+          <input type="password" autoComplete={exists ? "current-password" : "new-password"} value={passphrase} onChange={(event) => setPassphrase(event.target.value)} minLength={12} placeholder="At least 12 characters" />
+        </label>
+        {!exists && <label>Confirm passphrase
+          <input type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} minLength={12} />
+        </label>}
+        {error && <p className="error" role="alert">{error}</p>}
+        <button className="primary" disabled={busy || passphrase.length < 12 || (!exists && confirmation.length < 12)} onClick={() => void (exists ? unlock() : createSecureWorkspace())}>
+          {busy ? "Working…" : exists ? "Unlock private workspace" : "Create encrypted workspace"}
+        </button>
+        <button className="secondary" disabled={busy || passphrase.length < 12} onClick={() => importRef.current?.click()}>Import encrypted backup</button>
+        <input ref={importRef} hidden type="file" accept="application/json,.json" onChange={(event) => event.target.files?.[0] && void importBackup(event.target.files[0])} />
+        <p className="fine-print"><strong>No recovery:</strong> losing the passphrase means losing the data. This is a deliberate privacy property. Use an encrypted backup and a password manager.</p>
+          <PwaInstall />
+      </section>
+    </main>
+  );
+}
+
+function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceData; session: VaultSession; onLock: () => void }) {
+  const [workspace, setWorkspace] = useState(() => applyRetention(initial));
+  const [selectedId, setSelectedId] = useState(initial.contacts[0]?.id ?? "");
+  const [saveStatus, setSaveStatus] = useState("Encrypted");
+  const [newContactName, setNewContactName] = useState("");
+  const [newPlatform, setNewPlatform] = useState<ConversationPlatform>("linkedin");
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [agenda, setAgenda] = useState("");
+  const [drafts, setDrafts] = useState<string[]>([]);
+  const [aiStatus, setAiStatus] = useState("");
+  const [appError, setAppError] = useState("");
+  const [chatPaste, setChatPaste] = useState("");
+  const [messageBody, setMessageBody] = useState("");
+  const [messageRole, setMessageRole] = useState<MessageRole>("them");
+  const [outcomeNote, setOutcomeNote] = useState("");
+  const [outcomeResult, setOutcomeResult] = useState<"positive" | "neutral" | "negative">("positive");
+  const documentRef = useRef<HTMLInputElement>(null);
+
+  const contact = workspace.contacts.find((item) => item.id === selectedId) ?? workspace.contacts[0] ?? null;
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setSaveStatus("Encrypting…");
+      void saveVault(applyRetention(workspace), session).then(() => setSaveStatus("Encrypted"), (error) => {
+        setSaveStatus("Save failed");
+        setAppError(formatError(error));
+      });
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [session, workspace]);
+
+  function updateWorkspace(updater: (current: WorkspaceData) => WorkspaceData) {
+    setSaveStatus("Unsaved changes");
+    setWorkspace((current) => updater(current));
+  }
+
+  function updateContactById(contactId: string, updater: (current: Contact) => Contact) {
+    updateWorkspace((current) => ({
+      ...current,
+      contacts: current.contacts.map((item) => item.id === contactId ? updater(item) : item),
+    }));
+  }
+
+  function updateContact(updater: (current: Contact) => Contact) {
+    if (!contact) return;
+    updateContactById(contact.id, updater);
+  }
+
+  function saveWizardProfile(profile: { name: string; headline: string; notes: string }): string {
+    const existingId = contact?.platform === "linkedin" ? contact.id : "";
+    const contactId = existingId || newId("contact");
+    const nextContact: Contact = {
+      id: contactId,
+      name: profile.name.trim() || "LinkedIn contact",
+      headline: profile.headline.trim(),
+      profileNotes: profile.notes.trim(),
+      platform: "linkedin",
+      platformUrl: "",
+      chat: [],
+      documents: [],
+      outcomes: [],
+      retentionDays: 90,
+    };
+
+    updateWorkspace((current) => ({
+      ...current,
+      contacts: current.contacts.some((item) => item.id === contactId)
+        ? current.contacts.map((item) => item.id === contactId ? { ...item, name: nextContact.name, headline: nextContact.headline, profileNotes: nextContact.profileNotes, platform: "linkedin" } : item)
+        : [...current.contacts, nextContact],
+    }));
+    setSelectedId(contactId);
+    setDrafts([]);
+    return contactId;
+  }
+
+  function addContact() {
+    const name = newContactName.trim();
+    if (!name) return;
+    const id = newId("contact");
+    const next: Contact = { id, name, headline: "", profileNotes: "", platform: newPlatform, platformUrl: "", chat: [], documents: [], outcomes: [], retentionDays: 90 };
+    updateWorkspace((current) => ({ ...current, contacts: [...current.contacts, next] }));
+    setSelectedId(id);
+    setNewContactName("");
+  }
+
+  function deleteContact() {
+    if (!contact || !window.confirm("Permanently delete this contact and all of their local context?")) return;
+    const remaining = workspace.contacts.filter((item) => item.id !== contact.id);
+    updateWorkspace((current) => ({ ...current, contacts: remaining, feedback: current.feedback.filter((item) => item.contactId !== contact.id) }));
+    setSelectedId(remaining[0]?.id ?? "");
+    setDrafts([]);
+  }
+
+  async function downloadBackup() {
+    setAppError("");
+    try {
+      await saveVault(applyRetention(workspace), session);
+      const contents = await exportEncryptedBackup();
+      const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "chathelp-encrypted-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (error) { setAppError(formatError(error)); }
+  }
+
+  async function eraseEverything() {
+    if (!window.confirm("Erase the encrypted vault from this browser? Export a backup first if you may need it.")) return;
+    await eraseVault();
+    localStorage.removeItem(LEGACY_KEY);
+    onLock();
+    window.location.reload();
+  }
+
+  async function importDocument(file: File) {
+    if (!contact) return;
+    const validation = validateContextFile(file);
+    if (validation) return setAppError(validation);
+    try {
+      let text = await file.text();
+      if (file.name.toLowerCase().endsWith(".json")) text = JSON.stringify(JSON.parse(text), null, 2);
+      updateContact((current) => ({ ...current, documents: [...current.documents, { id: newId("document"), name: file.name, text: text.slice(0, 100_000), createdAt: new Date().toISOString() }] }));
+    } catch { setAppError("That context file could not be read safely."); }
+    if (documentRef.current) documentRef.current.value = "";
+  }
+
+  async function captureContextFor(contactId: string) {
+    setAppError("");
+    try {
+      setAiStatus("Waiting for you to choose a visible window or tab…");
+      const image = await captureVisibleScreen();
+      const text = await extractTextFromImage(image, setAiStatus);
+      if (!text) throw new Error("No readable text was found in the selected screen.");
+      updateContactById(contactId, (current) => ({
+        ...current,
+        documents: [...current.documents, { id: newId("capture"), name: "User-selected screen capture", text: text.slice(0, 100_000), createdAt: new Date().toISOString() }],
+      }));
+      setAiStatus("Capture processed locally and encrypted.");
+    } catch (error) {
+      setAiStatus("");
+      setAppError(formatError(error));
+      throw error;
+    }
+  }
+
+  async function captureContext() {
+    if (!contact) return;
+    try { await captureContextFor(contact.id); } catch { /* The user-facing error is already shown. */ }
+  }
+
+  function importChatFor(contactId: string, text: string) {
+    if (!text.trim()) return;
+    const messages = text.split(/\n+/).map((line) => line.trim()).filter(Boolean).map((line, index) => {
+      const mine = /^(me|i):\s*/i.test(line);
+      return { id: newId("message"), role: mine ? "me" as const : "them" as const, body: line.replace(/^[^:]{1,40}:\s*/, "").slice(0, 20_000), createdAt: new Date(Date.now() + index).toISOString() };
+    });
+    updateContactById(contactId, (current) => ({ ...current, chat: [...current.chat, ...messages].slice(-1000) }));
+  }
+
+  function importChat() {
+    if (!contact || !chatPaste.trim()) return;
+    importChatFor(contact.id, chatPaste);
+    setChatPaste("");
+  }
+
+  function addMessage() {
+    if (!contact || !messageBody.trim()) return;
+    updateContact((current) => ({ ...current, chat: [...current.chat, { id: newId("message"), role: messageRole, body: messageBody.trim().slice(0, 20_000), createdAt: new Date().toISOString() }] }));
+    setMessageBody("");
+  }
+
+  async function generate(agendaOverride?: string, contactIdOverride?: string) {
+    const activeContact = workspace.contacts.find((item) => item.id === contactIdOverride) ?? contact;
+    const requestAgenda = (agendaOverride ?? agenda).trim();
+    if (!activeContact || !requestAgenda) return;
+    setAppError("");
+    setDrafts([]);
+    try {
+      const query = [requestAgenda, activeContact.profileNotes, activeContact.chat.slice(-8).map((item) => item.body).join(" ")].join(" ");
+      const relevant = selectRelevantContext(activeContact.documents, query);
+      const feedbackSummary = workspace.feedback.filter((item) => item.contactId === activeContact.id).slice(-20).map((item) => item.rating + ": " + item.note).join("\n");
+      const nextDrafts = await generatePrivateDrafts(workspace.modelId, {
+        contact: activeContact,
+        guidance: workspace.guidance,
+        latestQuestion: requestAgenda,
+        retrievedContext: relevant,
+        feedbackSummary,
+        outcomeSummary: buildOutcomeSummary(activeContact),
+      }, setAiStatus, workspace.cloudInference);
+      setDrafts(nextDrafts);
+      setAiStatus(workspace.modelId === CLOUDFLARE_MODEL_ID
+        ? "Generated with Cloudflare AI. Nothing was sent to LinkedIn or another messaging API."
+        : "Generated locally. Nothing was sent to a message API.");
+    } catch (error) {
+      setAiStatus("");
+      setAppError(formatError(error));
+    }
+  }
+
+  function rateDraft(draft: string, rating: "useful" | "not-useful") {
+    if (!contact) return;
+    const note = window.prompt("Optional: what should ChatHelp learn from this draft?", "") ?? "";
+    updateWorkspace((current) => ({ ...current, feedback: [...current.feedback, { id: newId("feedback"), contactId: contact.id, draft: draft.slice(0, 2000), rating, note: note.slice(0, 1000), createdAt: new Date().toISOString() }].slice(-1000) }));
+  }
+
+  function addOutcome() {
+    if (!contact) return;
+    updateContact((current) => ({ ...current, outcomes: [...current.outcomes, { id: newId("outcome"), result: outcomeResult, note: outcomeNote.trim().slice(0, 2000), createdAt: new Date().toISOString() }].slice(-200) }));
+    setOutcomeNote("");
+  }
+
+  const storageSummary = useMemo(() => contact ? contact.chat.length + " messages · " + contact.documents.length + " context files · " + contact.outcomes.length + " outcomes" : "No contact selected", [contact]);
+  const handoffUrl = contact ? safePlatformUrl(contact) : null;
+  const handoffLabel = contact ? platformLabel(contact.platform) : "platform";
+  const cloudSelected = workspace.modelId === CLOUDFLARE_MODEL_ID;
+  const cloudReady = Boolean(workspace.cloudInference.consentedAt && workspace.cloudInference.accessToken.trim().length >= 20);
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div><p className="eyebrow">CHATHELP</p><h1>Private conversation studio</h1></div>
+        <div className="top-actions"><button className="wizard-launch" data-testid="open-linkedin-test-wizard" onClick={() => setWizardOpen(true)}>Guided LinkedIn test</button><PwaInstall /><span className="save-state">● {saveStatus}</span><button onClick={() => void downloadBackup()}>Encrypted backup</button><button onClick={onLock}>Lock</button></div>
+      </header>
+      <div className="privacy-strip"><strong>{cloudSelected ? "Cloud AI mode:" : "Local AI mode:"}</strong> {cloudSelected ? "Only the minimized prompt is sent to ChatHelp's Cloudflare Worker after consent; images and the encrypted vault stay here." : "Prompts and generated drafts stay in this browser; model weights are downloaded on first use."} OCR assets are served by ChatHelp. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
+      {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
+      <div className="workspace-grid">
+        <aside className="contacts-panel">
+          <h2>People</h2>
+          <div className="contact-create"><select aria-label="Conversation platform" value={newPlatform} onChange={(event) => setNewPlatform(event.target.value as ConversationPlatform)}>{PLATFORM_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><div className="inline-form"><input aria-label="New contact name" value={newContactName} onChange={(event) => setNewContactName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addContact()} placeholder="Add a person" /><button onClick={addContact}>Add</button></div></div>
+          <nav aria-label="Contacts">
+            {workspace.contacts.map((item) => <button className={item.id === contact?.id ? "contact active" : "contact"} key={item.id} onClick={() => { setSelectedId(item.id); setDrafts([]); }}><span>{item.name.slice(0, 1).toUpperCase()}</span><div><strong>{item.name}</strong><small>{platformLabel(item.platform)} · {item.headline || "Add profile context"}</small></div></button>)}
+          </nav>
+          {!workspace.contacts.length && <p className="empty">Add one person. ChatHelp never scans your messaging or email accounts.</p>}
+        </aside>
+
+        <section className="context-panel">
+          {contact ? <>
+            <div className="section-heading"><div><p className="eyebrow">SELECTED PERSON</p><h2>{contact.name}</h2><small>{storageSummary}</small></div><button className="danger-link" onClick={deleteContact}>Delete</button></div>
+            <div className="panel-card">
+              <h3>Profile context</h3>
+              <label>Name<input value={contact.name} onChange={(event) => updateContact((current) => ({ ...current, name: event.target.value.slice(0, 200) }))} /></label>
+              <label>Headline<input value={contact.headline} onChange={(event) => updateContact((current) => ({ ...current, headline: event.target.value.slice(0, 500) }))} placeholder="Role, company, shared interests" /></label>
+              <label>Notes<textarea value={contact.profileNotes} onChange={(event) => updateContact((current) => ({ ...current, profileNotes: event.target.value.slice(0, 20_000) }))} placeholder="Only add what is relevant and appropriate." /></label>
+              <div className="button-row"><button onClick={() => void captureContext()}>Capture a screen you choose</button><button onClick={() => documentRef.current?.click()}>Import context file</button><input ref={documentRef} hidden type="file" accept=".txt,.md,.json,text/plain,application/json" onChange={(event) => event.target.files?.[0] && void importDocument(event.target.files[0])} /></div>
+              {contact.documents.map((document) => <div className="document-row" key={document.id}><div><strong>{document.name}</strong><small>{document.text.length.toLocaleString()} encrypted characters</small></div><button aria-label={"Delete " + document.name} onClick={() => updateContact((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== document.id) }))}>Remove</button></div>)}
+            </div>
+            <div className="panel-card">
+              <h3>Chat context</h3>
+              <textarea value={chatPaste} onChange={(event) => setChatPaste(event.target.value)} placeholder={"Paste selected lines only, for example:\nMe: Great to reconnect\nAlex: Likewise—how is the new role?"} />
+              <button onClick={importChat}>Import pasted lines</button>
+              <div className="inline-form"><select value={messageRole} onChange={(event) => setMessageRole(event.target.value as MessageRole)}><option value="them">Them</option><option value="me">Me</option></select><input value={messageBody} onChange={(event) => setMessageBody(event.target.value)} placeholder="Add one message" /><button onClick={addMessage}>Add</button></div>
+              <div className="chat-list">{contact.chat.slice(-12).map((message) => <div className={message.role === "me" ? "bubble mine" : "bubble"} key={message.id}><small>{message.role === "me" ? "You" : contact.name}</small>{message.body}</div>)}</div>
+            </div>
+            <div className="panel-card compact">
+              <h3>Retention</h3>
+              <label>Automatically remove dated context after<select value={contact.retentionDays} onChange={(event) => updateContact((current) => ({ ...current, retentionDays: Number(event.target.value) as Contact["retentionDays"] }))}><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option><option value={0}>Keep until I delete it</option></select></label>
+            </div>
+          </> : <div className="empty-state"><div className="brand-mark">1</div><h2>Add a person to begin</h2><p>Only context you deliberately paste, import, or capture will be used.</p><button className="primary" onClick={() => setWizardOpen(true)}>Start guided LinkedIn test</button></div>}
+        </section>
+
+        <section className="draft-panel">
+          <div className="panel-card guidance-card"><p className="eyebrow">YOUR PLAYBOOK</p><h2>Personal guidance</h2>
+            <label>Your role<input value={workspace.guidance.role} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, role: event.target.value } }))} /></label>
+            <label>Goal<textarea value={workspace.guidance.objective} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, objective: event.target.value } }))} /></label>
+            <label>Voice<input value={workspace.guidance.voice} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: event.target.value } }))} /></label>
+            <label>Boundaries<textarea value={workspace.guidance.boundaries} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, boundaries: event.target.value } }))} /></label>
+          </div>
+          <div className="panel-card compose-card">
+            <p className="eyebrow">PRIVATE AI</p><h2>Draft the next reply</h2>
+            <label>Question or agenda<textarea value={agenda} onChange={(event) => setAgenda(event.target.value)} placeholder="What did they ask, and what do you want this reply to accomplish?" /></label>
+            <label>AI provider<select value={workspace.modelId} onChange={(event) => updateWorkspace((current) => ({ ...current, modelId: event.target.value }))}><option value={CLOUDFLARE_MODEL_ID}>{CLOUDFLARE_MODEL_NAME} · no local LLM load</option><option value="Llama-3.2-3B-Instruct-q4f16_1-MLC">Llama 3.2 3B · local WebGPU</option><option value="Llama-3.2-1B-Instruct-q4f16_1-MLC">Llama 3.2 1B · lighter local WebGPU</option><option value={CPU_FALLBACK_MODEL_ID}>Qwen 2.5 0.5B · local CPU/WASM</option></select></label>
+            {cloudSelected && <>
+              <label>Cloud access code<input type="password" autoComplete="off" value={workspace.cloudInference.accessToken} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, accessToken: event.target.value.slice(0, 200) } }))} placeholder="Enter once; stored only in the encrypted vault" /></label>
+              <label className="consent-check"><input type="checkbox" checked={Boolean(workspace.cloudInference.consentedAt)} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, consentedAt: event.target.checked ? new Date().toISOString() : "" } }))} /><span>I understand that ChatHelp will send the relevant recent chat, selected context, and my guidance as text to Cloudflare Workers AI to create drafts. Screenshots, the full vault, and credentials are not sent.</span></label>
+            </>}
+            <button className="primary" disabled={!contact || !agenda.trim() || (cloudSelected && !cloudReady) || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("Capture processed"))} onClick={() => void generate()}>Generate 3 private drafts</button>
+            {aiStatus && <p className="status" aria-live="polite">{aiStatus}</p>}
+            <p className="fine-print">{cloudSelected ? "Cloud mode avoids downloading or running an LLM on this device. The Worker uses no app storage or AI Gateway, and Cloudflare states Workers AI customer content is not used to train models. The access code and consent record are encrypted in your local vault." : "Local mode downloads pinned model weights and runs in this browser. If WebGPU is unavailable, ChatHelp switches to CPU/WASM. Prompts never go to the model host."} Review every draft before sending.</p>
+          </div>
+          <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={draft + index}><div><span>OPTION {index + 1}</span><div><button onClick={() => void navigator.clipboard.writeText(draft)}>Copy</button><button title="Useful" onClick={() => rateDraft(draft, "useful")}>👍</button><button title="Not useful" onClick={() => rateDraft(draft, "not-useful")}>👎</button></div></div><p>{draft}</p></article>)}</div>
+          {contact && <div className="panel-card compact"><h3>Conversation outcome</h3><div className="inline-form"><select value={outcomeResult} onChange={(event) => setOutcomeResult(event.target.value as typeof outcomeResult)}><option value="positive">Positive</option><option value="neutral">Neutral</option><option value="negative">Negative</option></select><input value={outcomeNote} onChange={(event) => setOutcomeNote(event.target.value)} placeholder="What worked or went wrong?" /><button onClick={addOutcome}>Save</button></div></div>}
+          {handoffUrl ? <a className="platform-link" href={handoffUrl} target="_blank" rel="noreferrer">Open {handoffLabel} for manual review and paste ↗</a> : <p className="fine-print">Add a valid HTTPS service URL to enable manual handoff.</p>}
+        </section>
+      </div>
+      <footer><span>ChatHelp never sends platform messages or email automatically.</span><button className="danger-link" onClick={() => void eraseEverything()}>Erase all local data</button></footer>
+      {wizardOpen && <LinkedInTestWizard
+        initialContact={contact}
+        guidance={workspace.guidance}
+        drafts={drafts}
+        aiStatus={aiStatus}
+        onClose={() => setWizardOpen(false)}
+        onSaveProfile={saveWizardProfile}
+        onCapture={captureContextFor}
+        onImportChat={importChatFor}
+        onGuidanceChange={(field, value) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, [field]: value } }))}
+        onGenerate={async (contactId, nextAgenda) => {
+          setSelectedId(contactId);
+          setAgenda(nextAgenda);
+          await generate(nextAgenda, contactId);
+        }}
+      />}
+      <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Local AI:</strong> prompts stay in the browser. The pinned model host sees ordinary model-download metadata, not prompts.</li><li><strong>Cloud AI (opt-in):</strong> only the relevant recent chat, selected text context, guidance, and agenda are sent to ChatHelp&apos;s authenticated Cloudflare Worker. The Worker has no database, object storage, AI Gateway, or application logging configured.</li><li><strong>Never uploaded:</strong> screen images, the encrypted vault, its passphrase, and the cloud access code are not included in the AI request.</li><li><strong>Screen capture:</strong> the browser asks you to choose a visible screen. OCR runs locally with self-hosted assets; extracted text is encrypted in your vault.</li><li><strong>Sending:</strong> ChatHelp never sends a LinkedIn message or email. You review and manually copy a draft.</li><li><strong>Limits:</strong> Cloudflare processes cloud prompts to provide Workers AI. Browser malware, a compromised origin, or someone who knows your passphrase can still expose data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
+    </main>
+  );
+}

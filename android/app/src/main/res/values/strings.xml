@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ChatHelp</string>
+    <string name="title_activity_main">ChatHelp</string>
+    <string name="package_name">com.chathelp.app</string>
+    <string name="custom_url_scheme">com.chathelp.app</string>
+</resources>

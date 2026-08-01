@@ -1,104 +1,57 @@
 # ChatHelp
 
-ChatHelp is a privacy-first web workspace for preparing thoughtful LinkedIn outreach from the context a user intentionally provides. It works with one selected person at a time and keeps imported chat history, profile notes, personal guidance, generated drafts, and feedback in browser local storage.
+ChatHelp is a local-first, encrypted web application that helps a person write thoughtful replies for selected professional conversations. The human chooses the context, reviews every draft, and manually copies a response into the selected platform.
 
-## MVP capabilities
+## Privacy architecture
 
-- LinkedIn OpenID Connect for the signed-in user's identity only
-- One-person-at-a-time relationship workspaces
-- Local chat import from CSV, JSON, or text
-- Local profile context import from JSON, Markdown, or text
-- A reusable personal communication guide: role, goal, tone, background, boundaries, and preferred call to action
-- Three response approaches generated from the selected person's recent messages, profile context, the user's guidance, and the current agenda
-- Draft copying and positive/negative feedback
-- Device-local response memory and a privacy center with one-click erasure
-- Responsive web layout ready for desktop, tablet, and mobile browsers
+- No ChatHelp backend, account database, analytics, or prompt API.
+- AES-256-GCM encrypted IndexedDB vault with a passphrase-derived, memory-only key.
+- Llama 3.2 generation through WebLLM in a dedicated browser worker.
+- Local relevance ranking for imported context; no embedding service.
+- Self-hosted Tesseract worker, WebAssembly engine, and English OCR data.
+- Manual screen selection and manual LinkedIn/Gmail/Outlook handoff; no account scanning or message automation.
+- Per-contact retention, encrypted backup/import, lock, and complete erasure.
+- Restrictive CSP and browser permission policy.
 
-## Why chat/profile import is required
+Read SECURITY.md and PRIVACY.md before using real conversation data.
 
-LinkedIn's self-service developer access permits OpenID Connect sign-in and the authenticated member's basic profile. Reading another member's profile, connections, or private messages requires restricted LinkedIn partner permissions. ChatHelp does not scrape LinkedIn or bypass those controls.
+## Use in GitHub Codespaces
 
-The compliant MVP flow is:
+1. Create or open the repository Codespace.
+2. Run npm ci. The postinstall step prepares self-hosted OCR assets.
+3. Run npm run dev.
+4. Open the forwarded port 3000 preview.
+5. Create a unique passphrase of at least 12 characters and export an encrypted backup.
 
-1. Link LinkedIn for the user's own identity (optional).
-2. Select one person.
-3. Import that person's messages from a user-controlled LinkedIn data export, CSV, JSON, or text file.
-4. Add profile context manually or through a local file.
-5. Add personal guidance and the outreach agenda.
-6. Generate, copy, and rate private drafts.
+The first draft generation downloads the selected public model weights. Depending on the model and device, this is a large download and requires WebGPU support. The Llama 3.2 1B option is intended for lighter devices; the 3B option generally produces stronger drafts.
 
-## Privacy model
+## Verification
 
-- Relationship data is not sent to a ChatHelp database.
-- The current MVP uses browser local storage only.
-- LinkedIn access tokens are used only during the OAuth callback and are not stored.
-- The short-lived LinkedIn identity cookie is HTTP-only and HMAC-signed.
-- Secrets are supplied through environment variables and must never be committed.
-- The Privacy Center can erase all local ChatHelp data.
+Run these commands inside the Codespace:
 
-Browser storage is device- and browser-profile-specific. Clearing browser data removes the workspace. A future encrypted sync feature should be opt-in and use user-held encryption keys.
+    npm run prepare:ocr
+    npm run lint
+    npm test
+    npm run build
+    npm audit --audit-level=high
 
-## Codespaces development
+The test suite covers encrypted storage, wrong-passphrase and tamper rejection, unique AES-GCM IVs, retention, retrieval, prompt-injection boundaries, response parsing, security headers, self-hosted OCR assets, and the create/edit/lock/unlock browser workflow.
 
-The repository includes a dev-container definition. In GitHub Codespaces, dependencies install with `npm ci`.
+## Installable clients and platform support
 
-```bash
-npm run dev
-```
+ChatHelp supports selected LinkedIn, Gmail, Outlook, and other HTTPS conversations without connecting account credentials or automatically sending content. Install the PWA from a supported browser, or download preview Windows and Android artifacts from the **Package installable apps** GitHub Actions workflow.
 
-Open port `3000` from the Codespaces Ports panel.
+- Windows: sandboxed Electron Setup and portable executables.
+- Android: Capacitor debug APK for preview testing.
+- Browser/PWA: installable, with an offline application shell after the first successful load.
 
-Validation:
+See [docs/NATIVE_PACKAGING.md](docs/NATIVE_PACKAGING.md) for artifact and signing details. See [docs/CLOUD_LLM_ROADMAP.md](docs/CLOUD_LLM_ROADMAP.md) for the optional, consent-based managed LLM roadmap. Local inference remains the default and free/private tier.
 
-```bash
-npm run lint
-npm run build
-```
+## Important product boundary
 
-## LinkedIn identity configuration
+ChatHelp is a drafting assistant, not a messaging automation client. It does not bypass platform APIs, scrape accounts, inject into third-party pages, or send messages. This reduces privacy and account-risk concerns and keeps the user in control.
 
-Create an app in the LinkedIn Developer Portal and enable **Sign In with LinkedIn using OpenID Connect**. Copy `.env.example` to `.env.local` inside the Codespace and set:
 
-```dotenv
-LINKEDIN_CLIENT_ID=
-LINKEDIN_CLIENT_SECRET=
-NEXT_PUBLIC_APP_URL=https://your-public-origin.example
-SESSION_SECRET=
-```
+## Guided LinkedIn profile test
 
-Register this exact callback URL in the LinkedIn app:
-
-```text
-https://your-public-origin.example/api/linkedin/callback
-```
-
-The basic private drafting workspace works without LinkedIn OAuth configuration.
-
-## Import formats
-
-Chat CSV files should include a message column named `Content`, `Message`, or `Text`. Optional sender and date columns may be named `From`/`Sender` and `Date`/`Time`.
-
-Chat JSON can be an array or an object with a `messages` array:
-
-```json
-{
-  "messages": [
-    { "sender": "Priya", "text": "Happy to compare notes.", "date": "2026-06-12" },
-    { "sender": "Me", "text": "Would next Tuesday work?", "date": "2026-06-13" }
-  ]
-}
-```
-
-Profile JSON can include `name`, `headline`, `company`, `location`, `profileUrl`, `notes`, or `summary`.
-
-## Roadmap
-
-1. Harden the web MVP with automated interaction tests and encrypted backup/export.
-2. Add an optional in-browser language model for WebGPU-capable devices, keeping conversation inference local.
-3. Add explicit per-contact retention settings and detailed response outcome tracking.
-4. Introduce an installable Progressive Web App.
-5. Reuse the web domain and data model in an Android client after the web workflows mature.
-
-## Important
-
-ChatHelp is not affiliated with LinkedIn. Users are responsible for having the right to use imported conversation and profile information and for reviewing every draft before sending it.
+After unlocking the vault, choose **Guided LinkedIn test** to walk through one explicitly selected profile and conversation. The profile URL is temporary, context capture/paste is user-directed, generation is local, and the final message is reviewed and sent manually. See [docs/LINKEDIN_TEST_WIZARD.md](docs/LINKEDIN_TEST_WIZARD.md).

@@ -1,0 +1,32 @@
+{
+  "name": "chathelp-private-cloud",
+  "main": "./cloudflare/worker/src/index.js",
+  "compatibility_date": "2026-08-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "ai": {
+    "binding": "AI"
+  },
+  "assets": {
+    "directory": "./out",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/health"]
+  },
+  "ratelimits": [
+    {
+      "name": "DRAFT_RATE_LIMITER",
+      "namespace_id": "7493101",
+      "simple": {
+        "limit": 10,
+        "period": 60
+      }
+    }
+  ],
+  "observability": {
+    "enabled": false
+  },
+  "secrets": {
+    "required": ["CHATHELP_ACCESS_TOKEN_HASH"]
+  }
+}
