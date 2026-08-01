@@ -198,9 +198,16 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
   const source = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
   const empty = createEmptyWorkspace();
   const contacts = Array.isArray(source.contacts) ? source.contacts : [];
+  const cloudInference = source.cloudInference && typeof source.cloudInference === "object"
+    ? source.cloudInference as Record<string, unknown>
+    : {};
   return {
-    version: 3,
+    version: 4,
     modelId: typeof source.modelId === "string" ? source.modelId : DEFAULT_MODEL_ID,
+    cloudInference: {
+      accessToken: typeof cloudInference.accessToken === "string" ? cloudInference.accessToken.slice(0, 200) : "",
+      consentedAt: typeof cloudInference.consentedAt === "string" ? cloudInference.consentedAt.slice(0, 100) : "",
+    },
     guidance: {
       role: typeof (source.guidance as Record<string, unknown> | undefined)?.role === "string" ? String((source.guidance as Record<string, unknown>).role) : empty.guidance.role,
       objective: typeof (source.guidance as Record<string, unknown> | undefined)?.objective === "string" ? String((source.guidance as Record<string, unknown>).objective) : empty.guidance.objective,
