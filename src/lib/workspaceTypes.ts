@@ -51,15 +51,22 @@ export interface Feedback {
   createdAt: string;
 }
 
+export interface CloudInferenceSettings {
+  accessToken: string;
+  consentedAt: string;
+}
+
 export interface WorkspaceData {
-  version: 3;
+  version: 4;
   modelId: string;
+  cloudInference: CloudInferenceSettings;
   contacts: Contact[];
   guidance: Guidance;
   feedback: Feedback[];
 }
 
-export const DEFAULT_MODEL_ID = "Llama-3.2-3B-Instruct-q4f16_1-MLC";
+export const CLOUDFLARE_MODEL_ID = "cloud:cloudflare:llama-3.1-8b-instruct-fast";
+export const DEFAULT_MODEL_ID = CLOUDFLARE_MODEL_ID;
 
 export function newId(prefix = "item"): string {
   return prefix + "-" + crypto.randomUUID();
@@ -67,8 +74,12 @@ export function newId(prefix = "item"): string {
 
 export function createEmptyWorkspace(): WorkspaceData {
   return {
-    version: 3,
+    version: 4,
     modelId: DEFAULT_MODEL_ID,
+    cloudInference: {
+      accessToken: "",
+      consentedAt: "",
+    },
     contacts: [],
     guidance: {
       role: "Business professional",
