@@ -1,10 +1,24 @@
 import "fake-indexeddb/auto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { createVault, exportEncryptedBackup, importEncryptedBackup, resetVaultForTests, saveVault, unlockVault } from "../src/lib/secureVault";
-import { createEmptyWorkspace } from "../src/lib/workspaceTypes";
+import { createVault, exportEncryptedBackup, importEncryptedBackup, normalizeWorkspace, resetVaultForTests, saveVault, unlockVault } from "../src/lib/secureVault";
+import { CLOUDFLARE_MODEL_ID, createEmptyWorkspace } from "../src/lib/workspaceTypes";
 
 describe("encrypted vault", () => {
   beforeEach(async () => { await resetVaultForTests(); });
+
+  it("migrates old browser models to cloud and discards access codes stored without explicit permission", () => {
+    const workspace = normalizeWorkspace({
+      modelId: "retired-browser-model",
+      cloudInference: { accessToken: "placeholder-code", consentedAt: "2026-08-01T00:00:00.000Z" },
+    });
+
+    expect(workspace.modelId).toBe(CLOUDFLARE_MODEL_ID);
+    expect(workspace.cloudInference).toEqual({
+      accessToken: "",
+      consentedAt: "2026-08-01T00:00:00.000Z",
+      rememberAccessToken: false,
+    });
+  });
 
   it("stores no readable workspace content and unlocks with the passphrase", async () => {
     const workspace = createEmptyWorkspace();

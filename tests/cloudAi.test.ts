@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { generateWithCloud, type PrivateAiInput } from "../src/lib/privateAi";
+import { buildPrompt, generateWithCloud, parseDrafts, type PrivateAiInput } from "../src/lib/privateAi";
 
 function input(): PrivateAiInput {
   return {
@@ -36,6 +36,7 @@ describe("cloud AI client boundary", () => {
     await expect(generateWithCloud(input(), {
       accessToken: "a-valid-access-token-with-enough-length",
       consentedAt: "",
+      rememberAccessToken: false,
     }, undefined, request as unknown as typeof fetch)).rejects.toThrow(/Confirm the cloud privacy notice/);
     expect(request).not.toHaveBeenCalled();
   });
@@ -49,6 +50,7 @@ describe("cloud AI client boundary", () => {
     await expect(generateWithCloud(input(), {
       accessToken,
       consentedAt: "2026-08-01T00:00:00.000Z",
+      rememberAccessToken: false,
     }, undefined, request as unknown as typeof fetch)).resolves.toEqual(["Draft one", "Draft two", "Draft three"]);
 
     expect(request).toHaveBeenCalledTimes(1);
@@ -73,6 +75,29 @@ describe("cloud AI client boundary", () => {
     await expect(generateWithCloud(input(), {
       accessToken: "an-invalid-access-token-with-enough-length",
       consentedAt: "2026-08-01T00:00:00.000Z",
+      rememberAccessToken: false,
     }, undefined, request as unknown as typeof fetch)).rejects.toThrow("Invalid ChatHelp access code.");
+  });
+
+  it("tells the model which person is the sender and requires paste-ready text", () => {
+    const prompt = buildPrompt(input());
+    expect(prompt).toContain("USER is the person operating ChatHelp");
+    expect(prompt).toContain("CONTACT is the selected recipient");
+    expect(prompt).toContain("paste-ready message text only");
+    expect(prompt).toContain("do not claim one exists");
+  });
+
+  it("removes leaked style headings and formal Dear greetings from cloud drafts", () => {
+    const drafts = parseDrafts(JSON.stringify([
+      "Warm and Concise, Acknowledging Contact and Suggesting Low-Pressure Next Step Dear Ankush, thanks for reaching out.",
+      "Curious and Relationship-Focused, With One Thoughtful Question Hi Ankush, what would be most useful to discuss?",
+      "Option 3: Dear Ankush, I can share a little more context here.",
+    ]));
+
+    expect(drafts).toEqual([
+      "Hi Ankush, thanks for reaching out.",
+      "Hi Ankush, what would be most useful to discuss?",
+      "Hi Ankush, I can share a little more context here.",
+    ]);
   });
 });

@@ -37,7 +37,7 @@ function renderWizard() {
 }
 
 describe("LinkedIn real-profile test wizard", () => {
-  it("requires consent and guides selected context through local draft generation", async () => {
+  it("requires consent and clearly separates contact profile, chat capture, and cloud drafts", async () => {
     const handlers = renderWizard();
 
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
@@ -46,16 +46,20 @@ describe("LinkedIn real-profile test wizard", () => {
     fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
-    fireEvent.change(screen.getByLabelText("Person’s name or private nickname"), { target: { value: "Alex from Northwind" } });
+    fireEvent.change(screen.getByLabelText("Selected contact’s name or private nickname"), { target: { value: "Alex from Northwind" } });
     fireEvent.change(screen.getByLabelText("LinkedIn profile URL"), { target: { value: "https://www.linkedin.com/in/alex-example" } });
     expect(screen.getByRole("link", { name: /Open this profile/ }).getAttribute("href")).toBe("https://www.linkedin.com/in/alex-example");
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(handlers.onSaveProfile).toHaveBeenCalledWith(expect.objectContaining({ name: "Alex from Northwind" }));
 
-    fireEvent.change(screen.getByLabelText("Relevant profile notes"), { target: { value: "Interested in responsible AI partnerships." } });
+    fireEvent.click(screen.getByRole("button", { name: /Capture Alex from Northwind's LinkedIn profile screen/ }));
+    await waitFor(() => expect(handlers.onCapture).toHaveBeenCalledWith("contact-test", "profile"));
+    fireEvent.change(screen.getByLabelText("Relevant notes about Alex from Northwind"), { target: { value: "Interested in responsible AI partnerships." } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
-    fireEvent.change(screen.getByLabelText("Selected chat lines"), { target: { value: "Me: Great to reconnect.\nAlex: What partnership did you have in mind?" } });
+    fireEvent.click(screen.getByRole("button", { name: /Capture conversation screen with Alex from Northwind/ }));
+    await waitFor(() => expect(handlers.onCapture).toHaveBeenCalledWith("contact-test", "chat"));
+    fireEvent.change(screen.getByLabelText("Optional manual chat lines"), { target: { value: "Me: Great to reconnect.\nAlex: What partnership did you have in mind?" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(handlers.onImportChat).toHaveBeenCalledWith("contact-test", expect.stringContaining("What partnership"));
 
@@ -72,7 +76,7 @@ describe("LinkedIn real-profile test wizard", () => {
     renderWizard();
     fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    fireEvent.change(screen.getByLabelText("Person’s name or private nickname"), { target: { value: "Alex" } });
+    fireEvent.change(screen.getByLabelText("Selected contact’s name or private nickname"), { target: { value: "Alex" } });
     fireEvent.change(screen.getByLabelText("LinkedIn profile URL"), { target: { value: "https://example.com/in/alex" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(screen.getByRole("alert").textContent).toContain("https://www.linkedin.com/in/");
