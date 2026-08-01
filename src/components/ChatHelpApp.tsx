@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyRetention } from "@/lib/retention";
 import { buildOutcomeSummary, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
 import { captureVisibleScreen, extractTextFromImage } from "@/lib/localOcr";
-import { CPU_FALLBACK_MODEL_ID, generatePrivateDrafts, unloadPrivateModel } from "@/lib/privateAi";
+import { CLOUDFLARE_MODEL_NAME, CPU_FALLBACK_MODEL_ID, generatePrivateDrafts, unloadPrivateModel } from "@/lib/privateAi";
 import { PLATFORM_OPTIONS, platformLabel, safePlatformUrl } from "@/lib/platforms";
 import { LinkedInTestWizard } from "@/components/LinkedInTestWizard";
 import { PwaInstall } from "@/components/PwaInstall";
@@ -20,6 +20,7 @@ import {
   type VaultSession,
 } from "@/lib/secureVault";
 import {
+  CLOUDFLARE_MODEL_ID,
   createEmptyWorkspace,
   newId,
   type Contact,
@@ -163,7 +164,7 @@ export default function ChatHelpApp() {
         <h1 id="vault-title">Your conversations stay under your key.</h1>
         <p className="lede">ChatHelp encrypts the workspace in this browser with AES-256-GCM. Your passphrase is never stored, sent, or recoverable by us.</p>
         <div className="trust-grid">
-          <span>Encrypted at rest</span><span>AI runs on device</span><span>No platform automation</span>
+          <span>Encrypted at rest</span><span>Cloud AI is opt-in</span><span>No platform automation</span>
         </div>
         {legacy && !exists && <div className="notice warning"><strong>Privacy upgrade available.</strong> A plaintext workspace from the earlier version was found. Creating the vault will encrypt it and remove the plaintext copy.</div>}
         <label>Passphrase
@@ -374,9 +375,11 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
         retrievedContext: relevant,
         feedbackSummary,
         outcomeSummary: buildOutcomeSummary(activeContact),
-      }, setAiStatus);
+      }, setAiStatus, workspace.cloudInference);
       setDrafts(nextDrafts);
-      setAiStatus("Generated locally. Nothing was sent to a message API.");
+      setAiStatus(workspace.modelId === CLOUDFLARE_MODEL_ID
+        ? "Generated with Cloudflare AI. Nothing was sent to LinkedIn or another messaging API."
+        : "Generated locally. Nothing was sent to a message API.");
     } catch (error) {
       setAiStatus("");
       setAppError(formatError(error));
@@ -398,6 +401,8 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
   const storageSummary = useMemo(() => contact ? contact.chat.length + " messages · " + contact.documents.length + " context files · " + contact.outcomes.length + " outcomes" : "No contact selected", [contact]);
   const handoffUrl = contact ? safePlatformUrl(contact) : null;
   const handoffLabel = contact ? platformLabel(contact.platform) : "platform";
+  const cloudSelected = workspace.modelId === CLOUDFLARE_MODEL_ID;
+  const cloudReady = Boolean(workspace.cloudInference.consentedAt && workspace.cloudInference.accessToken.trim().length >= 20);
 
   return (
     <main className="app-shell">
@@ -405,7 +410,7 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
         <div><p className="eyebrow">CHATHELP</p><h1>Private conversation studio</h1></div>
         <div className="top-actions"><button className="wizard-launch" data-testid="open-linkedin-test-wizard" onClick={() => setWizardOpen(true)}>Guided LinkedIn test</button><PwaInstall /><span className="save-state">● {saveStatus}</span><button onClick={() => void downloadBackup()}>Encrypted backup</button><button onClick={onLock}>Lock</button></div>
       </header>
-      <div className="privacy-strip"><strong>Private mode:</strong> prompts and generated drafts stay in this browser. Model weights are downloaded from the pinned model host on first use; OCR assets are served by ChatHelp. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
+      <div className="privacy-strip"><strong>{cloudSelected ? "Cloud AI mode:" : "Local AI mode:"}</strong> {cloudSelected ? "Only the minimized prompt is sent to ChatHelp's Cloudflare Worker after consent; images and the encrypted vault stay here." : "Prompts and generated drafts stay in this browser; model weights are downloaded on first use."} OCR assets are served by ChatHelp. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
       {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
       <div className="workspace-grid">
         <aside className="contacts-panel">
@@ -452,10 +457,14 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
           <div className="panel-card compose-card">
             <p className="eyebrow">PRIVATE AI</p><h2>Draft the next reply</h2>
             <label>Question or agenda<textarea value={agenda} onChange={(event) => setAgenda(event.target.value)} placeholder="What did they ask, and what do you want this reply to accomplish?" /></label>
-            <label>Local model<select value={workspace.modelId} onChange={(event) => updateWorkspace((current) => ({ ...current, modelId: event.target.value }))}><option value="Llama-3.2-3B-Instruct-q4f16_1-MLC">Llama 3.2 3B · stronger WebGPU</option><option value="Llama-3.2-1B-Instruct-q4f16_1-MLC">Llama 3.2 1B · lighter WebGPU</option><option value={CPU_FALLBACK_MODEL_ID}>Qwen 2.5 0.5B · maximum compatibility CPU/WASM</option></select></label>
-            <button className="primary" disabled={!contact || !agenda.trim() || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("Capture processed"))} onClick={() => void generate()}>Generate 3 private drafts</button>
+            <label>AI provider<select value={workspace.modelId} onChange={(event) => updateWorkspace((current) => ({ ...current, modelId: event.target.value }))}><option value={CLOUDFLARE_MODEL_ID}>{CLOUDFLARE_MODEL_NAME} · no local LLM load</option><option value="Llama-3.2-3B-Instruct-q4f16_1-MLC">Llama 3.2 3B · local WebGPU</option><option value="Llama-3.2-1B-Instruct-q4f16_1-MLC">Llama 3.2 1B · lighter local WebGPU</option><option value={CPU_FALLBACK_MODEL_ID}>Qwen 2.5 0.5B · local CPU/WASM</option></select></label>
+            {cloudSelected && <>
+              <label>Cloud access code<input type="password" autoComplete="off" value={workspace.cloudInference.accessToken} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, accessToken: event.target.value.slice(0, 200) } }))} placeholder="Enter once; stored only in the encrypted vault" /></label>
+              <label className="consent-check"><input type="checkbox" checked={Boolean(workspace.cloudInference.consentedAt)} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, consentedAt: event.target.checked ? new Date().toISOString() : "" } }))} /><span>I understand that ChatHelp will send the relevant recent chat, selected context, and my guidance as text to Cloudflare Workers AI to create drafts. Screenshots, the full vault, and credentials are not sent.</span></label>
+            </>}
+            <button className="primary" disabled={!contact || !agenda.trim() || (cloudSelected && !cloudReady) || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("Capture processed"))} onClick={() => void generate()}>Generate 3 private drafts</button>
             {aiStatus && <p className="status" aria-live="polite">{aiStatus}</p>}
-            <p className="fine-print">Uses the selected Llama model with WebGPU, or choose Qwen CPU/WASM for maximum compatibility. If WebGPU is unavailable, ChatHelp switches to CPU/WASM automatically. First use downloads pinned weights; prompts never go to the model host. Review every draft before sending.</p>
+            <p className="fine-print">{cloudSelected ? "Cloud mode avoids downloading or running an LLM on this device. The Worker uses no app storage or AI Gateway, and Cloudflare states Workers AI customer content is not used to train models. The access code and consent record are encrypted in your local vault." : "Local mode downloads pinned model weights and runs in this browser. If WebGPU is unavailable, ChatHelp switches to CPU/WASM. Prompts never go to the model host."} Review every draft before sending.</p>
           </div>
           <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={draft + index}><div><span>OPTION {index + 1}</span><div><button onClick={() => void navigator.clipboard.writeText(draft)}>Copy</button><button title="Useful" onClick={() => rateDraft(draft, "useful")}>👍</button><button title="Not useful" onClick={() => rateDraft(draft, "not-useful")}>👎</button></div></div><p>{draft}</p></article>)}</div>
           {contact && <div className="panel-card compact"><h3>Conversation outcome</h3><div className="inline-form"><select value={outcomeResult} onChange={(event) => setOutcomeResult(event.target.value as typeof outcomeResult)}><option value="positive">Positive</option><option value="neutral">Neutral</option><option value="negative">Negative</option></select><input value={outcomeNote} onChange={(event) => setOutcomeNote(event.target.value)} placeholder="What worked or went wrong?" /><button onClick={addOutcome}>Save</button></div></div>}
@@ -479,7 +488,7 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
           await generate(nextAgenda, contactId);
         }}
       />}
-      <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Your content:</strong> no chat, profile notes, guidance, outcomes, or drafts are intentionally sent to ChatHelp, any messaging or email platform, or an AI API.</li><li><strong>Model download:</strong> pinned public model files are fetched on first use. The model host sees normal download metadata such as IP address; it does not receive your prompts.</li><li><strong>Screen capture:</strong> the browser asks you to choose a screen. OCR runs locally with self-hosted assets, and only extracted text is encrypted.</li><li><strong>Limits:</strong> browser malware, a compromised origin, or someone who knows your passphrase can still expose data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
+      <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Local AI:</strong> prompts stay in the browser. The pinned model host sees ordinary model-download metadata, not prompts.</li><li><strong>Cloud AI (opt-in):</strong> only the relevant recent chat, selected text context, guidance, and agenda are sent to ChatHelp's authenticated Cloudflare Worker. The Worker has no database, object storage, AI Gateway, or application logging configured.</li><li><strong>Never uploaded:</strong> screen images, the encrypted vault, its passphrase, and the cloud access code are not included in the AI request.</li><li><strong>Screen capture:</strong> the browser asks you to choose a visible screen. OCR runs locally with self-hosted assets; extracted text is encrypted in your vault.</li><li><strong>Sending:</strong> ChatHelp never sends a LinkedIn message or email. You review and manually copy a draft.</li><li><strong>Limits:</strong> Cloudflare processes cloud prompts to provide Workers AI. Browser malware, a compromised origin, or someone who knows your passphrase can still expose data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
     </main>
   );
 }
