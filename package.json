@@ -16,6 +16,9 @@
     "postinstall": "npm run prepare:ocr && npm run prepare:icons",
     "prepare:icons": "node scripts/prepare-icons.mjs",
     "build:native": "cross-env CHATHELP_NATIVE_BUILD=1 next build && node scripts/inject-static-csp.mjs",
+    "build:cloudflare": "npm run build:native",
+    "verify:cloudflare": "npx --yes wrangler@4 deploy --dry-run --outdir .wrangler-dry-run",
+    "deploy:cloudflare": "npx --yes wrangler@4 deploy",
     "desktop:dir": "npm run build:native && electron-builder --dir --config electron-builder.yml",
     "package:windows": "npm run build:native && electron-builder --win nsis portable --x64 --config electron-builder.yml",
     "android:sync": "npm run build:native && cap sync android"
