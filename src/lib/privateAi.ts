@@ -1,4 +1,4 @@
-import type { Contact, Guidance } from "./workspaceTypes";
+import { CLOUDFLARE_MODEL_ID, type CloudInferenceSettings, type Contact, type Guidance } from "./workspaceTypes";
 import type { RankedContext } from "./retrieval";
 
 export interface PrivateAiInput {
@@ -16,6 +16,7 @@ export interface WebGpuLike {
 
 export const CPU_FALLBACK_MODEL_ID = "cpu:qwen2.5-0.5b-instruct-q4";
 export const CPU_FALLBACK_MODEL_NAME = "Qwen 2.5 0.5B · private CPU/WASM";
+export const CLOUDFLARE_MODEL_NAME = "Llama 3.1 8B · Cloudflare cloud";
 
 let engine: Awaited<ReturnType<(typeof import("@mlc-ai/web-llm"))["CreateWebWorkerMLCEngine"]>> | null = null;
 let webGpuWorker: Worker | null = null;
@@ -85,6 +86,56 @@ export function parseDrafts(raw: string): string[] {
   throw new Error("The local model did not return three usable drafts. Please try again.");
 }
 
+function cloudDraftEndpoint(): string {
+  const configured = process.env.NEXT_PUBLIC_CHATHELP_CLOUD_AI_URL?.trim().replace(//+$/, "");
+  return configured ? configured + "/api/drafts" : "/api/drafts";
+}
+
+export async function generateWithCloud(
+  input: PrivateAiInput,
+  config: CloudInferenceSettings | undefined,
+  onProgress?: (message: string) => void,
+  request: typeof fetch = fetch,
+): Promise<string[]> {
+  if (!config?.consentedAt) {
+    throw new Error("Confirm the cloud privacy notice before using Cloudflare AI.");
+  }
+  const accessToken = config.accessToken.trim();
+  if (accessToken.length < 20) {
+    throw new Error("Enter the ChatHelp cloud access code. It is encrypted inside your vault.");
+  }
+
+  onProgress?.("Sending the minimized prompt to Cloudflare Workers AI...");
+  const response = await request(cloudDraftEndpoint(), {
+    method: "POST",
+    cache: "no-store",
+    credentials: "omit",
+    referrerPolicy: "no-referrer",
+    headers: {
+      Accept: "application/json",
+      Authorization: "Bearer " + accessToken,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ prompt: buildPrompt(input).slice(0, 24_000) }),
+  });
+
+  let payload: unknown = {};
+  try {
+    payload = await response.json();
+  } catch {
+    // Keep provider errors generic if the response is not JSON.
+  }
+  if (!response.ok) {
+    const message = typeof (payload as { error?: unknown }).error === "string"
+      ? String((payload as { error: string }).error)
+      : "Cloudflare AI is temporarily unavailable.";
+    throw new Error(message);
+  }
+
+  const drafts = (payload as { drafts?: unknown }).drafts;
+  if (!Array.isArray(drafts)) throw new Error("Cloudflare AI returned an invalid response.");
+  return parseDrafts(JSON.stringify(drafts));
+}
 async function unloadWebGpuModel(): Promise<void> {
   if (engine) {
     try { await engine.unload(); } catch { /* The worker may already be gone. */ }
@@ -166,7 +217,12 @@ export async function generatePrivateDrafts(
   modelId: string,
   input: PrivateAiInput,
   onProgress?: (message: string) => void,
+  cloudConfig?: CloudInferenceSettings,
 ): Promise<string[]> {
+  if (modelId === CLOUDFLARE_MODEL_ID) {
+    return generateWithCloud(input, cloudConfig, onProgress);
+  }
+
   const forceCpu = modelId.startsWith("cpu:");
   if (!forceCpu && await hasUsableWebGpu()) {
     try {
