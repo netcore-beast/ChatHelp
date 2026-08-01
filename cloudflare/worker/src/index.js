@@ -150,6 +150,8 @@ export async function handleRequest(request, env) {
   }
 }
 
-export default {
+const worker = {
   fetch: handleRequest,
 };
+
+export default worker;
