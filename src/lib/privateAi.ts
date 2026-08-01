@@ -87,7 +87,7 @@ export function parseDrafts(raw: string): string[] {
 }
 
 function cloudDraftEndpoint(): string {
-  const configured = process.env.NEXT_PUBLIC_CHATHELP_CLOUD_AI_URL?.trim().replace(//+$/, "");
+  const configured = process.env.NEXT_PUBLIC_CHATHELP_CLOUD_AI_URL?.trim().replace(new RegExp("/+$"), "");
   return configured ? configured + "/api/drafts" : "/api/drafts";
 }
 
