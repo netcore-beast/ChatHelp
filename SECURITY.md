@@ -1,6 +1,6 @@
 # ChatHelp security model
 
-ChatHelp is designed as a local-first writing assistant. There is no ChatHelp application backend and no AI prompt API in the current architecture.
+ChatHelp is designed as a local-first writing assistant. The application backend is a storage-free Cloudflare Worker that serves the app and provides the authenticated Workers AI draft endpoint; conversation records remain in the browser vault.
 
 ## Protected data
 
@@ -17,7 +17,7 @@ Chat history, profile notes, guidance, imported documents, OCR text, outcome not
 
 After explicit consent, ChatHelp transmits only the selected recent context, guidance, and agenda to its authenticated Cloudflare Worker for Workers AI generation. No LLM weights run on or download to the device. Screenshots, the full encrypted vault, its device key, and platform credentials are not included in the AI request.
 
-OCR worker, WebAssembly engine, and English language files are copied into the application build and served from the ChatHelp origin. LinkedIn is opened only through a normal user-activated link with no referrer; ChatHelp does not read an account, inject a page script, paste, or send messages automatically.
+OCR worker, WebAssembly engine, and English language files are copied into the application build and served from the ChatHelp origin. The Manifest V3 companion extension has only `activeTab`, `scripting`, and `storage` permissions. It has no persistent LinkedIn host permission. After the user clicks the extension on an open LinkedIn Messaging tab, an isolated content function reads only that visible conversation and stores one pending local snapshot. The authenticated ChatHelp origin receives it through a source/origin-checked bridge and acknowledges deletion. The extension has no fetch/XHR, cookies, webRequest, clipboard, download, DOM click, typing, or send capability.
 
 ## Defensive controls
 
@@ -26,6 +26,7 @@ OCR worker, WebAssembly engine, and English language files are copied into the a
 - File type, size, record count, and text-length limits.
 - Content Security Policy, denied framing, no-referrer policy, MIME sniffing prevention, and denied camera/microphone/geolocation permissions.
 - No analytics, advertising SDK, telemetry endpoint, remote OCR, or remote code execution.
+- Static extension verification fails CI if persistent LinkedIn access, network capability, cookies/webRequest, or DOM click automation is introduced.
 - CI lint, unit tests, encrypted-vault tamper tests, DOM workflow tests, production build, and production dependency audit.
 
 ## Browser startup protection

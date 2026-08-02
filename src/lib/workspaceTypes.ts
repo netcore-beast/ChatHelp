@@ -1,10 +1,26 @@
 export type MessageRole = "me" | "them";
 export type ConversationPlatform = "linkedin" | "gmail" | "outlook" | "other";
+export type PipelineStage = "inbox" | "hot" | "warm" | "cold" | "follow-up" | "replied" | "snoozed" | "done";
+
+export interface ConversationAttachment {
+  id: string;
+  label: string;
+  kind: "file" | "image" | "link" | "unknown";
+}
 
 export interface Message {
   id: string;
   role: MessageRole;
   body: string;
+  createdAt: string;
+  speaker?: string;
+  attachments?: ConversationAttachment[];
+}
+
+export interface DraftHistoryEntry {
+  id: string;
+  agenda: string;
+  drafts: string[];
   createdAt: string;
 }
 
@@ -33,6 +49,17 @@ export interface Contact {
   documents: ContextDocument[];
   outcomes: Outcome[];
   retentionDays: 0 | 30 | 90 | 365;
+  profileUrl?: string;
+  avatarUrl?: string;
+  conversationUrl?: string;
+  labels?: string[];
+  pipelineStage?: PipelineStage;
+  notes?: string;
+  snoozedUntil?: string;
+  followUpAt?: string;
+  archivedAt?: string;
+  lastSyncedAt?: string;
+  draftHistory?: DraftHistoryEntry[];
 }
 
 export interface Guidance {
@@ -57,13 +84,24 @@ export interface CloudInferenceSettings {
   rememberAccessToken: boolean;
 }
 
+export interface AiUsageEntry {
+  id: string;
+  contactId: string;
+  modelId: string;
+  promptCharacters: number;
+  variants: number;
+  estimatedCostUsd: number;
+  createdAt: string;
+}
+
 export interface WorkspaceData {
-  version: 4;
+  version: 5;
   modelId: string;
   cloudInference: CloudInferenceSettings;
   contacts: Contact[];
   guidance: Guidance;
   feedback: Feedback[];
+  aiUsage: AiUsageEntry[];
 }
 
 export const CLOUDFLARE_MODEL_ID = "cloud:cloudflare:llama-3.1-8b-instruct-fast";
@@ -82,7 +120,7 @@ export function newId(prefix = "item"): string {
 
 export function createEmptyWorkspace(): WorkspaceData {
   return {
-    version: 4,
+    version: 5,
     modelId: DEFAULT_MODEL_ID,
     cloudInference: {
       accessToken: "",
@@ -97,5 +135,6 @@ export function createEmptyWorkspace(): WorkspaceData {
       boundaries: "Do not invent facts, pressure the person, or imply a relationship that does not exist.",
     },
     feedback: [],
+    aiUsage: [],
   };
 }

@@ -9,7 +9,8 @@ ChatHelp is a local-first, encrypted web application that helps a person write t
 - Draft generation through an authenticated Cloudflare Worker and Workers AI; no model is downloaded to the device.
 - Local relevance ranking for imported context; no embedding service.
 - Self-hosted Tesseract worker, WebAssembly engine, and English OCR data.
-- Manual screen selection and manual LinkedIn/Gmail/Outlook handoff; no account scanning or message automation.
+- Explicit-click Chrome extension import for the currently open LinkedIn conversation, plus manual screen/OCR fallback; no background account scanning or message automation.
+- Local inbox, CRM pipeline stages, labels, private notes, snooze/follow-up reminders, editable draft history, and local AI usage metadata.
 - Per-contact retention and complete local erasure, including the browser-held device key.
 - Restrictive CSP and browser permission policy.
 
@@ -35,7 +36,18 @@ Run these commands inside the Codespace:
     npm run build
     npm audit --audit-level=high
 
-The test suite covers automatic device encryption, one-time migration of older passphrase vaults, tamper rejection, unique AES-GCM IVs, retention, retrieval, prompt-injection boundaries, response parsing, security headers, self-hosted OCR assets, and browser reopen behavior.
+The test suite covers automatic device encryption, one-time migration of older passphrase vaults, tamper rejection, extension snapshot validation/deduplication, minimal Chrome permissions, manual-send boundaries, retention, retrieval, prompt-injection boundaries, response parsing, security headers, self-hosted OCR assets, and browser reopen behavior.
+
+## Desktop LinkedIn extension workflow
+
+1. Load the unpacked `extension` directory in desktop Chrome during private beta testing.
+2. Open exactly one LinkedIn Messaging conversation.
+3. Click the ChatHelp extension icon. Its temporary `activeTab` grant reads the open visible conversation only.
+4. ChatHelp opens or focuses, validates the snapshot, merges new messages into the matching contact, encrypts it locally, and clears the extension&apos;s pending copy.
+5. Triage the conversation with pipeline stages, labels, notes, snooze/follow-up times, and keyboard shortcuts. Generate three editable drafts only when needed.
+6. Copy the chosen draft, review it on LinkedIn, and send it yourself. ChatHelp never types or clicks Send.
+
+See [extension/README.md](extension/README.md) and [docs/DESKTOP_LINKEDIN_WORKFLOW.md](docs/DESKTOP_LINKEDIN_WORKFLOW.md).
 
 ## Installable clients and platform support
 
@@ -49,7 +61,7 @@ See [docs/NATIVE_PACKAGING.md](docs/NATIVE_PACKAGING.md) for artifact and signin
 
 ## Important product boundary
 
-ChatHelp is a drafting assistant, not a messaging automation client. It does not bypass platform APIs, scrape accounts, inject into third-party pages, or send messages. This reduces privacy and account-risk concerns and keeps the user in control.
+ChatHelp is a drafting assistant, not a messaging automation client. Its extension runs an isolated DOM reader only after the user clicks it on the active LinkedIn conversation. It does not enumerate the inbox, bypass platform APIs, click controls, type, insert drafts, or send messages. This keeps the user in control.
 
 
 ## Guided LinkedIn profile test

@@ -46,7 +46,20 @@ export function platformLabel(platform: ConversationPlatform | undefined): strin
   return PLATFORM_OPTIONS.find((option) => option.value === platform)?.shortLabel ?? "LinkedIn";
 }
 
-export function safePlatformUrl(contact: Pick<Contact, "platform" | "platformUrl">): string | null {
+export function safePlatformUrl(contact: Pick<Contact, "platform" | "platformUrl" | "conversationUrl">): string | null {
+  if (contact.platform === "linkedin" && contact.conversationUrl) {
+    try {
+      const url = new URL(contact.conversationUrl);
+      if (url.protocol === "https:" && (url.hostname === "linkedin.com" || url.hostname === "www.linkedin.com") && url.pathname.startsWith("/messaging/")) {
+        url.hostname = "www.linkedin.com";
+        url.search = "";
+        url.hash = "";
+        return url.toString();
+      }
+    } catch {
+      // Fall back to LinkedIn Messaging below.
+    }
+  }
   if (contact.platform !== "other") return DEFAULT_URLS[contact.platform];
   if (!contact.platformUrl.trim()) return null;
   try {

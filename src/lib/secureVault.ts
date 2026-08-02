@@ -1,4 +1,5 @@
-import { createEmptyWorkspace, normalizeWorkspaceModelId, type Contact, type Message, type WorkspaceData } from "./workspaceTypes";
+import { createEmptyWorkspace, normalizeWorkspaceModelId, type Contact, type ConversationAttachment, type Message, type PipelineStage, type WorkspaceData } from "./workspaceTypes";
+import { PIPELINE_STAGES } from "./linkedinExtension";
 
 const DB_NAME = "chathelp-secure";
 const DB_VERSION = 1;
@@ -214,12 +215,31 @@ export async function eraseVault(): Promise<void> {
 }
 
 function normalizeMessage(value: Partial<Message>, index: number): Message {
+  const attachments = Array.isArray(value.attachments) ? value.attachments.slice(0, 20).flatMap((attachment, attachmentIndex): ConversationAttachment[] => {
+    if (!attachment || typeof attachment !== "object") return [];
+    const item = attachment as Partial<ConversationAttachment>;
+    const label = typeof item.label === "string" ? item.label.slice(0, 300) : "";
+    if (!label) return [];
+    const kind = item.kind === "file" || item.kind === "image" || item.kind === "link" ? item.kind : "unknown";
+    return [{ id: typeof item.id === "string" ? item.id.slice(0, 200) : `attachment-${attachmentIndex}`, label, kind }];
+  }) : [];
   return {
     id: typeof value.id === "string" ? value.id : "message-" + index,
     role: value.role === "them" ? "them" : "me",
     body: typeof value.body === "string" ? value.body.slice(0, 20_000) : "",
     createdAt: typeof value.createdAt === "string" ? value.createdAt : new Date().toISOString(),
+    speaker: typeof value.speaker === "string" ? value.speaker.slice(0, 200) : "",
+    attachments,
   };
+}
+
+function normalizeStage(value: unknown): PipelineStage {
+  return PIPELINE_STAGES.some((stage) => stage.value === value) ? value as PipelineStage : "inbox";
+}
+
+function normalizeLabels(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.filter((label): label is string => typeof label === "string").map((label) => label.trim().slice(0, 80)).filter(Boolean))).slice(0, 50);
 }
 
 export function normalizeWorkspace(value: unknown): WorkspaceData {
@@ -231,7 +251,7 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
     : {};
   const rememberAccessToken = cloudInference.rememberAccessToken === true;
   return {
-    version: 4,
+    version: 5,
     modelId: normalizeWorkspaceModelId(),
     cloudInference: {
       accessToken: rememberAccessToken && typeof cloudInference.accessToken === "string" ? cloudInference.accessToken.slice(0, 200) : "",
@@ -265,9 +285,39 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
           return { id: typeof item.id === "string" ? item.id : "outcome-" + outcomeIndex, result, note: typeof item.note === "string" ? item.note.slice(0, 2000) : "", createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString() };
         }) : [],
         retentionDays: contact.retentionDays === 0 || contact.retentionDays === 30 || contact.retentionDays === 365 ? contact.retentionDays : 90,
+        profileUrl: typeof contact.profileUrl === "string" ? contact.profileUrl.slice(0, 2_000) : "",
+        avatarUrl: typeof contact.avatarUrl === "string" ? contact.avatarUrl.slice(0, 2_000) : "",
+        conversationUrl: typeof contact.conversationUrl === "string" ? contact.conversationUrl.slice(0, 2_000) : "",
+        labels: normalizeLabels(contact.labels),
+        pipelineStage: normalizeStage(contact.pipelineStage),
+        notes: typeof contact.notes === "string" ? contact.notes.slice(0, 20_000) : "",
+        snoozedUntil: typeof contact.snoozedUntil === "string" ? contact.snoozedUntil.slice(0, 100) : "",
+        followUpAt: typeof contact.followUpAt === "string" ? contact.followUpAt.slice(0, 100) : "",
+        archivedAt: typeof contact.archivedAt === "string" ? contact.archivedAt.slice(0, 100) : "",
+        lastSyncedAt: typeof contact.lastSyncedAt === "string" ? contact.lastSyncedAt.slice(0, 100) : "",
+        draftHistory: Array.isArray(contact.draftHistory) ? contact.draftHistory.slice(-20).flatMap((draft, draftIndex) => {
+          if (!draft || typeof draft !== "object") return [];
+          const item = draft as Record<string, unknown>;
+          const drafts = Array.isArray(item.drafts) ? item.drafts.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.slice(0, 5_000)).slice(0, 3) : [];
+          if (!drafts.length) return [];
+          return [{ id: typeof item.id === "string" ? item.id.slice(0, 200) : `draft-history-${draftIndex}`, agenda: typeof item.agenda === "string" ? item.agenda.slice(0, 5_000) : "", drafts, createdAt: typeof item.createdAt === "string" ? item.createdAt.slice(0, 100) : new Date().toISOString() }];
+        }) : [],
       };
     }),
     feedback: Array.isArray(source.feedback) ? source.feedback.slice(-1000) as WorkspaceData["feedback"] : [],
+    aiUsage: Array.isArray(source.aiUsage) ? source.aiUsage.slice(-1000).flatMap((usage, usageIndex) => {
+      if (!usage || typeof usage !== "object") return [];
+      const item = usage as Record<string, unknown>;
+      return [{
+        id: typeof item.id === "string" ? item.id.slice(0, 200) : `usage-${usageIndex}`,
+        contactId: typeof item.contactId === "string" ? item.contactId.slice(0, 200) : "",
+        modelId: typeof item.modelId === "string" ? item.modelId.slice(0, 300) : normalizeWorkspaceModelId(),
+        promptCharacters: typeof item.promptCharacters === "number" && Number.isFinite(item.promptCharacters) ? Math.max(0, Math.floor(item.promptCharacters)) : 0,
+        variants: typeof item.variants === "number" && Number.isFinite(item.variants) ? Math.max(0, Math.floor(item.variants)) : 0,
+        estimatedCostUsd: 0,
+        createdAt: typeof item.createdAt === "string" ? item.createdAt.slice(0, 100) : new Date().toISOString(),
+      }];
+    }) : [],
   };
 }
 
