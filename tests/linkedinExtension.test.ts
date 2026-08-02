@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   LINKEDIN_EXTENSION_SOURCE,
   isActivelySnoozed,
+  isLikelyMobileDevice,
   isReminderDue,
   mergeLinkedInSnapshot,
   parseLinkedInExtensionSnapshot,
+  recommendLinkedInCaptureMethod,
   type LinkedInExtensionSnapshot,
 } from "../src/lib/linkedinExtension";
 import type { Contact } from "../src/lib/workspaceTypes";
@@ -29,6 +31,17 @@ const rawSnapshot = {
 };
 
 describe("explicit LinkedIn extension import", () => {
+  it("selects one safe import method from the device and extension capabilities", () => {
+    expect(recommendLinkedInCaptureMethod({ detected: false, extensionConnected: false, isMobile: false, supportsScreenCapture: true })).toBe("detecting");
+    expect(recommendLinkedInCaptureMethod({ detected: true, extensionConnected: true, isMobile: false, supportsScreenCapture: true })).toBe("extension");
+    expect(recommendLinkedInCaptureMethod({ detected: true, extensionConnected: false, isMobile: false, supportsScreenCapture: true })).toBe("screen");
+    expect(recommendLinkedInCaptureMethod({ detected: true, extensionConnected: true, isMobile: true, supportsScreenCapture: true })).toBe("manual");
+    expect(recommendLinkedInCaptureMethod({ detected: true, extensionConnected: false, isMobile: false, supportsScreenCapture: false })).toBe("manual");
+    expect(isLikelyMobileDevice("Mozilla/5.0 (Linux; Android 16; Mobile)")).toBe(true);
+    expect(isLikelyMobileDevice("Mozilla/5.0 (Macintosh; Intel Mac OS X)", 5)).toBe(true);
+    expect(isLikelyMobileDevice("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")).toBe(false);
+  });
+
   it("validates and sanitizes the app-bound snapshot", () => {
     const snapshot = parseLinkedInExtensionSnapshot(rawSnapshot);
     expect(snapshot).not.toBeNull();
@@ -65,6 +78,7 @@ describe("explicit LinkedIn extension import", () => {
   it("uses minimal Chrome permissions and contains no send or network automation", () => {
     const manifest = JSON.parse(readFileSync("extension/manifest.json", "utf8")) as { permissions: string[]; host_permissions: string[] };
     const background = readFileSync("extension/background.js", "utf8");
+    const bridge = readFileSync("extension/app-bridge.js", "utf8");
     expect(manifest.permissions).toEqual(["activeTab", "scripting", "storage"]);
     expect(manifest.host_permissions.some((permission) => permission.includes("linkedin.com"))).toBe(false);
     expect(background).toContain("chrome.action.onClicked");
@@ -72,5 +86,7 @@ describe("explicit LinkedIn extension import", () => {
     expect(background).not.toMatch(/\.click\s*\(/);
     expect(background).not.toMatch(/fetch\s*\(/);
     expect(background).not.toContain("XMLHttpRequest");
+    expect(bridge).toContain("announceReady();");
+    expect(bridge).toContain("event.data.type === REQUEST");
   });
 });

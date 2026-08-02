@@ -19,6 +19,7 @@ Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: tr
 beforeEach(async () => {
   await resetVaultForTests();
   localStorage.clear();
+  Object.defineProperty(navigator, "mediaDevices", { value: { getDisplayMedia: vi.fn() }, configurable: true });
   URL.createObjectURL = vi.fn(() => "blob:local-screen-preview");
   URL.revokeObjectURL = vi.fn();
 });
@@ -36,13 +37,18 @@ describe("secure workspace interaction", () => {
     await user.click(screen.getByRole("button", { name: "Add" }));
     expect(await screen.findByRole("heading", { name: "Alex Morgan" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Alex Morgan's LinkedIn profile" })).toBeTruthy();
+    expect(await screen.findByText("Screen capture recommended for this desktop")).toBeTruthy();
+    expect(screen.getAllByTestId("recommended-linkedin-import")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Check for capture" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Capture Alex Morgan's profile screen" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Capture conversation screen" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Show other import options" }));
     expect(screen.getByRole("button", { name: "Capture Alex Morgan's profile screen" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Capture conversation messages with Alex Morgan" })).toBeTruthy();
     expect(screen.getByText("No LLM model is downloaded or run on this device.")).toBeTruthy();
     expect(screen.queryByLabelText("AI provider")).toBeNull();
     expect((screen.getByRole("button", { name: "Generate 3 cloud drafts for Alex Morgan" }) as HTMLButtonElement).disabled).toBe(true);
 
-    await user.click(screen.getByRole("button", { name: "Capture conversation messages with Alex Morgan" }));
+    await user.click(screen.getByRole("button", { name: "Capture conversation screen" }));
     expect(await screen.findByRole("heading", { name: "Select only Alex Morgan's message history" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Use selected message area" }));
     const capturedText = await screen.findByLabelText("Captured conversation text for Alex Morgan");
@@ -59,6 +65,11 @@ describe("secure workspace interaction", () => {
   it("imports an explicit extension snapshot into the local inbox without sending", async () => {
     render(<ChatHelpApp />);
     expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
+    window.dispatchEvent(new MessageEvent("message", {
+      source: window,
+      origin: window.location.origin,
+      data: { source: LINKEDIN_EXTENSION_SOURCE, type: "CHATHELP_EXTENSION_READY" },
+    }));
     const payload = {
       source: LINKEDIN_EXTENSION_SOURCE,
       version: 1,
@@ -81,6 +92,8 @@ describe("secure workspace interaction", () => {
     expect(screen.getAllByText("Could you share the role brief?").length).toBeGreaterThan(0);
     expect(screen.getByLabelText("Pipeline stage for Taylor Lee")).toBeTruthy();
     expect(screen.getByText(/1 new visible message/i)).toBeTruthy();
+    expect(screen.getByText("Chrome extension connected")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Check for capture" })).toBeNull();
     expect(screen.getByText(/never clicks, types, or sends/i)).toBeTruthy();
   });
 });
