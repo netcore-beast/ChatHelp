@@ -5,6 +5,27 @@ export const LINKEDIN_SNAPSHOT_REQUEST_EVENT = "CHATHELP_REQUEST_LINKEDIN_SNAPSH
 export const LINKEDIN_SNAPSHOT_ACK_EVENT = "CHATHELP_ACK_LINKEDIN_SNAPSHOT";
 export const LINKEDIN_EXTENSION_SOURCE = "chathelp-linkedin-extension";
 
+export type LinkedInCaptureMethod = "detecting" | "extension" | "screen" | "manual";
+
+export interface LinkedInCaptureCapabilities {
+  detected: boolean;
+  extensionConnected: boolean;
+  isMobile: boolean;
+  supportsScreenCapture: boolean;
+}
+
+export function isLikelyMobileDevice(userAgent: string, maxTouchPoints = 0): boolean {
+  const agent = userAgent.toLowerCase();
+  return /android|iphone|ipad|ipod|mobile/.test(agent) || (agent.includes("macintosh") && maxTouchPoints > 1);
+}
+
+export function recommendLinkedInCaptureMethod(capabilities: LinkedInCaptureCapabilities): LinkedInCaptureMethod {
+  if (!capabilities.detected) return "detecting";
+  if (!capabilities.isMobile && capabilities.extensionConnected) return "extension";
+  if (!capabilities.isMobile && capabilities.supportsScreenCapture) return "screen";
+  return "manual";
+}
+
 export const PIPELINE_STAGES: ReadonlyArray<{ value: PipelineStage; label: string }> = [
   { value: "inbox", label: "Inbox" },
   { value: "hot", label: "Hot" },

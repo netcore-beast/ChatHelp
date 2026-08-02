@@ -14,9 +14,11 @@ import {
   PIPELINE_STAGES,
   contactStage,
   isActivelySnoozed,
+  isLikelyMobileDevice,
   isReminderDue,
   mergeLinkedInSnapshot,
   parseLinkedInExtensionSnapshot,
+  recommendLinkedInCaptureMethod,
 } from "@/lib/linkedinExtension";
 import { LinkedInTestWizard } from "@/components/LinkedInTestWizard";
 import { PwaInstall } from "@/components/PwaInstall";
@@ -198,7 +200,10 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [inboxView, setInboxView] = useState<InboxView>("inbox");
   const [contactSearch, setContactSearch] = useState("");
   const [labelFilter, setLabelFilter] = useState("");
-  const [extensionStatus, setExtensionStatus] = useState("Open a LinkedIn conversation and click the ChatHelp Chrome extension to import it.");
+  const [extensionStatus, setExtensionStatus] = useState("Detecting secure import options for this device…");
+  const [extensionConnected, setExtensionConnected] = useState(false);
+  const [captureEnvironment, setCaptureEnvironment] = useState({ detected: false, isMobile: false, supportsScreenCapture: false });
+  const [showImportAlternatives, setShowImportAlternatives] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [saveStatus, setSaveStatus] = useState("Encrypted");
   const [newContactName, setNewContactName] = useState("");
@@ -221,6 +226,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     resolve: (region: NormalizedCropRegion | null) => void;
   } | null>(null);
   const documentRef = useRef<HTMLInputElement>(null);
+  const chatPasteRef = useRef<HTMLTextAreaElement>(null);
   const agendaRef = useRef<HTMLTextAreaElement>(null);
   const snoozeRef = useRef<HTMLInputElement>(null);
   const labelsRef = useRef<HTMLInputElement>(null);
@@ -234,13 +240,21 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    const capabilityTimer = window.setTimeout(() => {
+      setCaptureEnvironment({
+        detected: true,
+        isMobile: isLikelyMobileDevice(navigator.userAgent, navigator.maxTouchPoints),
+        supportsScreenCapture: Boolean(navigator.mediaDevices?.getDisplayMedia),
+      });
+    }, 0);
     const targetOrigin = window.location.origin === "null" ? "*" : window.location.origin;
     const handleSnapshot = (event: MessageEvent) => {
       if (event.source !== window || (window.location.origin !== "null" && event.origin !== window.location.origin)) return;
       const data = event.data as { source?: unknown; type?: unknown; payload?: unknown } | null;
       if (!data || data.source !== LINKEDIN_EXTENSION_SOURCE) return;
       if (data.type === "CHATHELP_EXTENSION_READY") {
-        setExtensionStatus("Chrome extension connected. Capture an open LinkedIn conversation when you are ready.");
+        setExtensionConnected(true);
+        setExtensionStatus("Chrome extension connected. Captures import automatically after you click its icon on an open LinkedIn conversation.");
         window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_REQUEST_EVENT }, targetOrigin);
         return;
       }
@@ -250,6 +264,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         setExtensionStatus("The extension capture was rejected because it was incomplete or unsafe.");
         return;
       }
+      setExtensionConnected(true);
       const preview = mergeLinkedInSnapshot(workspaceRef.current.contacts, snapshot);
       setWorkspace((current) => ({ ...current, contacts: mergeLinkedInSnapshot(current.contacts, snapshot).contacts }));
       setSelectedId(preview.contactId);
@@ -262,6 +277,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_REQUEST_EVENT }, targetOrigin);
     return () => {
       window.clearInterval(timer);
+      window.clearTimeout(capabilityTimer);
       window.removeEventListener("message", handleSnapshot);
     };
   }, []);
@@ -297,17 +313,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   function selectContact(nextContact: Contact) {
     setSelectedId(nextContact.id);
     setDrafts(nextContact.draftHistory?.at(-1)?.drafts ?? []);
-  }
-
-  function requestLinkedInSnapshot() {
-    const targetOrigin = window.location.origin === "null" ? "*" : window.location.origin;
-    setExtensionStatus("Checking for a conversation captured by the ChatHelp Chrome extension…");
-    window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_REQUEST_EVENT }, targetOrigin);
-    window.setTimeout(() => {
-      setExtensionStatus((current) => current.startsWith("Checking")
-        ? "No pending capture found. Open a LinkedIn conversation and click the ChatHelp extension icon; ChatHelp will import it automatically."
-        : current);
-    }, 1_500);
+    setShowImportAlternatives(false);
   }
 
   function moveContactToStage(contactId: string, stage: PipelineStage) {
@@ -629,6 +635,12 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const handoffLabel = contact ? platformLabel(contact.platform) : "platform";
   const cloudReady = Boolean(workspace.cloudInference.consentedAt && cloudAccessCode.trim().length >= 20);
   const conversationReady = Boolean(contact && hasConversationContext(contact));
+  const captureMethod = recommendLinkedInCaptureMethod({
+    detected: captureEnvironment.detected,
+    extensionConnected,
+    isMobile: captureEnvironment.isMobile,
+    supportsScreenCapture: captureEnvironment.supportsScreenCapture,
+  });
 
   return (
     <main className="app-shell">
@@ -636,12 +648,11 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         <div><p className="eyebrow">CHATHELP</p><h1>Private conversation studio</h1></div>
         <div className="top-actions">{dueReminderCount > 0 && <button className="reminder-badge" onClick={() => setInboxView("reminders")}>{dueReminderCount} reminder{dueReminderCount === 1 ? "" : "s"} due</button>}<button onClick={() => shortcutDialogRef.current?.showModal()} aria-label="Show keyboard shortcuts">Shortcuts</button><button className="wizard-launch" data-testid="open-linkedin-test-wizard" onClick={() => setWizardOpen(true)}>Guided LinkedIn test</button><PwaInstall /><span className="save-state">● {saveStatus} on this device</span></div>
       </header>
-      <div className="privacy-strip"><strong>Manual-safe desktop mode:</strong> the Chrome extension reads only the open LinkedIn conversation after you click it. It never clicks, types, or sends. Imported text stays in this device vault; only selected text context is sent to Cloudflare Workers AI when you request drafts. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
+      <div className="privacy-strip"><strong>Manual-safe {captureEnvironment.isMobile ? "mobile" : "desktop"} mode:</strong> ChatHelp recommends the safest available import method for this device. It never clicks, types, or sends on LinkedIn. Imported text stays in this device vault; only selected text context is sent to Cloudflare Workers AI when you request drafts. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
       {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
       <div className={inboxView === "pipeline" ? "workspace-grid pipeline-active" : "workspace-grid"}>
         <aside className="contacts-panel">
           <div className="section-heading"><div><p className="eyebrow">DESKTOP WORKSPACE</p><h2>LinkedIn inbox</h2></div><button aria-label="Show keyboard shortcuts" onClick={() => shortcutDialogRef.current?.showModal()}>?</button></div>
-          <div className="extension-import-card"><strong>One-click conversation import</strong><p>Open one LinkedIn conversation, then click the ChatHelp extension icon. Only that visible thread is read.</p><button onClick={requestLinkedInSnapshot}>Import pending capture</button><small role="status" aria-live="polite">{extensionStatus}</small></div>
           <div className="inbox-tabs" role="tablist" aria-label="Conversation views">
             <button role="tab" aria-selected={inboxView === "inbox"} onClick={() => setInboxView("inbox")}>Inbox <span>{workspace.contacts.filter((item) => !item.archivedAt && !isActivelySnoozed(item, now)).length}</span></button>
             <button role="tab" aria-selected={inboxView === "pipeline"} onClick={() => setInboxView("pipeline")}>Pipeline</button>
@@ -701,15 +712,35 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
               <label>Contact&apos;s headline, role, or company<input value={contact.headline} onChange={(event) => updateContact((current) => ({ ...current, headline: event.target.value.slice(0, 500) }))} placeholder={`Example: ${contact.name}'s role, company, or relevant expertise`} /></label>
               {contact.profileUrl && <a className="profile-link" href={contact.profileUrl} target="_blank" rel="noreferrer">Open {contact.name}&apos;s LinkedIn profile ↗</a>}
               <label>Relevant notes about {contact.name}<textarea value={contact.profileNotes} onChange={(event) => updateContact((current) => ({ ...current, profileNotes: event.target.value.slice(0, 20_000) }))} placeholder={`Only add relevant, non-sensitive context about ${contact.name}.`} /></label>
-              <div className="capture-guide"><strong>To capture profile context</strong><ol><li>Open {contact.name}&apos;s LinkedIn profile.</li><li>Click the button below.</li><li>In the system picker, choose the tab or window showing {contact.name}&apos;s profile—not your profile and not the chat.</li><li>In ChatHelp&apos;s private preview, select only {contact.name}&apos;s relevant profile details. Navigation and side panels will be excluded.</li></ol></div>
-              <div className="button-row"><button onClick={() => void captureContext()}>Capture {contact.name}&apos;s profile screen</button><button onClick={() => documentRef.current?.click()}>Import profile/context file</button><input ref={documentRef} hidden type="file" accept=".txt,.md,.json,text/plain,application/json" onChange={(event) => event.target.files?.[0] && void importDocument(event.target.files[0])} /></div>
+              <input ref={documentRef} hidden type="file" accept=".txt,.md,.json,text/plain,application/json" onChange={(event) => event.target.files?.[0] && void importDocument(event.target.files[0])} />
               {contact.documents.filter((document) => !isConversationCapture(document)).map((document) => <div className="document-row" key={document.id}><div><strong>{document.name}</strong><small>{isLikelyFullLinkedInPageCapture(document) ? "Not used by AI — full LinkedIn page detected" : `${document.text.length.toLocaleString()} encrypted characters`}</small></div><button aria-label={"Delete " + document.name} onClick={() => updateContact((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== document.id) }))}>Remove</button></div>)}
             </div>
             <div className="panel-card">
               <h3>Your conversation with {contact.name}</h3>
               <p className="section-explainer"><strong>You</strong> means the person using ChatHelp. <strong>{contact.name}</strong> is the selected LinkedIn contact who will receive your reply.</p>
-              <div className="extension-callout"><div><strong>Chrome extension · recommended</strong><p>Open this conversation on LinkedIn and click the ChatHelp extension icon. ChatHelp imports visible names, messages, timestamps, and attachment labels directly from the DOM—without OCR or background inbox scanning.</p></div><button onClick={requestLinkedInSnapshot}>Check for capture</button></div>
-              <div className="capture-guide"><strong>To capture chat history</strong><ol><li>Open LinkedIn Messaging and select your conversation with {contact.name}.</li><li>Scroll so the latest incoming message and enough recent history are visible.</li><li>Click below and choose that LinkedIn Messaging tab or window in the system picker.</li><li>In ChatHelp&apos;s private preview, select only the central message column. Exclude navigation, other chats, job cards, and side panels.</li><li>For older history, scroll and capture another message area.</li></ol><button onClick={() => void captureConversation()}>Capture conversation messages with {contact.name}</button></div>
+              <div className={`capture-recommendation capture-${captureMethod}`} data-testid="recommended-linkedin-import">
+                <div className="capture-recommendation-copy">
+                  <span className="capture-method-label">Recommended for this device</span>
+                  {captureMethod === "detecting" && <><h4>Choosing the safest import method…</h4><p>ChatHelp is checking this browser&apos;s local capabilities. No LinkedIn data is being read.</p></>}
+                  {captureMethod === "extension" && <><h4>Chrome extension connected</h4><p>Open {contact.name}&apos;s conversation on LinkedIn and click the ChatHelp extension icon. The visible names, messages, timestamps, and attachment labels will import automatically—without OCR or background inbox scanning.</p></>}
+                  {captureMethod === "screen" && <><h4>Screen capture recommended for this desktop</h4><p>Choose the LinkedIn Messaging tab or window, then select only the central message column in ChatHelp&apos;s private preview. Navigation, other chats, job cards, and side panels are excluded.</p></>}
+                  {captureMethod === "manual" && <><h4>Paste or import recommended on this device</h4><p>{captureEnvironment.isMobile ? "Mobile browsers do not provide the safe desktop capture flow. Copy only the relevant LinkedIn messages and paste them below." : "This browser does not provide a compatible screen-capture or extension connection. Copy only the relevant LinkedIn messages and paste them below."}</p></>}
+                </div>
+                <div className="capture-primary-action">
+                  {captureMethod === "detecting" && <button disabled>Choosing best method…</button>}
+                  {captureMethod === "extension" && <a className="capture-action" href={handoffUrl ?? "https://www.linkedin.com/messaging/"} target="_blank" rel="noreferrer">Open LinkedIn conversation</a>}
+                  {captureMethod === "screen" && <button onClick={() => void captureConversation()}>Capture conversation screen</button>}
+                  {captureMethod === "manual" && <button onClick={() => chatPasteRef.current?.focus()}>Paste messages manually</button>}
+                </div>
+                {captureMethod === "extension" && <small role="status" aria-live="polite">{extensionStatus}</small>}
+                {captureMethod !== "detecting" && <button className="capture-options-toggle" aria-expanded={showImportAlternatives} onClick={() => setShowImportAlternatives((current) => !current)}>{showImportAlternatives ? "Hide other import options" : "Show other import options"}</button>}
+                {showImportAlternatives && captureMethod !== "detecting" && <div className="capture-alternatives">
+                  {captureEnvironment.supportsScreenCapture && captureMethod !== "screen" && <button onClick={() => void captureConversation()}>Capture conversation screen</button>}
+                  {captureEnvironment.supportsScreenCapture && <button onClick={() => void captureContext()}>Capture {contact.name}&apos;s profile screen</button>}
+                  <button onClick={() => documentRef.current?.click()}>Import profile/context file</button>
+                  {captureMethod !== "manual" && <button onClick={() => chatPasteRef.current?.focus()}>Paste messages manually</button>}
+                </div>}
+              </div>
               {contact.documents.filter(isConversationCapture).map((document) => {
                 const noisy = isLikelyFullLinkedInPageCapture(document);
                 return <article className="captured-context" key={document.id}>
@@ -717,7 +748,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 {noisy && <p className="capture-warning" role="note">This capture contains LinkedIn navigation, another conversation list, or job suggestions. Remove it and capture again, selecting only {contact.name}&apos;s central message column.</p>}
                 <pre aria-label={`Captured conversation text for ${contact.name}`}>{document.text}</pre>
               </article>;})}
-              <textarea value={chatPaste} onChange={(event) => setChatPaste(event.target.value)} placeholder={"Paste selected lines only, for example:\nMe: Great to reconnect\nAlex: Likewise—how is the new role?"} />
+              <textarea ref={chatPasteRef} aria-label="Paste conversation messages" value={chatPaste} onChange={(event) => setChatPaste(event.target.value)} placeholder={"Paste selected lines only, for example:\nMe: Great to reconnect\nAlex: Likewise—how is the new role?"} />
               <button onClick={importChat}>Import manually pasted chat lines</button>
               <div className="inline-form"><select aria-label="Message sender" value={messageRole} onChange={(event) => setMessageRole(event.target.value as MessageRole)}><option value="them">{contact.name}</option><option value="me">You</option></select><input value={messageBody} onChange={(event) => setMessageBody(event.target.value)} placeholder={`Add one message from ${messageRole === "me" ? "you" : contact.name}`} /><button onClick={addMessage}>Add</button></div>
               <div className="chat-list">{contact.chat.slice(-30).map((message) => <div className={message.role === "me" ? "bubble mine" : "bubble"} key={message.id}><span className="message-meta"><small>{message.role === "me" ? "You" : message.speaker || contact.name}</small><time dateTime={message.createdAt}>{formatRelativeTime(message.createdAt, now)}</time></span>{message.body && <p>{message.body}</p>}{Boolean(message.attachments?.length) && <span className="attachment-row">{message.attachments?.map((attachment) => <small className="attachment-chip" key={attachment.id}>{attachment.kind === "image" ? "Image" : attachment.kind === "file" ? "File" : "Attachment"}: {attachment.label}</small>)}</span>}</div>)}</div>
