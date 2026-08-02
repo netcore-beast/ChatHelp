@@ -1,6 +1,25 @@
 const APP_URL = "https://chathelp-private-cloud.project-mission-ai.workers.dev/";
 const SNAPSHOT_KEY = "pendingLinkedInSnapshot";
+const SELECTED_CONTACT_KEY = "selectedLinkedInContact";
 const SNAPSHOT_EVENT = "CHATHELP_LINKEDIN_SNAPSHOT";
+const SELECTED_CONTACT_EVENT = "CHATHELP_SET_SELECTED_LINKEDIN_CONTACT";
+
+function normalizeSelectedContact(value) {
+  if (!value || typeof value !== "object") return null;
+  const contactId = String(value.contactId || "").trim().slice(0, 200);
+  const name = String(value.name || "").replace(/\s+/g, " ").trim().slice(0, 200);
+  let profileUrl = "";
+  try {
+    const parsed = new URL(String(value.profileUrl || ""));
+    if (parsed.protocol === "https:" && (parsed.hostname === "linkedin.com" || parsed.hostname === "www.linkedin.com") && parsed.pathname.startsWith("/in/")) {
+      parsed.hostname = "www.linkedin.com";
+      parsed.search = "";
+      parsed.hash = "";
+      profileUrl = parsed.toString();
+    }
+  } catch { /* A profile URL is optional; exact contact-name matching remains required. */ }
+  return contactId && name ? { contactId, name, profileUrl } : null;
+}
 
 function isLinkedInConversation(url) {
   try {
@@ -30,7 +49,7 @@ async function openOrFocusChatHelp(snapshot) {
   await chrome.tabs.create({ url: APP_URL });
 }
 
-function extractOpenLinkedInConversation() {
+function extractOpenLinkedInConversation(expectedContact) {
   const cleanText = (value, limit = 20_000) => String(value || "").replace(/\s+/g, " ").trim().slice(0, limit);
   const visible = (element) => {
     if (!(element instanceof Element)) return false;
@@ -119,6 +138,13 @@ function extractOpenLinkedInConversation() {
   const avatar = firstElement(header, ["img.msg-entity-lockup__entity-image", "img.presence-entity__image", "img"]);
   const profileUrl = safeLinkedInUrl(profileAnchor?.getAttribute("href") || "", "/in/");
   const avatarUrl = safeImageUrl(avatar?.getAttribute("src") || "");
+  const expectedName = cleanText(expectedContact?.name, 200);
+  const expectedProfileUrl = safeLinkedInUrl(expectedContact?.profileUrl || "", "/in/");
+  const namesMatch = name.toLowerCase() === expectedName.toLowerCase();
+  const identityMatches = expectedProfileUrl && profileUrl ? expectedProfileUrl === profileUrl : namesMatch;
+  if (!expectedName || !identityMatches) {
+    throw new Error(`ChatHelp is locked to ${expectedName || "the selected contact"}. Open that contact's conversation before capturing.`);
+  }
   const capturedAt = new Date().toISOString();
   const eventNodes = Array.from(thread.querySelectorAll([
     "li.msg-s-message-list__event",
@@ -196,7 +222,13 @@ chrome.action.onClicked.addListener(async (tab) => {
       await showBadge("!", "#a33a2b", "Open a LinkedIn Messaging conversation, then click ChatHelp again.");
       return;
     }
-    const results = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: extractOpenLinkedInConversation });
+    const stored = await chrome.storage.session.get(SELECTED_CONTACT_KEY);
+    const selectedContact = normalizeSelectedContact(stored[SELECTED_CONTACT_KEY]);
+    if (!selectedContact) {
+      await showBadge("!", "#a33a2b", "Add and select a LinkedIn contact in ChatHelp before capturing messages.");
+      return;
+    }
+    const results = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: extractOpenLinkedInConversation, args: [selectedContact] });
     const snapshot = results[0]?.result;
     if (!snapshot?.messages?.length) throw new Error("No visible conversation was captured.");
     await chrome.storage.local.set({ [SNAPSHOT_KEY]: snapshot });
@@ -208,6 +240,14 @@ chrome.action.onClicked.addListener(async (tab) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === SELECTED_CONTACT_EVENT) {
+    const selectedContact = normalizeSelectedContact(message.contact);
+    const operation = selectedContact
+      ? chrome.storage.session.set({ [SELECTED_CONTACT_KEY]: selectedContact })
+      : chrome.storage.session.remove(SELECTED_CONTACT_KEY);
+    operation.then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: false }));
+    return true;
+  }
   if (message?.type === "CHATHELP_GET_PENDING_SNAPSHOT") {
     chrome.storage.local.get(SNAPSHOT_KEY).then((result) => sendResponse({ snapshot: result[SNAPSHOT_KEY] || null }));
     return true;

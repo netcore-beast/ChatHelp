@@ -37,12 +37,14 @@ describe("secure workspace interaction", () => {
     await user.click(screen.getByRole("button", { name: "Add" }));
     expect(await screen.findByRole("heading", { name: "Alex Morgan" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Alex Morgan's LinkedIn profile" })).toBeTruthy();
-    expect(await screen.findByText("Screen capture recommended for this desktop")).toBeTruthy();
+    expect(await screen.findByText("Chrome extension recommended for this desktop")).toBeTruthy();
     expect(screen.getAllByTestId("recommended-linkedin-import")).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Check for capture" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Capture Alex Morgan's profile screen" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Capture conversation screen" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open Alex Morgan's LinkedIn conversation" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Capture conversation screen" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Show other import options" }));
+    expect(screen.getByRole("button", { name: "Capture conversation screen" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Capture Alex Morgan's profile screen" })).toBeTruthy();
     expect(screen.getByText("No LLM model is downloaded or run on this device.")).toBeTruthy();
     expect(screen.queryByLabelText("AI provider")).toBeNull();
@@ -63,13 +65,35 @@ describe("secure workspace interaction", () => {
   }, 20_000);
 
   it("imports an explicit extension snapshot into the local inbox without sending", async () => {
+    const user = userEvent.setup();
     render(<ChatHelpApp />);
     expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
+    await user.type(screen.getByLabelText("New contact name"), "Taylor Lee");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(await screen.findByRole("heading", { name: "Taylor Lee" })).toBeTruthy();
     window.dispatchEvent(new MessageEvent("message", {
       source: window,
       origin: window.location.origin,
       data: { source: LINKEDIN_EXTENSION_SOURCE, type: "CHATHELP_EXTENSION_READY" },
     }));
+    const wrongPayload = {
+      source: LINKEDIN_EXTENSION_SOURCE,
+      version: 1,
+      captureId: "capture-ui-wrong",
+      capturedAt: "2026-08-02T12:00:00.000Z",
+      pageUrl: "https://www.linkedin.com/messaging/thread/wrong/",
+      contact: { name: "Alex Morgan", headline: "VP Partnerships", profileUrl: "https://www.linkedin.com/in/alex-morgan/", avatarUrl: "" },
+      messages: [
+        { id: "wrong", role: "them", speaker: "Alex Morgan", body: "This must not be imported.", createdAt: "2026-08-02T11:58:00.000Z", attachments: [] },
+      ],
+    };
+    window.dispatchEvent(new MessageEvent("message", {
+      source: window,
+      origin: window.location.origin,
+      data: { source: LINKEDIN_EXTENSION_SOURCE, type: LINKEDIN_SNAPSHOT_EVENT, payload: wrongPayload },
+    }));
+    expect(await screen.findByText(/Capture blocked and discarded/i)).toBeTruthy();
+    expect(screen.queryByText("This must not be imported.")).toBeNull();
     const payload = {
       source: LINKEDIN_EXTENSION_SOURCE,
       version: 1,
@@ -87,13 +111,14 @@ describe("secure workspace interaction", () => {
         origin: window.location.origin,
         data: { source: LINKEDIN_EXTENSION_SOURCE, type: LINKEDIN_SNAPSHOT_EVENT, payload },
       }));
-      expect(screen.getByRole("heading", { name: "Taylor Lee" })).toBeTruthy();
+      expect(screen.getAllByText("Could you share the role brief?").length).toBeGreaterThan(0);
     });
     expect(screen.getAllByText("Could you share the role brief?").length).toBeGreaterThan(0);
     expect(screen.getByLabelText("Pipeline stage for Taylor Lee")).toBeTruthy();
     expect(screen.getByText(/1 new visible message/i)).toBeTruthy();
     expect(screen.getByText("Chrome extension connected")).toBeTruthy();
+    expect(screen.getByText(/read only the selected contact's open conversation/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Check for capture" })).toBeNull();
-    expect(screen.getByText(/never clicks, types, or sends/i)).toBeTruthy();
+    expect(screen.getByText(/never scans the inbox, clicks, types, or sends/i)).toBeTruthy();
   });
 });

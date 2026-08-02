@@ -2,6 +2,7 @@ const SOURCE = "chathelp-linkedin-extension";
 const REQUEST = "CHATHELP_REQUEST_LINKEDIN_SNAPSHOT";
 const SNAPSHOT = "CHATHELP_LINKEDIN_SNAPSHOT";
 const ACK = "CHATHELP_ACK_LINKEDIN_SNAPSHOT";
+const SELECT_CONTACT = "CHATHELP_SET_SELECTED_LINKEDIN_CONTACT";
 
 function announceReady() {
   window.postMessage({ source: SOURCE, type: "CHATHELP_EXTENSION_READY" }, window.location.origin);
@@ -17,6 +18,9 @@ window.addEventListener("message", (event) => {
   if (event.data.type === REQUEST) {
     announceReady();
     chrome.runtime.sendMessage({ type: "CHATHELP_GET_PENDING_SNAPSHOT" }).then((response) => deliver(response?.snapshot)).catch(() => undefined);
+  }
+  if (event.data.type === SELECT_CONTACT) {
+    chrome.runtime.sendMessage({ type: SELECT_CONTACT, contact: event.data.contact ?? null }).catch(() => undefined);
   }
   if (event.data.type === ACK && typeof event.data.captureId === "string") {
     chrome.runtime.sendMessage({ type: "CHATHELP_ACK_PENDING_SNAPSHOT", captureId: event.data.captureId }).catch(() => undefined);
