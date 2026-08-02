@@ -8,7 +8,7 @@ A user may add selected chat lines, profile notes, personal guidance, context fi
 
 ## Processing and storage
 
-Extension snapshots are validated, merged, encrypted in the local vault, and acknowledged so the extension can remove its one pending copy. The extension makes no network request. Avatar previews may be requested directly from LinkedIn&apos;s image CDN and use a no-referrer request. Screen images used by the OCR fallback are captured only after the browser&apos;s permission prompt, processed locally, and are not persisted. Persistent content is encrypted in IndexedDB using a random, non-exportable AES-256 device key stored by the browser. There is no routine ChatHelp passphrase prompt. An older passphrase vault requires its existing passphrase once for local conversion.
+On desktop, the Chrome extension is the primary reader. It receives the selected existing ChatHelp contact, verifies the open LinkedIn conversation matches that contact before traversing message nodes, and blocks any mismatch. Extension snapshots are validated again by ChatHelp, merged only into that selected contact, encrypted in the local vault, and acknowledged so the extension can remove its one pending copy. The extension makes no network request. Avatar previews may be requested directly from LinkedIn&apos;s image CDN and use a no-referrer request. Screen images used by the OCR fallback are captured only after the browser&apos;s permission prompt, processed locally, and are not persisted. Persistent content is encrypted in IndexedDB using a random, non-exportable AES-256 device key stored by the browser. There is no routine ChatHelp passphrase prompt. An older passphrase vault requires its existing passphrase once for local conversion.
 
 ## External requests
 

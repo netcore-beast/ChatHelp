@@ -15,6 +15,7 @@ vi.mock("@/lib/localOcr", () => ({
 }));
 
 Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
+const desktopUserAgent = navigator.userAgent;
 
 beforeEach(async () => {
   await resetVaultForTests();
@@ -24,7 +25,10 @@ beforeEach(async () => {
   URL.revokeObjectURL = vi.fn();
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  Object.defineProperty(navigator, "userAgent", { value: desktopUserAgent, configurable: true });
+});
 
 describe("secure workspace interaction", () => {
   it("creates, edits, and reopens the device-encrypted vault without a passphrase", async () => {
@@ -120,5 +124,19 @@ describe("secure workspace interaction", () => {
     expect(screen.getByText(/read only the selected contact's open conversation/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Check for capture" })).toBeNull();
     expect(screen.getByText(/never scans the inbox, clicks, types, or sends/i)).toBeTruthy();
+  });
+
+  it("recognizes a mobile device and recommends manual import instead of the desktop extension", async () => {
+    Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (Linux; Android 16; Mobile)", configurable: true });
+    Object.defineProperty(navigator, "mediaDevices", { value: {}, configurable: true });
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
+    await user.type(screen.getByLabelText("New contact name"), "Mobile Contact");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(await screen.findByText("Paste or import recommended on this device")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Paste messages manually" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /LinkedIn conversation/i })).toBeNull();
+    expect(screen.getByText(/recommends manual paste or import on this device/i)).toBeTruthy();
   });
 });

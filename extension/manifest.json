@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "ChatHelp LinkedIn Conversation Reader",
   "description": "Reads only the LinkedIn conversation you explicitly capture and hands it to your local ChatHelp vault. It never sends messages.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minimum_chrome_version": "120",
   "action": {
     "default_title": "Capture the open LinkedIn conversation for ChatHelp"
