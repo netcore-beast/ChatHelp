@@ -4,11 +4,11 @@ ChatHelp uses Cloudflare Access for approved-email authentication and MFA. It ha
 
 ## Data the user chooses to add
 
-A user may add selected chat lines, profile notes, personal guidance, context files, a user-selected screen capture, draft feedback, and outcome notes. ChatHelp does not scan a LinkedIn account or select people automatically.
+A user may add selected chat lines, profile notes, personal guidance, context files, a user-selected screen capture, private conversation notes, labels, reminders, draft feedback, and outcome notes. On desktop Chrome, a user may explicitly click the ChatHelp extension while one LinkedIn Messaging conversation is open. The extension reads only the visible open thread and does not enumerate the inbox or select people automatically.
 
 ## Processing and storage
 
-Screen images are captured only after the browser's permission prompt, processed locally by self-hosted OCR, and are not persisted; only extracted text is added to the encrypted workspace. Persistent content is encrypted in IndexedDB using a random, non-exportable AES-256 device key stored by the browser. There is no routine ChatHelp passphrase prompt. An older passphrase vault requires its existing passphrase once for local conversion.
+Extension snapshots are validated, merged, encrypted in the local vault, and acknowledged so the extension can remove its one pending copy. The extension makes no network request. Avatar previews may be requested directly from LinkedIn&apos;s image CDN and use a no-referrer request. Screen images used by the OCR fallback are captured only after the browser&apos;s permission prompt, processed locally, and are not persisted. Persistent content is encrypted in IndexedDB using a random, non-exportable AES-256 device key stored by the browser. There is no routine ChatHelp passphrase prompt. An older passphrase vault requires its existing passphrase once for local conversion.
 
 ## External requests
 

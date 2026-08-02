@@ -5,6 +5,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ChatHelpApp from "../src/components/ChatHelpApp";
+import { LINKEDIN_EXTENSION_SOURCE, LINKEDIN_SNAPSHOT_EVENT } from "../src/lib/linkedinExtension";
 import { resetVaultForTests } from "../src/lib/secureVault";
 
 vi.mock("@/lib/localOcr", () => ({
@@ -54,4 +55,32 @@ describe("secure workspace interaction", () => {
     expect(await screen.findByRole("heading", { name: "Alex Morgan" })).toBeTruthy();
     expect(screen.queryByLabelText("Passphrase")).toBeNull();
   }, 20_000);
+
+  it("imports an explicit extension snapshot into the local inbox without sending", async () => {
+    render(<ChatHelpApp />);
+    expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
+    const payload = {
+      source: LINKEDIN_EXTENSION_SOURCE,
+      version: 1,
+      captureId: "capture-ui-1",
+      capturedAt: "2026-08-02T12:00:00.000Z",
+      pageUrl: "https://www.linkedin.com/messaging/thread/example/",
+      contact: { name: "Taylor Lee", headline: "Talent Partner", profileUrl: "https://www.linkedin.com/in/taylor-lee/", avatarUrl: "" },
+      messages: [
+        { id: "one", role: "them", speaker: "Taylor Lee", body: "Could you share the role brief?", createdAt: "2026-08-02T11:59:00.000Z", attachments: [] },
+      ],
+    };
+    await waitFor(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        source: window,
+        origin: window.location.origin,
+        data: { source: LINKEDIN_EXTENSION_SOURCE, type: LINKEDIN_SNAPSHOT_EVENT, payload },
+      }));
+      expect(screen.getByRole("heading", { name: "Taylor Lee" })).toBeTruthy();
+    });
+    expect(screen.getAllByText("Could you share the role brief?").length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Pipeline stage for Taylor Lee")).toBeTruthy();
+    expect(screen.getByText(/1 new visible message/i)).toBeTruthy();
+    expect(screen.getByText(/never clicks, types, or sends/i)).toBeTruthy();
+  });
 });

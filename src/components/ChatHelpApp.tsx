@@ -6,6 +6,18 @@ import { buildOutcomeSummary, containsLinkedInPageNoise, isConversationCapture, 
 import { captureVisibleScreen, cropImageToRegion, extractTextFromImage, type NormalizedCropRegion } from "@/lib/localOcr";
 import { CLOUDFLARE_MODEL_NAME, generatePrivateDrafts } from "@/lib/privateAi";
 import { PLATFORM_OPTIONS, platformLabel, safePlatformUrl } from "@/lib/platforms";
+import {
+  LINKEDIN_EXTENSION_SOURCE,
+  LINKEDIN_SNAPSHOT_ACK_EVENT,
+  LINKEDIN_SNAPSHOT_EVENT,
+  LINKEDIN_SNAPSHOT_REQUEST_EVENT,
+  PIPELINE_STAGES,
+  contactStage,
+  isActivelySnoozed,
+  isReminderDue,
+  mergeLinkedInSnapshot,
+  parseLinkedInExtensionSnapshot,
+} from "@/lib/linkedinExtension";
 import { LinkedInTestWizard } from "@/components/LinkedInTestWizard";
 import { PwaInstall } from "@/components/PwaInstall";
 import { ScreenRegionSelector } from "@/components/ScreenRegionSelector";
@@ -26,11 +38,44 @@ import {
   type Contact,
   type ConversationPlatform,
   type MessageRole,
+  type PipelineStage,
   type WorkspaceData,
 } from "@/lib/workspaceTypes";
 
 const LEGACY_KEY = "chathelp-private-v2";
 const STORAGE_CHECK_TIMEOUT_MS = 8_000;
+type InboxView = "inbox" | "pipeline" | "reminders" | "archived";
+
+function toDateTimeLocal(value: string | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function fromDateTimeLocal(value: string): string {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
+function parseLabels(value: string): string[] {
+  return Array.from(new Set(value.split(",").map((label) => label.trim().slice(0, 80)).filter(Boolean))).slice(0, 50);
+}
+
+function formatRelativeTime(value: string | undefined, now: number): string {
+  if (!value) return "";
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return "";
+  const minutes = Math.round((timestamp - now) / 60_000);
+  if (Math.abs(minutes) < 1) return "now";
+  if (Math.abs(minutes) < 60) return minutes > 0 ? `in ${minutes}m` : `${Math.abs(minutes)}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (Math.abs(hours) < 48) return hours > 0 ? `in ${hours}h` : `${Math.abs(hours)}h ago`;
+  const days = Math.round(hours / 24);
+  return days > 0 ? `in ${days}d` : `${Math.abs(days)}d ago`;
+}
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -150,12 +195,17 @@ export default function ChatHelpApp() {
 function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; session: VaultSession }) {
   const [workspace, setWorkspace] = useState(() => applyRetention(initial));
   const [selectedId, setSelectedId] = useState(initial.contacts[0]?.id ?? "");
+  const [inboxView, setInboxView] = useState<InboxView>("inbox");
+  const [contactSearch, setContactSearch] = useState("");
+  const [labelFilter, setLabelFilter] = useState("");
+  const [extensionStatus, setExtensionStatus] = useState("Open a LinkedIn conversation and click the ChatHelp Chrome extension to import it.");
+  const [now, setNow] = useState(() => Date.now());
   const [saveStatus, setSaveStatus] = useState("Encrypted");
   const [newContactName, setNewContactName] = useState("");
   const [newPlatform, setNewPlatform] = useState<ConversationPlatform>("linkedin");
   const [wizardOpen, setWizardOpen] = useState(false);
   const [agenda, setAgenda] = useState("");
-  const [drafts, setDrafts] = useState<string[]>([]);
+  const [drafts, setDrafts] = useState<string[]>(() => initial.contacts[0]?.draftHistory?.at(-1)?.drafts ?? []);
   const [aiStatus, setAiStatus] = useState("");
   const [appError, setAppError] = useState("");
   const [cloudAccessCode, setCloudAccessCode] = useState(() => initial.cloudInference.rememberAccessToken ? initial.cloudInference.accessToken : "");
@@ -171,8 +221,50 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     resolve: (region: NormalizedCropRegion | null) => void;
   } | null>(null);
   const documentRef = useRef<HTMLInputElement>(null);
+  const agendaRef = useRef<HTMLTextAreaElement>(null);
+  const snoozeRef = useRef<HTMLInputElement>(null);
+  const labelsRef = useRef<HTMLInputElement>(null);
+  const shortcutDialogRef = useRef<HTMLDialogElement>(null);
+  const workspaceRef = useRef(workspace);
+  const shortcutSequenceRef = useRef("");
 
   const contact = workspace.contacts.find((item) => item.id === selectedId) ?? workspace.contacts[0] ?? null;
+
+  useEffect(() => { workspaceRef.current = workspace; }, [workspace]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    const targetOrigin = window.location.origin === "null" ? "*" : window.location.origin;
+    const handleSnapshot = (event: MessageEvent) => {
+      if (event.source !== window || (window.location.origin !== "null" && event.origin !== window.location.origin)) return;
+      const data = event.data as { source?: unknown; type?: unknown; payload?: unknown } | null;
+      if (!data || data.source !== LINKEDIN_EXTENSION_SOURCE) return;
+      if (data.type === "CHATHELP_EXTENSION_READY") {
+        setExtensionStatus("Chrome extension connected. Capture an open LinkedIn conversation when you are ready.");
+        window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_REQUEST_EVENT }, targetOrigin);
+        return;
+      }
+      if (data.type !== LINKEDIN_SNAPSHOT_EVENT) return;
+      const snapshot = parseLinkedInExtensionSnapshot(data.payload);
+      if (!snapshot) {
+        setExtensionStatus("The extension capture was rejected because it was incomplete or unsafe.");
+        return;
+      }
+      const preview = mergeLinkedInSnapshot(workspaceRef.current.contacts, snapshot);
+      setWorkspace((current) => ({ ...current, contacts: mergeLinkedInSnapshot(current.contacts, snapshot).contacts }));
+      setSelectedId(preview.contactId);
+      setInboxView("inbox");
+      setDrafts(workspaceRef.current.contacts.find((item) => item.id === preview.contactId)?.draftHistory?.at(-1)?.drafts ?? []);
+      setExtensionStatus(`${snapshot.contact.name} imported: ${preview.importedMessages} new visible message${preview.importedMessages === 1 ? "" : "s"}. Stored only in this encrypted local vault.`);
+      window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_ACK_EVENT, captureId: snapshot.captureId }, targetOrigin);
+    };
+    window.addEventListener("message", handleSnapshot);
+    window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_REQUEST_EVENT }, targetOrigin);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("message", handleSnapshot);
+    };
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -202,6 +294,55 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     updateContactById(contact.id, updater);
   }
 
+  function selectContact(nextContact: Contact) {
+    setSelectedId(nextContact.id);
+    setDrafts(nextContact.draftHistory?.at(-1)?.drafts ?? []);
+  }
+
+  function requestLinkedInSnapshot() {
+    const targetOrigin = window.location.origin === "null" ? "*" : window.location.origin;
+    setExtensionStatus("Checking for a conversation captured by the ChatHelp Chrome extension…");
+    window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_REQUEST_EVENT }, targetOrigin);
+    window.setTimeout(() => {
+      setExtensionStatus((current) => current.startsWith("Checking")
+        ? "No pending capture found. Open a LinkedIn conversation and click the ChatHelp extension icon; ChatHelp will import it automatically."
+        : current);
+    }, 1_500);
+  }
+
+  function moveContactToStage(contactId: string, stage: PipelineStage) {
+    updateContactById(contactId, (current) => ({ ...current, pipelineStage: stage }));
+  }
+
+  function toggleArchive(target: Contact) {
+    updateContactById(target.id, (current) => ({
+      ...current,
+      archivedAt: current.archivedAt ? "" : new Date().toISOString(),
+      pipelineStage: current.archivedAt ? "inbox" : "done",
+    }));
+  }
+
+  function persistDrafts(nextDrafts = drafts) {
+    if (!contact?.draftHistory?.length) return;
+    updateContact((current) => ({
+      ...current,
+      draftHistory: (current.draftHistory ?? []).map((entry, index, entries) => index === entries.length - 1 ? { ...entry, drafts: nextDrafts } : entry),
+    }));
+  }
+
+  function markDraftManuallySent(draft: string) {
+    if (!contact || !draft.trim()) return;
+    const sentAt = new Date().toISOString();
+    updateContact((current) => ({
+      ...current,
+      chat: [...current.chat, { id: newId("message"), role: "me" as const, body: draft.trim().slice(0, 20_000), createdAt: sentAt, speaker: "You", attachments: [] }].slice(-1000),
+      pipelineStage: "replied",
+      snoozedUntil: "",
+      followUpAt: "",
+    }));
+    setExtensionStatus(`Marked as manually sent to ${contact.name}. ChatHelp did not type or send anything on LinkedIn.`);
+  }
+
   function saveWizardProfile(profile: { name: string; headline: string; notes: string }): string {
     const existingId = contact?.platform === "linkedin" ? contact.id : "";
     const contactId = existingId || newId("contact");
@@ -216,6 +357,17 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       documents: [],
       outcomes: [],
       retentionDays: 90,
+      profileUrl: "",
+      avatarUrl: "",
+      conversationUrl: "",
+      labels: [],
+      pipelineStage: "inbox",
+      notes: "",
+      snoozedUntil: "",
+      followUpAt: "",
+      archivedAt: "",
+      lastSyncedAt: "",
+      draftHistory: [],
     };
 
     updateWorkspace((current) => ({
@@ -233,7 +385,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     const name = newContactName.trim();
     if (!name) return;
     const id = newId("contact");
-    const next: Contact = { id, name, headline: "", profileNotes: "", platform: newPlatform, platformUrl: "", chat: [], documents: [], outcomes: [], retentionDays: 90 };
+    const next: Contact = { id, name, headline: "", profileNotes: "", platform: newPlatform, platformUrl: "", chat: [], documents: [], outcomes: [], retentionDays: 90, profileUrl: "", avatarUrl: "", conversationUrl: "", labels: [], pipelineStage: "inbox", notes: "", snoozedUntil: "", followUpAt: "", archivedAt: "", lastSyncedAt: "", draftHistory: [] };
     updateWorkspace((current) => ({ ...current, contacts: [...current.contacts, next] }));
     setSelectedId(id);
     setNewContactName("");
@@ -362,6 +514,23 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         outcomeSummary: buildOutcomeSummary(activeContact),
       }, setAiStatus, { ...workspace.cloudInference, accessToken: cloudAccessCode });
       setDrafts(nextDrafts);
+      const generatedAt = new Date().toISOString();
+      updateWorkspace((current) => ({
+        ...current,
+        contacts: current.contacts.map((item) => item.id === activeContact.id ? {
+          ...item,
+          draftHistory: [...(item.draftHistory ?? []), { id: newId("draft-set"), agenda: requestAgenda.slice(0, 5_000), drafts: nextDrafts, createdAt: generatedAt }].slice(-20),
+        } : item),
+        aiUsage: [...(current.aiUsage ?? []), {
+          id: newId("ai-usage"),
+          contactId: activeContact.id,
+          modelId: CLOUDFLARE_MODEL_ID,
+          promptCharacters: requestAgenda.length + activeContact.profileNotes.length + activeContact.chat.slice(-40).reduce((total, message) => total + message.body.length, 0),
+          variants: nextDrafts.length,
+          estimatedCostUsd: 0,
+          createdAt: generatedAt,
+        }].slice(-1000),
+      }));
       setAiStatus("Generated in Cloudflare Workers AI. No LLM was downloaded or run on this device, and nothing was sent to LinkedIn.");
     } catch (error) {
       setAiStatus("");
@@ -381,7 +550,81 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setOutcomeNote("");
   }
 
-  const storageSummary = useMemo(() => contact ? contact.chat.length + " messages · " + contact.documents.length + " context files · " + contact.outcomes.length + " outcomes" : "No contact selected", [contact]);
+  const allLabels = useMemo(() => Array.from(new Set(workspace.contacts.flatMap((item) => item.labels ?? []))).sort((left, right) => left.localeCompare(right)), [workspace.contacts]);
+  const dueReminderCount = useMemo(() => workspace.contacts.filter((item) => !item.archivedAt && isReminderDue(item, now)).length, [now, workspace.contacts]);
+  const visibleContacts = useMemo(() => {
+    const query = contactSearch.trim().toLowerCase();
+    return workspace.contacts.filter((item) => {
+      if (inboxView === "archived" ? !item.archivedAt : Boolean(item.archivedAt)) return false;
+      if (inboxView === "inbox" && isActivelySnoozed(item, now)) return false;
+      if (inboxView === "reminders" && !item.followUpAt && !item.snoozedUntil) return false;
+      if (labelFilter && !(item.labels ?? []).includes(labelFilter)) return false;
+      if (!query) return true;
+      const latest = item.chat.at(-1)?.body ?? "";
+      return [item.name, item.headline, item.notes ?? "", (item.labels ?? []).join(" "), latest].join(" ").toLowerCase().includes(query);
+    }).sort((left, right) => {
+      if (inboxView === "reminders") {
+        const leftDate = Math.min(...[left.followUpAt, left.snoozedUntil].filter(Boolean).map((value) => new Date(value as string).getTime()));
+        const rightDate = Math.min(...[right.followUpAt, right.snoozedUntil].filter(Boolean).map((value) => new Date(value as string).getTime()));
+        return leftDate - rightDate;
+      }
+      return new Date(right.chat.at(-1)?.createdAt ?? right.lastSyncedAt ?? 0).getTime() - new Date(left.chat.at(-1)?.createdAt ?? left.lastSyncedAt ?? 0).getTime();
+    });
+  }, [contactSearch, inboxView, labelFilter, now, workspace.contacts]);
+  const stageCounts = useMemo(() => Object.fromEntries(PIPELINE_STAGES.map((stage) => [stage.value, workspace.contacts.filter((item) => !item.archivedAt && contactStage(item) === stage.value).length])) as Record<PipelineStage, number>, [workspace.contacts]);
+
+  useEffect(() => {
+    const handleKeyboard = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, textarea, select, [contenteditable='true']")) return;
+      const key = event.key.toLowerCase();
+      if (event.key === "?") {
+        event.preventDefault();
+        shortcutDialogRef.current?.showModal();
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && key === "j") {
+        event.preventDefault();
+        agendaRef.current?.focus();
+        return;
+      }
+      if (key === "g") {
+        shortcutSequenceRef.current = "g";
+        return;
+      }
+      if (key === "i" && shortcutSequenceRef.current === "g") {
+        event.preventDefault();
+        setInboxView("inbox");
+        shortcutSequenceRef.current = "";
+        return;
+      }
+      shortcutSequenceRef.current = "";
+      if ((key === "j" || key === "k") && visibleContacts.length) {
+        event.preventDefault();
+        const currentIndex = Math.max(0, visibleContacts.findIndex((item) => item.id === contact?.id));
+        const nextIndex = key === "j" ? Math.min(visibleContacts.length - 1, currentIndex + 1) : Math.max(0, currentIndex - 1);
+        const nextContact = visibleContacts[nextIndex];
+        setSelectedId(nextContact.id);
+        setDrafts(nextContact.draftHistory?.at(-1)?.drafts ?? []);
+      } else if (key === "e" && contact) {
+        event.preventDefault();
+        setWorkspace((current) => ({ ...current, contacts: current.contacts.map((item) => item.id === contact.id ? { ...item, archivedAt: item.archivedAt ? "" : new Date().toISOString(), pipelineStage: item.archivedAt ? "inbox" : "done" } : item) }));
+      } else if (key === "r") {
+        event.preventDefault();
+        agendaRef.current?.focus();
+      } else if (key === "s") {
+        event.preventDefault();
+        snoozeRef.current?.focus();
+      } else if (key === "l") {
+        event.preventDefault();
+        labelsRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyboard);
+    return () => window.removeEventListener("keydown", handleKeyboard);
+  }, [contact, visibleContacts]);
+
+  const storageSummary = useMemo(() => contact ? contact.chat.length + " messages · " + contact.documents.length + " context files · " + contact.outcomes.length + " outcomes · " + (contact.draftHistory?.length ?? 0) + " draft sets" : "No contact selected", [contact]);
   const handoffUrl = contact ? safePlatformUrl(contact) : null;
   const handoffLabel = contact ? platformLabel(contact.platform) : "platform";
   const cloudReady = Boolean(workspace.cloudInference.consentedAt && cloudAccessCode.trim().length >= 20);
@@ -391,29 +634,72 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     <main className="app-shell">
       <header className="topbar">
         <div><p className="eyebrow">CHATHELP</p><h1>Private conversation studio</h1></div>
-        <div className="top-actions"><button className="wizard-launch" data-testid="open-linkedin-test-wizard" onClick={() => setWizardOpen(true)}>Guided LinkedIn test</button><PwaInstall /><span className="save-state">● {saveStatus} on this device</span></div>
+        <div className="top-actions">{dueReminderCount > 0 && <button className="reminder-badge" onClick={() => setInboxView("reminders")}>{dueReminderCount} reminder{dueReminderCount === 1 ? "" : "s"} due</button>}<button onClick={() => shortcutDialogRef.current?.showModal()} aria-label="Show keyboard shortcuts">Shortcuts</button><button className="wizard-launch" data-testid="open-linkedin-test-wizard" onClick={() => setWizardOpen(true)}>Guided LinkedIn test</button><PwaInstall /><span className="save-state">● {saveStatus} on this device</span></div>
       </header>
-      <div className="privacy-strip"><strong>Cloud AI mode:</strong> Draft generation runs in Cloudflare Workers AI; ChatHelp does not download or run an LLM in this browser. You crop the relevant screen area before local OCR, and images and the encrypted vault stay on this device. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
+      <div className="privacy-strip"><strong>Manual-safe desktop mode:</strong> the Chrome extension reads only the open LinkedIn conversation after you click it. It never clicks, types, or sends. Imported text stays in this device vault; only selected text context is sent to Cloudflare Workers AI when you request drafts. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
       {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
-      <div className="workspace-grid">
+      <div className={inboxView === "pipeline" ? "workspace-grid pipeline-active" : "workspace-grid"}>
         <aside className="contacts-panel">
-          <h2>LinkedIn contacts</h2>
-          <p className="section-explainer">Add the people you want to reply to. These are your contacts—not you, the ChatHelp user.</p>
-          <div className="contact-create"><select aria-label="Conversation platform" value={newPlatform} onChange={(event) => setNewPlatform(event.target.value as ConversationPlatform)}>{PLATFORM_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><div className="inline-form"><input aria-label="New contact name" value={newContactName} onChange={(event) => setNewContactName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addContact()} placeholder="Add a person" /><button onClick={addContact}>Add</button></div></div>
+          <div className="section-heading"><div><p className="eyebrow">DESKTOP WORKSPACE</p><h2>LinkedIn inbox</h2></div><button aria-label="Show keyboard shortcuts" onClick={() => shortcutDialogRef.current?.showModal()}>?</button></div>
+          <div className="extension-import-card"><strong>One-click conversation import</strong><p>Open one LinkedIn conversation, then click the ChatHelp extension icon. Only that visible thread is read.</p><button onClick={requestLinkedInSnapshot}>Import pending capture</button><small role="status" aria-live="polite">{extensionStatus}</small></div>
+          <div className="inbox-tabs" role="tablist" aria-label="Conversation views">
+            <button role="tab" aria-selected={inboxView === "inbox"} onClick={() => setInboxView("inbox")}>Inbox <span>{workspace.contacts.filter((item) => !item.archivedAt && !isActivelySnoozed(item, now)).length}</span></button>
+            <button role="tab" aria-selected={inboxView === "pipeline"} onClick={() => setInboxView("pipeline")}>Pipeline</button>
+            <button role="tab" aria-selected={inboxView === "reminders"} onClick={() => setInboxView("reminders")}>Reminders <span>{dueReminderCount}</span></button>
+            <button role="tab" aria-selected={inboxView === "archived"} onClick={() => setInboxView("archived")}>Archive</button>
+          </div>
+          <div className="inbox-filters"><input aria-label="Search contacts and messages" value={contactSearch} onChange={(event) => setContactSearch(event.target.value)} placeholder="Search contacts or messages" /><select aria-label="Filter by label" value={labelFilter} onChange={(event) => setLabelFilter(event.target.value)}><option value="">All labels</option>{allLabels.map((label) => <option key={label} value={label}>{label}</option>)}</select></div>
+          <div className="contact-create"><small>Add a contact manually</small><select aria-label="Conversation platform" value={newPlatform} onChange={(event) => setNewPlatform(event.target.value as ConversationPlatform)}>{PLATFORM_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><div className="inline-form"><input aria-label="New contact name" value={newContactName} onChange={(event) => setNewContactName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addContact()} placeholder="Add a person" /><button onClick={addContact}>Add</button></div></div>
           <nav aria-label="Contacts">
-            {workspace.contacts.map((item) => <button className={item.id === contact?.id ? "contact active" : "contact"} key={item.id} onClick={() => { setSelectedId(item.id); setDrafts([]); }}><span>{item.name.slice(0, 1).toUpperCase()}</span><div><strong>{item.name}</strong><small>{platformLabel(item.platform)} · {item.headline || "Add profile context"}</small></div></button>)}
+            {visibleContacts.map((item) => {
+              const latest = item.chat.at(-1);
+              const reminderAt = item.followUpAt || item.snoozedUntil;
+              return <button className={item.id === contact?.id ? "contact active" : "contact"} key={item.id} onClick={() => selectContact(item)}>
+                {item.avatarUrl ? <img src={item.avatarUrl} alt="" referrerPolicy="no-referrer" /> : <span className="contact-avatar">{item.name.slice(0, 1).toUpperCase()}</span>}
+                <div><span className="contact-title"><strong>{item.name}</strong><small className={`stage-pill stage-${contactStage(item)}`}>{PIPELINE_STAGES.find((stage) => stage.value === contactStage(item))?.label}</small></span><small>{latest?.body || item.headline || "No conversation imported yet"}</small><span className="contact-meta"><small>{latest ? formatRelativeTime(latest.createdAt, now) : platformLabel(item.platform)}</small>{reminderAt && <small className={isReminderDue(item, now) ? "reminder-due" : ""}>{isReminderDue(item, now) ? "Due " : ""}{formatRelativeTime(reminderAt, now)}</small>}</span>{Boolean(item.labels?.length) && <span className="label-row">{item.labels?.slice(0, 3).map((label) => <small key={label} className="label-chip">{label}</small>)}</span>}</div>
+              </button>;
+            })}
           </nav>
-          {!workspace.contacts.length && <p className="empty">Add one person. ChatHelp never scans your messaging or email accounts.</p>}
+          {!visibleContacts.length && <p className="empty">No conversations match this view. ChatHelp never scans LinkedIn in the background.</p>}
         </aside>
 
         <section className="context-panel">
-          {contact ? <>
-            <div className="section-heading"><div><p className="eyebrow">SELECTED LINKEDIN CONTACT · MESSAGE RECIPIENT</p><h2>{contact.name}</h2><p className="identity-note">Profile context, chat history, and generated replies in this workspace are for your conversation with <strong>{contact.name}</strong>.</p><small>{storageSummary}</small></div><button className="danger-link" onClick={deleteContact}>Delete</button></div>
+          {inboxView === "pipeline" ? <div className="pipeline-view">
+            <div className="section-heading"><div><p className="eyebrow">LOCAL CRM VIEW</p><h2>Conversation pipeline</h2><p className="identity-note">Drag cards between stages or use each stage menu. This changes only your local ChatHelp workspace and never touches LinkedIn.</p></div></div>
+            <div className="pipeline-board">
+              {PIPELINE_STAGES.map((stage) => <section className="pipeline-column" key={stage.value} onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
+                event.preventDefault();
+                const contactId = event.dataTransfer.getData("text/contact-id");
+                if (contactId) moveContactToStage(contactId, stage.value);
+              }}>
+                <header><strong>{stage.label}</strong><span>{stageCounts[stage.value]}</span></header>
+                <div>{visibleContacts.filter((item) => contactStage(item) === stage.value).map((item) => <article className={item.id === contact?.id ? "pipeline-card selected" : "pipeline-card"} draggable key={item.id} onDragStart={(event) => event.dataTransfer.setData("text/contact-id", item.id)} onClick={() => selectContact(item)}>
+                  <div><strong>{item.name}</strong><small>{formatRelativeTime(item.chat.at(-1)?.createdAt ?? item.lastSyncedAt, now)}</small></div>
+                  <p>{item.chat.at(-1)?.body || item.headline || "No message preview"}</p>
+                  <select aria-label={`Move ${item.name} to pipeline stage`} value={contactStage(item)} onClick={(event) => event.stopPropagation()} onChange={(event) => moveContactToStage(item.id, event.target.value as PipelineStage)}>{PIPELINE_STAGES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+                  {Boolean(item.labels?.length) && <span className="label-row">{item.labels?.slice(0, 3).map((label) => <small className="label-chip" key={label}>{label}</small>)}</span>}
+                </article>)}</div>
+              </section>)}
+            </div>
+          </div> : contact ? <>
+            <div className="section-heading"><div><p className="eyebrow">SELECTED LINKEDIN CONTACT · MESSAGE RECIPIENT</p><h2>{contact.name}</h2><p className="identity-note">Profile context, chat history, and generated replies in this workspace are for your conversation with <strong>{contact.name}</strong>.</p><small>{storageSummary}{contact.lastSyncedAt ? ` · extension sync ${formatRelativeTime(contact.lastSyncedAt, now)}` : ""}</small></div><button className="danger-link" onClick={deleteContact}>Delete</button></div>
+            <div className="panel-card workflow-card">
+              <div className="workflow-title"><div><p className="eyebrow">TRIAGE & FOLLOW-UP</p><h3>Conversation workflow</h3></div><button onClick={() => toggleArchive(contact)}>{contact.archivedAt ? "Restore to inbox" : "Archive"}</button></div>
+              <div className="workflow-grid">
+                <label>Pipeline stage<select aria-label={`Pipeline stage for ${contact.name}`} value={contactStage(contact)} onChange={(event) => moveContactToStage(contact.id, event.target.value as PipelineStage)}>{PIPELINE_STAGES.map((stage) => <option key={stage.value} value={stage.value}>{stage.label}</option>)}</select></label>
+                <label>Labels<input key={contact.id} ref={labelsRef} defaultValue={(contact.labels ?? []).join(", ")} onBlur={(event) => updateContact((current) => ({ ...current, labels: parseLabels(event.target.value) }))} placeholder="candidate, warm lead, client" /></label>
+                <label>Snooze until<input ref={snoozeRef} type="datetime-local" value={toDateTimeLocal(contact.snoozedUntil)} onChange={(event) => updateContact((current) => ({ ...current, snoozedUntil: fromDateTimeLocal(event.target.value), pipelineStage: event.target.value ? "snoozed" : contactStage(current) }))} /></label>
+                <label>Follow-up reminder<input type="datetime-local" value={toDateTimeLocal(contact.followUpAt)} onChange={(event) => updateContact((current) => ({ ...current, followUpAt: fromDateTimeLocal(event.target.value), pipelineStage: event.target.value ? "follow-up" : contactStage(current) }))} /></label>
+              </div>
+              {(contact.snoozedUntil || contact.followUpAt) && <div className="reminder-summary"><span>{contact.snoozedUntil && `Snoozed ${formatRelativeTime(contact.snoozedUntil, now)}`}{contact.snoozedUntil && contact.followUpAt ? " · " : ""}{contact.followUpAt && `Follow-up ${formatRelativeTime(contact.followUpAt, now)}`}</span><button onClick={() => updateContact((current) => ({ ...current, snoozedUntil: "", followUpAt: "", pipelineStage: contactStage(current) === "snoozed" || contactStage(current) === "follow-up" ? "inbox" : contactStage(current) }))}>Clear schedule</button></div>}
+              <label>Private conversation notes<textarea value={contact.notes ?? ""} onChange={(event) => updateContact((current) => ({ ...current, notes: event.target.value.slice(0, 20_000) }))} placeholder={`Decisions, next steps, and private notes about the conversation with ${contact.name}.`} /></label>
+            </div>
             <div className="panel-card">
               <h3>{contact.name}&apos;s LinkedIn profile</h3>
               <p className="section-explainer">This section is about the selected contact—not your own profile. Use only details relevant to this conversation.</p>
               <label>Contact&apos;s name<input value={contact.name} onChange={(event) => updateContact((current) => ({ ...current, name: event.target.value.slice(0, 200) }))} /></label>
               <label>Contact&apos;s headline, role, or company<input value={contact.headline} onChange={(event) => updateContact((current) => ({ ...current, headline: event.target.value.slice(0, 500) }))} placeholder={`Example: ${contact.name}'s role, company, or relevant expertise`} /></label>
+              {contact.profileUrl && <a className="profile-link" href={contact.profileUrl} target="_blank" rel="noreferrer">Open {contact.name}&apos;s LinkedIn profile ↗</a>}
               <label>Relevant notes about {contact.name}<textarea value={contact.profileNotes} onChange={(event) => updateContact((current) => ({ ...current, profileNotes: event.target.value.slice(0, 20_000) }))} placeholder={`Only add relevant, non-sensitive context about ${contact.name}.`} /></label>
               <div className="capture-guide"><strong>To capture profile context</strong><ol><li>Open {contact.name}&apos;s LinkedIn profile.</li><li>Click the button below.</li><li>In the system picker, choose the tab or window showing {contact.name}&apos;s profile—not your profile and not the chat.</li><li>In ChatHelp&apos;s private preview, select only {contact.name}&apos;s relevant profile details. Navigation and side panels will be excluded.</li></ol></div>
               <div className="button-row"><button onClick={() => void captureContext()}>Capture {contact.name}&apos;s profile screen</button><button onClick={() => documentRef.current?.click()}>Import profile/context file</button><input ref={documentRef} hidden type="file" accept=".txt,.md,.json,text/plain,application/json" onChange={(event) => event.target.files?.[0] && void importDocument(event.target.files[0])} /></div>
@@ -422,6 +708,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
             <div className="panel-card">
               <h3>Your conversation with {contact.name}</h3>
               <p className="section-explainer"><strong>You</strong> means the person using ChatHelp. <strong>{contact.name}</strong> is the selected LinkedIn contact who will receive your reply.</p>
+              <div className="extension-callout"><div><strong>Chrome extension · recommended</strong><p>Open this conversation on LinkedIn and click the ChatHelp extension icon. ChatHelp imports visible names, messages, timestamps, and attachment labels directly from the DOM—without OCR or background inbox scanning.</p></div><button onClick={requestLinkedInSnapshot}>Check for capture</button></div>
               <div className="capture-guide"><strong>To capture chat history</strong><ol><li>Open LinkedIn Messaging and select your conversation with {contact.name}.</li><li>Scroll so the latest incoming message and enough recent history are visible.</li><li>Click below and choose that LinkedIn Messaging tab or window in the system picker.</li><li>In ChatHelp&apos;s private preview, select only the central message column. Exclude navigation, other chats, job cards, and side panels.</li><li>For older history, scroll and capture another message area.</li></ol><button onClick={() => void captureConversation()}>Capture conversation messages with {contact.name}</button></div>
               {contact.documents.filter(isConversationCapture).map((document) => {
                 const noisy = isLikelyFullLinkedInPageCapture(document);
@@ -433,7 +720,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
               <textarea value={chatPaste} onChange={(event) => setChatPaste(event.target.value)} placeholder={"Paste selected lines only, for example:\nMe: Great to reconnect\nAlex: Likewise—how is the new role?"} />
               <button onClick={importChat}>Import manually pasted chat lines</button>
               <div className="inline-form"><select aria-label="Message sender" value={messageRole} onChange={(event) => setMessageRole(event.target.value as MessageRole)}><option value="them">{contact.name}</option><option value="me">You</option></select><input value={messageBody} onChange={(event) => setMessageBody(event.target.value)} placeholder={`Add one message from ${messageRole === "me" ? "you" : contact.name}`} /><button onClick={addMessage}>Add</button></div>
-              <div className="chat-list">{contact.chat.slice(-12).map((message) => <div className={message.role === "me" ? "bubble mine" : "bubble"} key={message.id}><small>{message.role === "me" ? "You" : contact.name}</small>{message.body}</div>)}</div>
+              <div className="chat-list">{contact.chat.slice(-30).map((message) => <div className={message.role === "me" ? "bubble mine" : "bubble"} key={message.id}><span className="message-meta"><small>{message.role === "me" ? "You" : message.speaker || contact.name}</small><time dateTime={message.createdAt}>{formatRelativeTime(message.createdAt, now)}</time></span>{message.body && <p>{message.body}</p>}{Boolean(message.attachments?.length) && <span className="attachment-row">{message.attachments?.map((attachment) => <small className="attachment-chip" key={attachment.id}>{attachment.kind === "image" ? "Image" : attachment.kind === "file" ? "File" : "Attachment"}: {attachment.label}</small>)}</span>}</div>)}</div>
             </div>
             <div className="panel-card compact">
               <h3>Retention</h3>
@@ -452,7 +739,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
           </div>
           <div className="panel-card compose-card">
             <p className="eyebrow">CLOUDFLARE PRIVATE AI</p><h2>Your next reply to {contact?.name || "the selected contact"}</h2>
-            <label>What should your next message accomplish?<textarea value={agenda} onChange={(event) => setAgenda(event.target.value)} placeholder={contact ? `Example: Answer ${contact.name}'s latest question naturally and ask one relevant follow-up.` : "Example: Answer their latest question naturally and ask one relevant follow-up."} /></label>
+            <label>What should your next message accomplish?<textarea ref={agendaRef} value={agenda} onChange={(event) => setAgenda(event.target.value)} placeholder={contact ? `Example: Answer ${contact.name}'s latest question naturally and ask one relevant follow-up.` : "Example: Answer their latest question naturally and ask one relevant follow-up."} /></label>
             <div className="provider-summary" role="status"><span>Runs in the cloud</span><strong>{CLOUDFLARE_MODEL_NAME}</strong><small>No LLM model is downloaded or run on this device.</small></div>
             <label>Cloud access code · session-only by default<input type="password" autoComplete="off" value={cloudAccessCode} onChange={(event) => {
               const nextCode = event.target.value.slice(0, 200);
@@ -469,7 +756,14 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
             {aiStatus && <p className="status" aria-live="polite">{aiStatus}</p>}
             <p className="fine-print">Cloud mode avoids downloading or running an LLM on this device. The Worker uses no app storage or AI Gateway. Review every draft before sending.</p>
           </div>
-          <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={draft + index}><div><span>OPTION {index + 1}</span><div><button onClick={() => void navigator.clipboard.writeText(draft)}>Copy</button><button title="Useful" onClick={() => rateDraft(draft, "useful")}>👍</button><button title="Not useful" onClick={() => rateDraft(draft, "not-useful")}>👎</button></div></div><p>{draft}</p></article>)}</div>
+          <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={`${contact?.id || "draft"}-${index}`}><div><span>EDITABLE DRAFT {index + 1}</span><div><button onClick={() => {
+            void navigator.clipboard.writeText(draft).then(() => setExtensionStatus("Draft copied. Review it in LinkedIn and send it yourself."), () => setAppError("Clipboard access was blocked. Select the draft text and copy it manually."));
+          }}>Copy</button><button onClick={() => markDraftManuallySent(draft)}>Mark manually sent</button><button aria-label={`Dismiss draft ${index + 1}`} onClick={() => {
+            const nextDrafts = drafts.filter((_item, draftIndex) => draftIndex !== index);
+            setDrafts(nextDrafts);
+            persistDrafts(nextDrafts);
+          }}>Dismiss</button><button title="Useful" aria-label={`Rate draft ${index + 1} useful`} onClick={() => rateDraft(draft, "useful")}>👍</button><button title="Not useful" aria-label={`Rate draft ${index + 1} not useful`} onClick={() => rateDraft(draft, "not-useful")}>👎</button></div></div><textarea aria-label={`Edit draft ${index + 1}`} value={draft} onChange={(event) => setDrafts((current) => current.map((item, draftIndex) => draftIndex === index ? event.target.value.slice(0, 5_000) : item))} onBlur={() => persistDrafts()} /></article>)}</div>
+          {Boolean(contact?.draftHistory?.length) && <p className="fine-print">The latest editable set is restored when you return to this contact. Up to 20 draft sets and local usage metadata are retained in the encrypted vault.</p>}
           {contact && <div className="panel-card compact"><h3>Conversation outcome</h3><div className="inline-form"><select value={outcomeResult} onChange={(event) => setOutcomeResult(event.target.value as typeof outcomeResult)}><option value="positive">Positive</option><option value="neutral">Neutral</option><option value="negative">Negative</option></select><input value={outcomeNote} onChange={(event) => setOutcomeNote(event.target.value)} placeholder="What worked or went wrong?" /><button onClick={addOutcome}>Save</button></div></div>}
           {handoffUrl ? <a className="platform-link" href={handoffUrl} target="_blank" rel="noreferrer">Open {handoffLabel} for manual review and paste ↗</a> : <p className="fine-print">Add a valid HTTPS service URL to enable manual handoff.</p>}
         </section>
@@ -500,7 +794,8 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         setCropRequest(null);
         request.resolve(region);
       }} />}
-      <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>No browser LLM:</strong> ChatHelp does not download or run language-model weights on this device.</li><li><strong>Cloud AI (opt-in):</strong> only the relevant recent chat, selected text context, guidance, and agenda are sent to ChatHelp&apos;s authenticated Cloudflare Worker. The Worker has no database, object storage, AI Gateway, or application logging configured.</li><li><strong>Never uploaded:</strong> screen images, the encrypted vault, its device key, and the cloud access code are not included in the AI prompt.</li><li><strong>Device encryption:</strong> this browser stores a non-exportable AES-256 key and uses it to open the local vault automatically after Cloudflare Access authentication. Clearing site data permanently removes this local workspace.</li><li><strong>Access-code storage:</strong> the code is session-only unless you explicitly allow ChatHelp to remember it in the encrypted vault.</li><li><strong>Screen capture:</strong> the browser asks you to choose a visible screen, then ChatHelp asks you to select only the relevant area. Cropping and OCR run locally with self-hosted assets; extracted text is encrypted in your vault.</li><li><strong>Sending:</strong> ChatHelp never sends a LinkedIn message or email. You review and manually copy a draft.</li><li><strong>Limits:</strong> Cloudflare processes cloud prompts to provide Workers AI. Browser malware, a compromised origin, or someone who controls this browser profile can still expose unlocked data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
+      <dialog ref={shortcutDialogRef} className="privacy-dialog shortcut-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">KEYBOARD-FIRST INBOX</p><h2>Shortcuts</h2><dl><div><dt>J / K</dt><dd>Next / previous conversation</dd></div><div><dt>E</dt><dd>Archive or restore selected conversation</dd></div><div><dt>R</dt><dd>Focus reply agenda</dd></div><div><dt>S</dt><dd>Focus snooze time</dd></div><div><dt>L</dt><dd>Focus labels</dd></div><div><dt>Ctrl/⌘ + J</dt><dd>Focus AI draft composer</dd></div><div><dt>G then I</dt><dd>Go to inbox</dd></div><div><dt>?</dt><dd>Show this help</dd></div></dl><p className="fine-print">Shortcuts are disabled while you are typing in a field.</p><button className="primary">Done</button></form></dialog>
+      <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Extension capture:</strong> the Manifest V3 extension receives temporary access only after you click it on a LinkedIn Messaging tab. It reads the open visible conversation and hands the snapshot to this authenticated app through a local extension bridge. It makes no network request, performs no background inbox scan, and cannot send a message.</li><li><strong>No browser LLM:</strong> ChatHelp does not download or run language-model weights on this device.</li><li><strong>Cloud AI (opt-in):</strong> only the relevant recent chat, selected text context, guidance, and agenda are sent to ChatHelp&apos;s authenticated Cloudflare Worker. The Worker has no database, object storage, AI Gateway, or application logging configured.</li><li><strong>Never uploaded:</strong> screen images, the encrypted vault, its device key, and the cloud access code are not included in the AI prompt.</li><li><strong>Device encryption:</strong> this browser stores a non-exportable AES-256 key and uses it to open the local vault automatically after Cloudflare Access authentication. Clearing site data permanently removes this local workspace.</li><li><strong>Access-code storage:</strong> the code is session-only unless you explicitly allow ChatHelp to remember it in the encrypted vault.</li><li><strong>OCR fallback:</strong> if the extension cannot be used, the browser asks you to choose a visible screen and ChatHelp asks you to select only the relevant area. Cropping and OCR run locally.</li><li><strong>Sending:</strong> ChatHelp never sends a LinkedIn message or email. Copying a draft and marking it manually sent are separate human actions.</li><li><strong>Limits:</strong> Cloudflare processes cloud prompts to provide Workers AI. Browser malware, a compromised origin, or someone who controls this browser profile can still expose unlocked data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
     </main>
   );
 }

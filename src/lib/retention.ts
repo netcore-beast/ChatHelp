@@ -16,7 +16,9 @@ export function applyRetention(workspace: WorkspaceData, now = Date.now()): Work
       chat: contact.chat.filter((message) => isRetained(message.createdAt, contact.retentionDays, now)),
       documents: contact.documents.filter((document) => isRetained(document.createdAt, contact.retentionDays, now)),
       outcomes: contact.outcomes.filter((outcome) => isRetained(outcome.createdAt, contact.retentionDays, now)),
+      draftHistory: (contact.draftHistory ?? []).filter((draft) => isRetained(draft.createdAt, contact.retentionDays, now)),
     })),
     feedback: workspace.feedback.filter((item) => isRetained(item.createdAt, retentionByContact.get(item.contactId) ?? 90, now)),
+    aiUsage: (workspace.aiUsage ?? []).filter((item) => isRetained(item.createdAt, retentionByContact.get(item.contactId) ?? 90, now)),
   };
 }

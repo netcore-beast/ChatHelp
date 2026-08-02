@@ -48,7 +48,10 @@ function clipForPrompt(value: string, maxCharacters: number): string {
 }
 
 export function buildPrompt(input: PrivateAiInput): string {
-  const chatHistory = clipForPrompt(input.contact.chat.slice(-40).map((message) => (message.role === "me" ? "USER" : input.contact.name) + ": " + clipForPrompt(message.body, 1_000)).join("\n"), 3_500);
+  const chatHistory = clipForPrompt(input.contact.chat.slice(-40).map((message) => {
+    const attachments = message.attachments?.length ? ` [Visible attachments: ${message.attachments.map((attachment) => attachment.label).join(", ")}]` : "";
+    return (message.role === "me" ? "USER" : input.contact.name) + ": " + clipForPrompt(message.body + attachments, 1_000);
+  }).join("\n"), 3_500);
   const conversationCaptures = selectRecentConversationCaptures(input.contact.documents);
   const capturedIds = new Set(conversationCaptures.map((item) => item.documentId));
   const rejectedFullPageIds = new Set(input.contact.documents.filter(isLikelyFullLinkedInPageCapture).map((document) => document.id));
@@ -71,7 +74,7 @@ export function buildPrompt(input: PrivateAiInput): string {
     "Keep each draft conversational and concise: one to three short sentences, normally under 450 characters. A greeting is optional. Ask at most one useful question. Do not force a call or meeting unless the agenda or conversation supports it.",
     "Make the three messages meaningfully different: one concise and direct, one warm and conversational, and one that offers a low-pressure next step. Do not expose these internal styles in the output.",
     "PERSONAL GUIDANCE\nRole: " + clipForPrompt(input.guidance.role, 400) + "\nObjective: " + clipForPrompt(input.guidance.objective, 400) + "\nVoice: " + clipForPrompt(input.guidance.voice, 400) + "\nBoundaries: " + clipForPrompt(input.guidance.boundaries, 400),
-    "CONTACT\nName: " + clipForPrompt(input.contact.name, 200) + "\nHeadline: " + clipForPrompt(input.contact.headline, 500) + "\nProfile notes: " + clipForPrompt(input.contact.profileNotes, 800),
+    "CONTACT\nName: " + clipForPrompt(input.contact.name, 200) + "\nHeadline: " + clipForPrompt(input.contact.headline, 500) + "\nProfile notes: " + clipForPrompt(input.contact.profileNotes, 800) + "\nPrivate conversation notes: " + clipForPrompt(input.contact.notes ?? "", 800),
     "RECENT STRUCTURED CHAT (authoritative when present)\n" + (chatHistory || "No structured chat entered."),
     "CAPTURED LINKEDIN CONVERSATION TEXT (mandatory conversation evidence)\nThis is the exact text extracted locally from the selected contact's conversation screen. It may contain LinkedIn interface clutter or OCR mistakes. Use the visible dates, speaker names, and message order to reconstruct the exchange.\n\n" + capturedConversation,
     "RELEVANT PROFILE OR SUPPORTING EVIDENCE\n" + evidence,

@@ -27,7 +27,7 @@ export function buildContentSecurityPolicy({ nonce, development = false, scriptH
     "form-action 'self'",
     `script-src ${scriptSources.join(" ")}`,
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
+    "img-src 'self' data: blob: https://*.licdn.com https://*.linkedin.com",
     "font-src 'self'",
     "media-src 'self' blob:",
     "worker-src 'self' blob:",

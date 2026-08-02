@@ -11,6 +11,7 @@
     "test:coverage": "vitest run --coverage",
     "verify:live-csp": "node scripts/verify-live-csp.mjs",
     "verify:static-csp": "node scripts/verify-static-csp.mjs",
+    "verify:extension": "node scripts/verify-extension.mjs",
     "verify:browser": "cross-env ELECTRON_DISABLE_SANDBOX=1 electron scripts/browser-smoke.cjs",
     "prepare:ocr": "node scripts/prepare-ocr.mjs",
     "postinstall": "npm run prepare:ocr && npm run prepare:icons",
