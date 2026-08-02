@@ -13,7 +13,7 @@ This will not remain a free service at meaningful GPU concurrency. Preserve loca
 ### Phase 0 — current release
 
 - Pinned WebLLM model runs on the user's device.
-- Encrypted IndexedDB vault; passphrase-derived key stays in memory.
+- Encrypted IndexedDB vault; a non-exportable device key opens automatically after Cloudflare Access authentication.
 - No ChatHelp account, prompt API, analytics, or cloud database.
 - User selects and reviews context and manually sends every message.
 

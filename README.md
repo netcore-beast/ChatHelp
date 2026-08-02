@@ -4,13 +4,13 @@ ChatHelp is a local-first, encrypted web application that helps a person write t
 
 ## Privacy architecture
 
-- No ChatHelp backend, account database, analytics, or prompt API.
-- AES-256-GCM encrypted IndexedDB vault with a passphrase-derived, memory-only key.
-- Llama 3.2 generation through WebLLM in a dedicated browser worker.
+- Cloudflare Access email verification and MFA protect the deployed application.
+- AES-256-GCM encrypted IndexedDB vault with a non-exportable, browser-held device key and no additional passphrase prompt.
+- Draft generation through an authenticated Cloudflare Worker and Workers AI; no model is downloaded to the device.
 - Local relevance ranking for imported context; no embedding service.
 - Self-hosted Tesseract worker, WebAssembly engine, and English OCR data.
 - Manual screen selection and manual LinkedIn/Gmail/Outlook handoff; no account scanning or message automation.
-- Per-contact retention, encrypted backup/import, lock, and complete erasure.
+- Per-contact retention and complete local erasure, including the browser-held device key.
 - Restrictive CSP and browser permission policy.
 
 Read SECURITY.md and PRIVACY.md before using real conversation data.
@@ -21,9 +21,9 @@ Read SECURITY.md and PRIVACY.md before using real conversation data.
 2. Run npm ci. The postinstall step prepares self-hosted OCR assets.
 3. Run npm run dev.
 4. Open the forwarded port 3000 preview.
-5. Create a unique passphrase of at least 12 characters and export an encrypted backup.
+5. Open ChatHelp. The browser creates and opens its encrypted workspace automatically after Cloudflare Access authentication.
 
-The first draft generation downloads the selected public model weights. Depending on the model and device, this is a large download and requires WebGPU support. The Llama 3.2 1B option is intended for lighter devices; the 3B option generally produces stronger drafts.
+Draft generation runs in Cloudflare Workers AI. ChatHelp does not download or run LLM weights on the user device.
 
 ## Verification
 
@@ -35,7 +35,7 @@ Run these commands inside the Codespace:
     npm run build
     npm audit --audit-level=high
 
-The test suite covers encrypted storage, wrong-passphrase and tamper rejection, unique AES-GCM IVs, retention, retrieval, prompt-injection boundaries, response parsing, security headers, self-hosted OCR assets, and the create/edit/lock/unlock browser workflow.
+The test suite covers automatic device encryption, one-time migration of older passphrase vaults, tamper rejection, unique AES-GCM IVs, retention, retrieval, prompt-injection boundaries, response parsing, security headers, self-hosted OCR assets, and browser reopen behavior.
 
 ## Installable clients and platform support
 
@@ -45,7 +45,7 @@ ChatHelp supports selected LinkedIn, Gmail, Outlook, and other HTTPS conversatio
 - Android: Capacitor debug APK for preview testing.
 - Browser/PWA: installable, with an offline application shell after the first successful load.
 
-See [docs/NATIVE_PACKAGING.md](docs/NATIVE_PACKAGING.md) for artifact and signing details. See [docs/CLOUD_LLM_ROADMAP.md](docs/CLOUD_LLM_ROADMAP.md) for the optional, consent-based managed LLM roadmap. Local inference remains the default and free/private tier.
+See [docs/NATIVE_PACKAGING.md](docs/NATIVE_PACKAGING.md) for artifact and signing details. Cloud inference remains explicitly consented to inside the application.
 
 ## Important product boundary
 
@@ -54,4 +54,4 @@ ChatHelp is a drafting assistant, not a messaging automation client. It does not
 
 ## Guided LinkedIn profile test
 
-After unlocking the vault, choose **Guided LinkedIn test** to walk through one explicitly selected profile and conversation. The profile URL is temporary, context capture/paste is user-directed, generation is local, and the final message is reviewed and sent manually. See [docs/LINKEDIN_TEST_WIZARD.md](docs/LINKEDIN_TEST_WIZARD.md).
+After Cloudflare Access authentication, choose **Guided LinkedIn test** to walk through one explicitly selected profile and conversation. The profile URL is temporary, context capture/paste is user-directed, generation uses the consented Cloudflare AI service, and the final message is reviewed and sent manually. See [docs/LINKEDIN_TEST_WIZARD.md](docs/LINKEDIN_TEST_WIZARD.md).

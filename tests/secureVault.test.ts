@@ -1,9 +1,20 @@
 import "fake-indexeddb/auto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { createVault, exportEncryptedBackup, importEncryptedBackup, normalizeWorkspace, resetVaultForTests, saveVault, unlockVault } from "../src/lib/secureVault";
+import {
+  createDeviceVault,
+  createLegacyVaultForTests,
+  getVaultMode,
+  migrateLegacyVault,
+  normalizeWorkspace,
+  openDeviceVault,
+  readVaultEnvelopeForTests,
+  resetVaultForTests,
+  saveVault,
+  writeVaultEnvelopeForTests,
+} from "../src/lib/secureVault";
 import { CLOUDFLARE_MODEL_ID, createEmptyWorkspace } from "../src/lib/workspaceTypes";
 
-describe("encrypted vault", () => {
+describe("encrypted device vault", () => {
   beforeEach(async () => { await resetVaultForTests(); });
 
   it("migrates old browser models to cloud and discards access codes stored without explicit permission", () => {
@@ -20,32 +31,44 @@ describe("encrypted vault", () => {
     });
   });
 
-  it("stores no readable workspace content and unlocks with the passphrase", async () => {
+  it("stores no readable workspace content and opens without a passphrase", async () => {
     const workspace = createEmptyWorkspace();
     workspace.guidance.objective = "CONFIDENTIAL-ACQUISITION-PLAN";
-    await createVault("correct horse battery staple", workspace);
-    const backup = await exportEncryptedBackup();
-    expect(backup).not.toContain("CONFIDENTIAL-ACQUISITION-PLAN");
-    expect(backup).not.toContain("correct horse battery staple");
-    const unlocked = await unlockVault("correct horse battery staple");
-    expect(unlocked.workspace.guidance.objective).toBe("CONFIDENTIAL-ACQUISITION-PLAN");
-    expect(unlocked.session.key.extractable).toBe(false);
-  }, 20_000);
+    const created = await createDeviceVault(workspace);
+    const stored = JSON.stringify(await readVaultEnvelopeForTests());
+    expect(stored).not.toContain("CONFIDENTIAL-ACQUISITION-PLAN");
+    expect(created.session.key.extractable).toBe(false);
 
-  it("rejects a wrong passphrase and tampered ciphertext", async () => {
-    await createVault("correct horse battery staple", createEmptyWorkspace());
-    await expect(unlockVault("this passphrase is wrong")).rejects.toThrow(/Incorrect passphrase/);
-    const backup = JSON.parse(await exportEncryptedBackup());
-    backup.cipher.ciphertext = backup.cipher.ciphertext.slice(0, -4) + "AAAA";
-    await expect(importEncryptedBackup(JSON.stringify(backup), "correct horse battery staple")).rejects.toThrow(/changed/);
-  }, 20_000);
+    const reopened = await openDeviceVault();
+    expect(reopened.workspace.guidance.objective).toBe("CONFIDENTIAL-ACQUISITION-PLAN");
+    expect(reopened.session.key.extractable).toBe(false);
+  });
+
+  it("rejects tampered ciphertext", async () => {
+    await createDeviceVault(createEmptyWorkspace());
+    const envelope = await readVaultEnvelopeForTests() as { cipher: { ciphertext: string } };
+    envelope.cipher.ciphertext = envelope.cipher.ciphertext.slice(0, -4) + "AAAA";
+    await writeVaultEnvelopeForTests(envelope);
+    await expect(openDeviceVault()).rejects.toThrow(/could not unlock/);
+  });
 
   it("uses a fresh AES-GCM IV for every save", async () => {
-    const created = await createVault("correct horse battery staple", createEmptyWorkspace());
-    const first = JSON.parse(await exportEncryptedBackup());
+    const created = await createDeviceVault(createEmptyWorkspace());
+    const first = await readVaultEnvelopeForTests() as { cipher: { iv: string } };
     await saveVault(created.workspace, created.session);
-    const second = JSON.parse(await exportEncryptedBackup());
+    const second = await readVaultEnvelopeForTests() as { cipher: { iv: string } };
     expect(second.cipher.iv).not.toBe(first.cipher.iv);
-    expect(second.kdf.salt).toBe(first.kdf.salt);
-  }, 20_000);
+  });
+
+  it("converts a passphrase vault once and then opens with the device key", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.guidance.objective = "Keep this history";
+    await createLegacyVaultForTests("correct horse battery staple", workspace);
+    expect(await getVaultMode()).toBe("legacy-passphrase");
+    await expect(migrateLegacyVault("this passphrase is wrong")).rejects.toThrow(/Incorrect passphrase/);
+
+    await migrateLegacyVault("correct horse battery staple");
+    expect(await getVaultMode()).toBe("device");
+    expect((await openDeviceVault()).workspace.guidance.objective).toBe("Keep this history");
+  });
 });
