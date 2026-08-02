@@ -57,7 +57,7 @@ describe("LinkedIn real-profile test wizard", () => {
     fireEvent.change(screen.getByLabelText("Relevant notes about Alex from Northwind"), { target: { value: "Interested in responsible AI partnerships." } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
-    fireEvent.click(screen.getByRole("button", { name: /Capture conversation screen with Alex from Northwind/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Capture only messages with Alex from Northwind/ }));
     await waitFor(() => expect(handlers.onCapture).toHaveBeenCalledWith("contact-test", "chat"));
     fireEvent.change(screen.getByLabelText("Optional manual chat lines"), { target: { value: "Me: Great to reconnect.\nAlex: What partnership did you have in mind?" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyRetention } from "../src/lib/retention";
 import { buildPrompt, hasUsableWebGpu, parseDrafts } from "../src/lib/privateAi";
-import { isConversationCapture, selectRecentConversationCaptures, selectRelevantContext, validateContextFile } from "../src/lib/retrieval";
+import { containsLinkedInPageNoise, isConversationCapture, isLikelyFullLinkedInPageCapture, selectRecentConversationCaptures, selectRelevantContext, validateContextFile } from "../src/lib/retrieval";
 import { createEmptyWorkspace, type Contact } from "../src/lib/workspaceTypes";
 
 const now = Date.parse("2026-07-28T12:00:00.000Z");
@@ -31,6 +31,39 @@ describe("local context controls", () => {
     ];
     expect(isConversationCapture(documents[1])).toBe(true);
     expect(selectRecentConversationCaptures(documents).map((item) => item.documentId)).toEqual(["chat-1"]);
+  });
+
+  it("rejects the full LinkedIn-page contamination shown in Amit's capture", () => {
+    const noisyText = `Home My Network Jobs Messaging Notifications More Me For Business Learning
+Jobs Unread Connections InMail Starred
+Amit Dabral 10:21 PM New message Ankush, explore relevant opportunities
+Get the latest jobs and industry news
+Senior Manager-Firewall opportunity
+Customer Care
+Amit
+Happy to connect with you as well.`;
+    const noisyDocument = {
+      id: "amit-full-page",
+      name: "LinkedIn conversation screen with Amit",
+      text: noisyText,
+      createdAt: "2026-08-01T00:00:00.000Z",
+    };
+
+    expect(containsLinkedInPageNoise(noisyText)).toBe(true);
+    expect(isLikelyFullLinkedInPageCapture(noisyDocument)).toBe(true);
+    expect(selectRecentConversationCaptures([noisyDocument])).toEqual([]);
+
+    const prompt = buildPrompt({
+      contact: { ...contact, name: "Amit", chat: [], documents: [noisyDocument] },
+      guidance: createEmptyWorkspace().guidance,
+      latestQuestion: "Keep the conversation engaging.",
+      feedbackSummary: "",
+      outcomeSummary: "",
+      retrievedContext: [{ documentId: noisyDocument.id, documentName: noisyDocument.name, text: noisyText, score: 1 }],
+    });
+    expect(prompt).toContain("No conversation screen captured.");
+    expect(prompt).not.toContain("Senior Manager-Firewall");
+    expect(prompt).not.toContain("Get the latest jobs and industry news");
   });
 
   it("labels imported instructions as untrusted evidence", () => {

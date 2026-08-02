@@ -65,6 +65,8 @@ describe("Cloudflare private inference Worker", () => {
     expect(env.DRAFT_RATE_LIMITER.limit).toHaveBeenCalledTimes(1);
     expect(env.AI.run).toHaveBeenCalledTimes(1);
     const [, input] = env.AI.run.mock.calls[0];
+    expect(input.messages[0].content).toContain("conversation-list previews");
+    expect(input.messages[0].content).toContain("job cards");
     expect(input.messages[1].content).toContain("Relevant conversation text only");
     expect(input.messages[1].content).not.toContain(ACCESS_CODE);
   });

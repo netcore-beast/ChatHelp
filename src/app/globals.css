@@ -86,6 +86,19 @@ p.error { margin: 0; padding: .7rem; border-radius: 8px; }
 .captured-context { overflow: hidden; border: 1px solid #c9d8cf; border-radius: 10px; background: #fbfdfb; }
 .captured-context .document-row { border-radius: 0; }
 .captured-context pre { max-height: 280px; margin: 0; padding: .8rem; overflow: auto; border-top: 1px solid #dce5df; background: #fff; color: var(--ink); font-family: Arial, Helvetica, sans-serif; font-size: .76rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.capture-warning { margin: 0; padding: .7rem .8rem; border-top: 1px solid #e3c27b; background: #fff4d8; color: #654a0d; font-size: .76rem; line-height: 1.45; }
+.crop-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 1rem; background: rgba(9, 22, 24, .82); }
+.crop-dialog { width: min(1080px, 100%); max-height: calc(100vh - 2rem); display: grid; gap: .8rem; overflow: auto; padding: 1rem; border-radius: 18px; background: var(--card); box-shadow: 0 28px 90px rgba(0, 0, 0, .35); }
+.crop-header { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
+.crop-header h2 { margin: 0; font-family: Georgia, serif; }
+.crop-header > button { border: 0; font-size: 1.4rem; }
+.crop-instructions { margin: 0; color: var(--muted); font-size: .82rem; line-height: 1.5; }
+.crop-image-shell { display: grid; place-items: center; min-height: 240px; padding: .5rem; overflow: auto; border-radius: 12px; background: #111b16; }
+.crop-surface { position: relative; display: inline-block; max-width: 100%; cursor: crosshair; touch-action: none; line-height: 0; user-select: none; }
+.crop-surface img { display: block; width: auto; height: auto; max-width: 100%; max-height: 62vh; pointer-events: none; }
+.crop-selection { position: absolute; border: 3px solid #2de59f; background: rgba(20, 92, 62, .18); box-shadow: 0 0 0 9999px rgba(0, 0, 0, .48); pointer-events: none; }
+.crop-selection span { position: absolute; left: 0; top: 0; padding: .35rem .45rem; background: #2de59f; color: #08251a; font-size: .7rem; font-weight: 900; line-height: 1; white-space: nowrap; }
+.crop-actions { display: flex; justify-content: flex-end; gap: .6rem; }
 .chat-list { display: grid; gap: .55rem; max-height: 300px; overflow: auto; }
 .bubble { max-width: 88%; padding: .7rem .8rem; border-radius: 4px 12px 12px 12px; background: #eef0eb; font-size: .82rem; line-height: 1.45; }
 .bubble small { display: block; margin-bottom: .2rem; font-weight: 800; }
@@ -131,6 +144,8 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
   .trust-grid { grid-template-columns: 1fr; }
   .vault-shell { padding: .8rem; }
   footer { align-items: flex-start; }
+  .crop-backdrop { padding: 0; }
+  .crop-dialog { min-height: 100vh; max-height: 100vh; border-radius: 0; }
 }
 
 
