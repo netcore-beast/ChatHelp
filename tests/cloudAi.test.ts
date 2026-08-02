@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildPrompt, generateWithCloud, parseDrafts, type PrivateAiInput } from "../src/lib/privateAi";
+import { selectRelevantContext } from "../src/lib/retrieval";
 
 function input(): PrivateAiInput {
   return {
@@ -85,6 +86,47 @@ describe("cloud AI client boundary", () => {
     expect(prompt).toContain("CONTACT is the selected recipient");
     expect(prompt).toContain("paste-ready message text only");
     expect(prompt).toContain("do not claim one exists");
+  });
+
+  it("always includes Amit's captured conversation even when the generic agenda has no keyword match", () => {
+    const capturedText = `Jan 20, 2024
+Ankush
+Hi
+
+Ankush
+Hi Amit, how are you? Happy to connect!(Edited)
+
+Amit
+Happy to connect with you as well. I saw your profile and it looks very eye captive . Specially your recent work.
+
+Ankush
+Hi Amit, hope you're doing well. I noticed your profile and thought it would be great to connect. How's your work going?`;
+    const document = {
+      id: "amit-chat-screen",
+      name: "LinkedIn conversation screen with Amit",
+      text: capturedText,
+      createdAt: "2026-08-01T00:00:00.000Z",
+    };
+    const amitInput: PrivateAiInput = {
+      ...input(),
+      contact: {
+        ...input().contact,
+        name: "Amit",
+        chat: [],
+        documents: [document],
+      },
+      latestQuestion: "Keep the discussion engaging and relationship-focused.",
+      retrievedContext: selectRelevantContext([document], "networking job opportunities and rapport"),
+    };
+
+    expect(amitInput.retrievedContext).toEqual([]);
+    const prompt = buildPrompt(amitInput);
+    expect(prompt).toContain("CAPTURED LINKEDIN CONVERSATION TEXT (mandatory conversation evidence)");
+    expect(prompt).toContain(capturedText);
+    expect(prompt).toContain("identify the latest meaningful message and its sender");
+    expect(prompt).toContain("Never repeat or closely paraphrase a message the USER already sent");
+    expect(prompt).toContain("CURRENT TASK OR AGENDA (intent only; not conversation evidence)");
+    expect(prompt.length).toBeLessThanOrEqual(24_000);
   });
 
   it("removes leaked style headings and formal Dear greetings from cloud drafts", () => {

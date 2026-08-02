@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyRetention } from "@/lib/retention";
-import { buildOutcomeSummary, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
+import { buildOutcomeSummary, isConversationCapture, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
 import { captureVisibleScreen, extractTextFromImage } from "@/lib/localOcr";
 import { CLOUDFLARE_MODEL_NAME, generatePrivateDrafts, unloadPrivateModel } from "@/lib/privateAi";
 import { PLATFORM_OPTIONS, platformLabel, safePlatformUrl } from "@/lib/platforms";
@@ -47,10 +47,6 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : "Something unexpected happened.";
-}
-
-function isConversationCapture(document: Contact["documents"][number]): boolean {
-  return document.name.startsWith("LinkedIn conversation screen");
 }
 
 function hasConversationContext(contact: Contact): boolean {
@@ -395,7 +391,7 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
     setDrafts([]);
     try {
       const query = [requestAgenda, activeContact.profileNotes, activeContact.chat.slice(-8).map((item) => item.body).join(" ")].join(" ");
-      const relevant = selectRelevantContext(activeContact.documents, query);
+      const relevant = selectRelevantContext(activeContact.documents.filter((document) => !isConversationCapture(document)), query);
       const feedbackSummary = workspace.feedback.filter((item) => item.contactId === activeContact.id).slice(-20).map((item) => item.rating + ": " + item.note).join("\n");
       const nextDrafts = await generatePrivateDrafts(CLOUDFLARE_MODEL_ID, {
         contact: activeContact,
@@ -467,7 +463,10 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
               <h3>Your conversation with {contact.name}</h3>
               <p className="section-explainer"><strong>You</strong> means the person using ChatHelp. <strong>{contact.name}</strong> is the selected LinkedIn contact who will receive your reply.</p>
               <div className="capture-guide"><strong>To capture chat history</strong><ol><li>Open LinkedIn Messaging and select your conversation with {contact.name}.</li><li>Scroll so the latest incoming message and enough recent history are visible.</li><li>Click below and choose that LinkedIn Messaging tab or window in the system picker.</li><li>For older history, scroll and capture another conversation screen.</li></ol><button onClick={() => void captureConversation()}>Capture conversation screen with {contact.name}</button></div>
-              {contact.documents.filter(isConversationCapture).map((document) => <div className="document-row" key={document.id}><div><strong>{document.name}</strong><small>{document.text.length.toLocaleString()} encrypted characters</small></div><button aria-label={"Delete " + document.name} onClick={() => updateContact((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== document.id) }))}>Remove</button></div>)}
+              {contact.documents.filter(isConversationCapture).map((document) => <article className="captured-context" key={document.id}>
+                <div className="document-row"><div><strong>{document.name}</strong><small>Exact locally extracted text used as conversation history</small></div><button aria-label={"Delete " + document.name} onClick={() => updateContact((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== document.id) }))}>Remove</button></div>
+                <pre aria-label={`Captured conversation text for ${contact.name}`}>{document.text}</pre>
+              </article>)}
               <textarea value={chatPaste} onChange={(event) => setChatPaste(event.target.value)} placeholder={"Paste selected lines only, for example:\nMe: Great to reconnect\nAlex: Likewise—how is the new role?"} />
               <button onClick={importChat}>Import manually pasted chat lines</button>
               <div className="inline-form"><select aria-label="Message sender" value={messageRole} onChange={(event) => setMessageRole(event.target.value as MessageRole)}><option value="them">{contact.name}</option><option value="me">You</option></select><input value={messageBody} onChange={(event) => setMessageBody(event.target.value)} placeholder={`Add one message from ${messageRole === "me" ? "you" : contact.name}`} /><button onClick={addMessage}>Add</button></div>

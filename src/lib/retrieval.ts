@@ -1,6 +1,7 @@
 import type { Contact, ContextDocument } from "./workspaceTypes";
 
 const STOP_WORDS = new Set(["the", "and", "for", "that", "with", "this", "you", "your", "are", "from", "have", "was", "but", "not"]);
+const LINKEDIN_CONVERSATION_CAPTURE_PREFIX = "LinkedIn conversation screen";
 
 function tokens(text: string): string[] {
   return (text.toLowerCase().match(/[a-z0-9][a-z0-9'-]{2,}/g) ?? []).filter((token) => !STOP_WORDS.has(token));
@@ -11,6 +12,22 @@ export interface RankedContext {
   documentName: string;
   text: string;
   score: number;
+}
+
+export function isConversationCapture(document: Pick<ContextDocument, "name">): boolean {
+  return document.name.startsWith(LINKEDIN_CONVERSATION_CAPTURE_PREFIX);
+}
+
+export function selectRecentConversationCaptures(documents: ContextDocument[], limit = 3): RankedContext[] {
+  return documents
+    .filter(isConversationCapture)
+    .slice(-limit)
+    .map((document) => ({
+      documentId: document.id,
+      documentName: document.name,
+      text: document.text,
+      score: Number.POSITIVE_INFINITY,
+    }));
 }
 
 export function chunkDocument(document: ContextDocument, maxCharacters = 900): RankedContext[] {

@@ -69,6 +69,38 @@ describe("Cloudflare private inference Worker", () => {
     expect(input.messages[1].content).not.toContain(ACCESS_CODE);
   });
 
+  it("automatically retries when the model copies a message from captured history", async () => {
+    const env = await workerEnv();
+    env.AI.run
+      .mockResolvedValueOnce({ response: { drafts: [
+        "Hi Amit, hope you're doing well. How's your work going?",
+        "Hi Amit, just checking in.",
+        "Hi Amit, what have you been working on lately?",
+      ] } })
+      .mockResolvedValueOnce({ response: { drafts: [
+        "Hi Amit, thanks again for the kind words about my recent work. What have you been focused on lately?",
+        "Hi Amit, I appreciated your thoughtful note about my recent work. I’d enjoy hearing what you’re building these days.",
+        "Hi Amit, it’s been a while since we connected. I’d be glad to catch up here and hear what’s new with you.",
+      ] } });
+    const prompt = "CAPTURED LINKEDIN CONVERSATION TEXT\nHi Amit, hope you're doing well. How's your work going?";
+
+    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + ACCESS_CODE,
+        "Content-Type": "application/json",
+        Origin: "https://chathelp.example",
+      },
+      body: JSON.stringify({ prompt }),
+    }), env);
+
+    expect(response.status).toBe(200);
+    expect(env.AI.run).toHaveBeenCalledTimes(2);
+    const body = await response.json();
+    expect(body.drafts[0]).toContain("kind words about my recent work");
+    expect(env.AI.run.mock.calls[1][1].messages[1].content).toContain("QUALITY CORRECTION");
+  });
+
   it("blocks cross-origin requests even with a valid access code", async () => {
     const env = await workerEnv();
     const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
