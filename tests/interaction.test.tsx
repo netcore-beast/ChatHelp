@@ -3,9 +3,14 @@ import "fake-indexeddb/auto";
 import { webcrypto } from "node:crypto";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ChatHelpApp from "../src/components/ChatHelpApp";
 import { resetVaultForTests } from "../src/lib/secureVault";
+
+vi.mock("@/lib/localOcr", () => ({
+  captureVisibleScreen: vi.fn().mockResolvedValue(new Blob(["screen"])),
+  extractTextFromImage: vi.fn().mockResolvedValue("Alex\nThanks for connecting.\nYou\nWhat are you working on now?"),
+}));
 
 Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
 
@@ -36,6 +41,11 @@ describe("secure workspace interaction", () => {
     expect(screen.getByText("No LLM model is downloaded or run on this device.")).toBeTruthy();
     expect(screen.queryByLabelText("AI provider")).toBeNull();
     expect((screen.getByRole("button", { name: "Generate 3 cloud drafts for Alex Morgan" }) as HTMLButtonElement).disabled).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "Capture conversation screen with Alex Morgan" }));
+    const capturedText = await screen.findByLabelText("Captured conversation text for Alex Morgan");
+    expect(capturedText.textContent).toBe("Alex\nThanks for connecting.\nYou\nWhat are you working on now?");
+    expect(screen.getByText("Exact locally extracted text used as conversation history")).toBeTruthy();
 
     await waitFor(() => expect(document.querySelector(".save-state")?.textContent).toContain("Encrypted"), { timeout: 3000 });
     await user.click(screen.getByRole("button", { name: "Lock" }));

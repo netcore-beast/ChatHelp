@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyRetention } from "../src/lib/retention";
 import { buildPrompt, hasUsableWebGpu, parseDrafts } from "../src/lib/privateAi";
-import { selectRelevantContext, validateContextFile } from "../src/lib/retrieval";
+import { isConversationCapture, selectRecentConversationCaptures, selectRelevantContext, validateContextFile } from "../src/lib/retrieval";
 import { createEmptyWorkspace, type Contact } from "../src/lib/workspaceTypes";
 
 const now = Date.parse("2026-07-28T12:00:00.000Z");
@@ -22,6 +22,15 @@ describe("local context controls", () => {
     ], "What should I ask about warehouse automation?");
     expect(ranked[0]?.documentName).toBe("Logistics");
     expect(ranked.some((item) => item.documentName === "Unrelated")).toBe(false);
+  });
+
+  it("selects recent conversation screens independently of keyword ranking", () => {
+    const documents = [
+      { id: "profile", name: "LinkedIn profile screen for Alex", text: "Profile text", createdAt: "2026-07-01T00:00:00.000Z" },
+      { id: "chat-1", name: "LinkedIn conversation screen with Alex", text: "Alex: Hello", createdAt: "2026-07-02T00:00:00.000Z" },
+    ];
+    expect(isConversationCapture(documents[1])).toBe(true);
+    expect(selectRecentConversationCaptures(documents).map((item) => item.documentId)).toEqual(["chat-1"]);
   });
 
   it("labels imported instructions as untrusted evidence", () => {
