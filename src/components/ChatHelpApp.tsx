@@ -423,7 +423,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         ? current.contacts.map((item) => item.id === contactId ? { ...item, name: nextContact.name, headline: nextContact.headline, profileNotes: nextContact.profileNotes, platform: "linkedin" } : item)
         : [...current.contacts, nextContact],
     }));
-    setSelectedId(contactId);
+    setActiveContactId(contactId);
     setDrafts([]);
     return contactId;
   }

@@ -9,7 +9,7 @@ ChatHelp is a local-first, encrypted web application that helps a person write t
 - Draft generation through an authenticated Cloudflare Worker and Workers AI; no model is downloaded to the device.
 - Local relevance ranking for imported context; no embedding service.
 - Self-hosted Tesseract worker, WebAssembly engine, and English OCR data.
-- Explicit-click Chrome extension import for the currently open LinkedIn conversation, plus manual screen/OCR fallback; no background account scanning or message automation.
+- Desktop-first Chrome extension import for the contact already selected in ChatHelp. The extension verifies that identity before reading visible messages; mobile uses manual paste/import, and screen/OCR remains a desktop fallback.
 - Local inbox, CRM pipeline stages, labels, private notes, snooze/follow-up reminders, editable draft history, and local AI usage metadata.
 - Per-contact retention and complete local erasure, including the browser-held device key.
 - Restrictive CSP and browser permission policy.
