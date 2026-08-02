@@ -65,10 +65,20 @@ p.error { margin: 0; padding: .7rem; border-radius: 8px; }
 .contact strong, .contact small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .contact small, small { color: var(--muted); font-size: .7rem; }
 .section-heading { display: flex; justify-content: space-between; gap: 1rem; align-items: start; margin-bottom: 1rem; }
+.section-explainer, .identity-note { margin: 0; color: var(--muted); font-size: .76rem; line-height: 1.5; }
+.identity-note { max-width: 680px; margin: .25rem 0 .35rem; color: var(--ink); }
 .danger-link { border: 0; background: transparent; color: var(--red); padding: .25rem; }
 .panel-card { display: grid; gap: .8rem; margin-bottom: 1rem; padding: 1rem; border: 1px solid var(--line); border-radius: 14px; background: var(--card); box-shadow: 0 7px 25px rgba(22,45,33,.04); }
 .panel-card h3 { margin: 0; font-size: .98rem; }
 .panel-card.compact { padding: .85rem 1rem; }
+.capture-guide { display: grid; gap: .55rem; padding: .8rem; border: 1px solid #c9d8cf; border-radius: 10px; background: #f4f8f5; color: var(--ink); font-size: .76rem; line-height: 1.45; }
+.capture-guide ol { margin: 0; padding-left: 1.25rem; }
+.capture-guide li + li { margin-top: .25rem; }
+.provider-summary { display: grid; gap: .2rem; padding: .8rem; border: 1px solid #a9d3c4; border-radius: 10px; background: var(--mint); }
+.provider-summary span { color: var(--green); font-size: .66rem; font-weight: 900; letter-spacing: .1em; text-transform: uppercase; }
+.provider-summary strong { font-size: .88rem; }
+.provider-summary small { color: var(--green-2); }
+.missing-context { margin: 0; padding: .75rem; border: 1px solid #d8bb79; border-radius: 9px; background: #fff8e8; color: #634b13; font-size: .76rem; line-height: 1.45; }
 .document-row { display: flex; align-items: center; justify-content: space-between; gap: .8rem; padding: .65rem; border-radius: 9px; background: #f3f5ef; }
 .document-row div { min-width: 0; display: grid; }
 .document-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .78rem; }

@@ -54,6 +54,7 @@ export interface Feedback {
 export interface CloudInferenceSettings {
   accessToken: string;
   consentedAt: string;
+  rememberAccessToken: boolean;
 }
 
 export interface WorkspaceData {
@@ -68,6 +69,13 @@ export interface WorkspaceData {
 export const CLOUDFLARE_MODEL_ID = "cloud:cloudflare:llama-3.1-8b-instruct-fast";
 export const DEFAULT_MODEL_ID = CLOUDFLARE_MODEL_ID;
 
+export function normalizeWorkspaceModelId(): string {
+  // The hosted ChatHelp experience is cloud-only. Older vaults may contain a
+  // retired browser-model ID, which made the select element look like cloud
+  // mode while generation still followed the local-model branch.
+  return CLOUDFLARE_MODEL_ID;
+}
+
 export function newId(prefix = "item"): string {
   return prefix + "-" + crypto.randomUUID();
 }
@@ -79,6 +87,7 @@ export function createEmptyWorkspace(): WorkspaceData {
     cloudInference: {
       accessToken: "",
       consentedAt: "",
+      rememberAccessToken: false,
     },
     contacts: [],
     guidance: {

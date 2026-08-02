@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyRetention } from "@/lib/retention";
 import { buildOutcomeSummary, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
 import { captureVisibleScreen, extractTextFromImage } from "@/lib/localOcr";
-import { CLOUDFLARE_MODEL_NAME, CPU_FALLBACK_MODEL_ID, generatePrivateDrafts, unloadPrivateModel } from "@/lib/privateAi";
+import { CLOUDFLARE_MODEL_NAME, generatePrivateDrafts, unloadPrivateModel } from "@/lib/privateAi";
 import { PLATFORM_OPTIONS, platformLabel, safePlatformUrl } from "@/lib/platforms";
 import { LinkedInTestWizard } from "@/components/LinkedInTestWizard";
 import { PwaInstall } from "@/components/PwaInstall";
@@ -47,6 +47,14 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : "Something unexpected happened.";
+}
+
+function isConversationCapture(document: Contact["documents"][number]): boolean {
+  return document.name.startsWith("LinkedIn conversation screen");
+}
+
+function hasConversationContext(contact: Contact): boolean {
+  return contact.chat.length > 0 || contact.documents.some(isConversationCapture);
 }
 
 export default function ChatHelpApp() {
@@ -197,6 +205,7 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
   const [drafts, setDrafts] = useState<string[]>([]);
   const [aiStatus, setAiStatus] = useState("");
   const [appError, setAppError] = useState("");
+  const [cloudAccessCode, setCloudAccessCode] = useState(() => initial.cloudInference.rememberAccessToken ? initial.cloudInference.accessToken : "");
   const [chatPaste, setChatPaste] = useState("");
   const [messageBody, setMessageBody] = useState("");
   const [messageRole, setMessageRole] = useState<MessageRole>("them");
@@ -313,18 +322,29 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
     if (documentRef.current) documentRef.current.value = "";
   }
 
-  async function captureContextFor(contactId: string) {
+  async function captureContextFor(contactId: string, purpose: "profile" | "chat") {
     setAppError("");
+    const target = workspace.contacts.find((item) => item.id === contactId);
+    const targetName = target?.name || "the selected contact";
     try {
-      setAiStatus("Waiting for you to choose a visible window or tab…");
+      setAiStatus(purpose === "profile"
+        ? `Choose the LinkedIn profile tab for ${targetName} in the system picker…`
+        : `Choose the LinkedIn Messaging tab showing your conversation with ${targetName}…`);
       const image = await captureVisibleScreen();
       const text = await extractTextFromImage(image, setAiStatus);
       if (!text) throw new Error("No readable text was found in the selected screen.");
       updateContactById(contactId, (current) => ({
         ...current,
-        documents: [...current.documents, { id: newId("capture"), name: "User-selected screen capture", text: text.slice(0, 100_000), createdAt: new Date().toISOString() }],
+        documents: [...current.documents, {
+          id: newId("capture"),
+          name: purpose === "profile" ? `LinkedIn profile screen for ${current.name}` : `LinkedIn conversation screen with ${current.name}`,
+          text: text.slice(0, 100_000),
+          createdAt: new Date().toISOString(),
+        }],
       }));
-      setAiStatus("Capture processed locally and encrypted.");
+      setAiStatus(purpose === "profile"
+        ? `Profile screen for ${targetName} processed locally and encrypted.`
+        : `Conversation screen with ${targetName} processed locally and encrypted.`);
     } catch (error) {
       setAiStatus("");
       setAppError(formatError(error));
@@ -334,7 +354,12 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
 
   async function captureContext() {
     if (!contact) return;
-    try { await captureContextFor(contact.id); } catch { /* The user-facing error is already shown. */ }
+    try { await captureContextFor(contact.id, "profile"); } catch { /* The user-facing error is already shown. */ }
+  }
+
+  async function captureConversation() {
+    if (!contact) return;
+    try { await captureContextFor(contact.id, "chat"); } catch { /* The user-facing error is already shown. */ }
   }
 
   function importChatFor(contactId: string, text: string) {
@@ -362,24 +387,26 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
     const activeContact = workspace.contacts.find((item) => item.id === contactIdOverride) ?? contact;
     const requestAgenda = (agendaOverride ?? agenda).trim();
     if (!activeContact || !requestAgenda) return;
+    if (!hasConversationContext(activeContact)) {
+      setAppError(`Add recent chat history with ${activeContact.name} before generating. Capture the LinkedIn conversation screen or add at least one message.`);
+      return;
+    }
     setAppError("");
     setDrafts([]);
     try {
       const query = [requestAgenda, activeContact.profileNotes, activeContact.chat.slice(-8).map((item) => item.body).join(" ")].join(" ");
       const relevant = selectRelevantContext(activeContact.documents, query);
       const feedbackSummary = workspace.feedback.filter((item) => item.contactId === activeContact.id).slice(-20).map((item) => item.rating + ": " + item.note).join("\n");
-      const nextDrafts = await generatePrivateDrafts(workspace.modelId, {
+      const nextDrafts = await generatePrivateDrafts(CLOUDFLARE_MODEL_ID, {
         contact: activeContact,
         guidance: workspace.guidance,
         latestQuestion: requestAgenda,
         retrievedContext: relevant,
         feedbackSummary,
         outcomeSummary: buildOutcomeSummary(activeContact),
-      }, setAiStatus, workspace.cloudInference);
+      }, setAiStatus, { ...workspace.cloudInference, accessToken: cloudAccessCode });
       setDrafts(nextDrafts);
-      setAiStatus(workspace.modelId === CLOUDFLARE_MODEL_ID
-        ? "Generated with Cloudflare AI. Nothing was sent to LinkedIn or another messaging API."
-        : "Generated locally. Nothing was sent to a message API.");
+      setAiStatus("Generated in Cloudflare Workers AI. No LLM was downloaded or run on this device, and nothing was sent to LinkedIn.");
     } catch (error) {
       setAiStatus("");
       setAppError(formatError(error));
@@ -401,8 +428,8 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
   const storageSummary = useMemo(() => contact ? contact.chat.length + " messages · " + contact.documents.length + " context files · " + contact.outcomes.length + " outcomes" : "No contact selected", [contact]);
   const handoffUrl = contact ? safePlatformUrl(contact) : null;
   const handoffLabel = contact ? platformLabel(contact.platform) : "platform";
-  const cloudSelected = workspace.modelId === CLOUDFLARE_MODEL_ID;
-  const cloudReady = Boolean(workspace.cloudInference.consentedAt && workspace.cloudInference.accessToken.trim().length >= 20);
+  const cloudReady = Boolean(workspace.cloudInference.consentedAt && cloudAccessCode.trim().length >= 20);
+  const conversationReady = Boolean(contact && hasConversationContext(contact));
 
   return (
     <main className="app-shell">
@@ -410,11 +437,12 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
         <div><p className="eyebrow">CHATHELP</p><h1>Private conversation studio</h1></div>
         <div className="top-actions"><button className="wizard-launch" data-testid="open-linkedin-test-wizard" onClick={() => setWizardOpen(true)}>Guided LinkedIn test</button><PwaInstall /><span className="save-state">● {saveStatus}</span><button onClick={() => void downloadBackup()}>Encrypted backup</button><button onClick={onLock}>Lock</button></div>
       </header>
-      <div className="privacy-strip"><strong>{cloudSelected ? "Cloud AI mode:" : "Local AI mode:"}</strong> {cloudSelected ? "Only the minimized prompt is sent to ChatHelp's Cloudflare Worker after consent; images and the encrypted vault stay here." : "Prompts and generated drafts stay in this browser; model weights are downloaded on first use."} OCR assets are served by ChatHelp. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
+      <div className="privacy-strip"><strong>Cloud AI mode:</strong> Draft generation runs in Cloudflare Workers AI; ChatHelp does not download or run an LLM in this browser. Screen OCR runs locally, and images and the encrypted vault stay on this device. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
       {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
       <div className="workspace-grid">
         <aside className="contacts-panel">
-          <h2>People</h2>
+          <h2>LinkedIn contacts</h2>
+          <p className="section-explainer">Add the people you want to reply to. These are your contacts—not you, the ChatHelp user.</p>
           <div className="contact-create"><select aria-label="Conversation platform" value={newPlatform} onChange={(event) => setNewPlatform(event.target.value as ConversationPlatform)}>{PLATFORM_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><div className="inline-form"><input aria-label="New contact name" value={newContactName} onChange={(event) => setNewContactName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addContact()} placeholder="Add a person" /><button onClick={addContact}>Add</button></div></div>
           <nav aria-label="Contacts">
             {workspace.contacts.map((item) => <button className={item.id === contact?.id ? "contact active" : "contact"} key={item.id} onClick={() => { setSelectedId(item.id); setDrafts([]); }}><span>{item.name.slice(0, 1).toUpperCase()}</span><div><strong>{item.name}</strong><small>{platformLabel(item.platform)} · {item.headline || "Add profile context"}</small></div></button>)}
@@ -424,20 +452,25 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
 
         <section className="context-panel">
           {contact ? <>
-            <div className="section-heading"><div><p className="eyebrow">SELECTED PERSON</p><h2>{contact.name}</h2><small>{storageSummary}</small></div><button className="danger-link" onClick={deleteContact}>Delete</button></div>
+            <div className="section-heading"><div><p className="eyebrow">SELECTED LINKEDIN CONTACT · MESSAGE RECIPIENT</p><h2>{contact.name}</h2><p className="identity-note">Profile context, chat history, and generated replies in this workspace are for your conversation with <strong>{contact.name}</strong>.</p><small>{storageSummary}</small></div><button className="danger-link" onClick={deleteContact}>Delete</button></div>
             <div className="panel-card">
-              <h3>Profile context</h3>
-              <label>Name<input value={contact.name} onChange={(event) => updateContact((current) => ({ ...current, name: event.target.value.slice(0, 200) }))} /></label>
-              <label>Headline<input value={contact.headline} onChange={(event) => updateContact((current) => ({ ...current, headline: event.target.value.slice(0, 500) }))} placeholder="Role, company, shared interests" /></label>
-              <label>Notes<textarea value={contact.profileNotes} onChange={(event) => updateContact((current) => ({ ...current, profileNotes: event.target.value.slice(0, 20_000) }))} placeholder="Only add what is relevant and appropriate." /></label>
-              <div className="button-row"><button onClick={() => void captureContext()}>Capture a screen you choose</button><button onClick={() => documentRef.current?.click()}>Import context file</button><input ref={documentRef} hidden type="file" accept=".txt,.md,.json,text/plain,application/json" onChange={(event) => event.target.files?.[0] && void importDocument(event.target.files[0])} /></div>
-              {contact.documents.map((document) => <div className="document-row" key={document.id}><div><strong>{document.name}</strong><small>{document.text.length.toLocaleString()} encrypted characters</small></div><button aria-label={"Delete " + document.name} onClick={() => updateContact((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== document.id) }))}>Remove</button></div>)}
+              <h3>{contact.name}&apos;s LinkedIn profile</h3>
+              <p className="section-explainer">This section is about the selected contact—not your own profile. Use only details relevant to this conversation.</p>
+              <label>Contact&apos;s name<input value={contact.name} onChange={(event) => updateContact((current) => ({ ...current, name: event.target.value.slice(0, 200) }))} /></label>
+              <label>Contact&apos;s headline, role, or company<input value={contact.headline} onChange={(event) => updateContact((current) => ({ ...current, headline: event.target.value.slice(0, 500) }))} placeholder={`Example: ${contact.name}'s role, company, or relevant expertise`} /></label>
+              <label>Relevant notes about {contact.name}<textarea value={contact.profileNotes} onChange={(event) => updateContact((current) => ({ ...current, profileNotes: event.target.value.slice(0, 20_000) }))} placeholder={`Only add relevant, non-sensitive context about ${contact.name}.`} /></label>
+              <div className="capture-guide"><strong>To capture profile context</strong><ol><li>Open {contact.name}&apos;s LinkedIn profile.</li><li>Click the button below.</li><li>In the system picker, choose the tab or window showing {contact.name}&apos;s profile—not your profile and not the chat.</li></ol></div>
+              <div className="button-row"><button onClick={() => void captureContext()}>Capture {contact.name}&apos;s profile screen</button><button onClick={() => documentRef.current?.click()}>Import profile/context file</button><input ref={documentRef} hidden type="file" accept=".txt,.md,.json,text/plain,application/json" onChange={(event) => event.target.files?.[0] && void importDocument(event.target.files[0])} /></div>
+              {contact.documents.filter((document) => !isConversationCapture(document)).map((document) => <div className="document-row" key={document.id}><div><strong>{document.name}</strong><small>{document.text.length.toLocaleString()} encrypted characters</small></div><button aria-label={"Delete " + document.name} onClick={() => updateContact((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== document.id) }))}>Remove</button></div>)}
             </div>
             <div className="panel-card">
-              <h3>Chat context</h3>
+              <h3>Your conversation with {contact.name}</h3>
+              <p className="section-explainer"><strong>You</strong> means the person using ChatHelp. <strong>{contact.name}</strong> is the selected LinkedIn contact who will receive your reply.</p>
+              <div className="capture-guide"><strong>To capture chat history</strong><ol><li>Open LinkedIn Messaging and select your conversation with {contact.name}.</li><li>Scroll so the latest incoming message and enough recent history are visible.</li><li>Click below and choose that LinkedIn Messaging tab or window in the system picker.</li><li>For older history, scroll and capture another conversation screen.</li></ol><button onClick={() => void captureConversation()}>Capture conversation screen with {contact.name}</button></div>
+              {contact.documents.filter(isConversationCapture).map((document) => <div className="document-row" key={document.id}><div><strong>{document.name}</strong><small>{document.text.length.toLocaleString()} encrypted characters</small></div><button aria-label={"Delete " + document.name} onClick={() => updateContact((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== document.id) }))}>Remove</button></div>)}
               <textarea value={chatPaste} onChange={(event) => setChatPaste(event.target.value)} placeholder={"Paste selected lines only, for example:\nMe: Great to reconnect\nAlex: Likewise—how is the new role?"} />
-              <button onClick={importChat}>Import pasted lines</button>
-              <div className="inline-form"><select value={messageRole} onChange={(event) => setMessageRole(event.target.value as MessageRole)}><option value="them">Them</option><option value="me">Me</option></select><input value={messageBody} onChange={(event) => setMessageBody(event.target.value)} placeholder="Add one message" /><button onClick={addMessage}>Add</button></div>
+              <button onClick={importChat}>Import manually pasted chat lines</button>
+              <div className="inline-form"><select aria-label="Message sender" value={messageRole} onChange={(event) => setMessageRole(event.target.value as MessageRole)}><option value="them">{contact.name}</option><option value="me">You</option></select><input value={messageBody} onChange={(event) => setMessageBody(event.target.value)} placeholder={`Add one message from ${messageRole === "me" ? "you" : contact.name}`} /><button onClick={addMessage}>Add</button></div>
               <div className="chat-list">{contact.chat.slice(-12).map((message) => <div className={message.role === "me" ? "bubble mine" : "bubble"} key={message.id}><small>{message.role === "me" ? "You" : contact.name}</small>{message.body}</div>)}</div>
             </div>
             <div className="panel-card compact">
@@ -448,23 +481,31 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
         </section>
 
         <section className="draft-panel">
-          <div className="panel-card guidance-card"><p className="eyebrow">YOUR PLAYBOOK</p><h2>Personal guidance</h2>
-            <label>Your role<input value={workspace.guidance.role} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, role: event.target.value } }))} /></label>
-            <label>Goal<textarea value={workspace.guidance.objective} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, objective: event.target.value } }))} /></label>
-            <label>Voice<input value={workspace.guidance.voice} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: event.target.value } }))} /></label>
-            <label>Boundaries<textarea value={workspace.guidance.boundaries} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, boundaries: event.target.value } }))} /></label>
+          <div className="panel-card guidance-card"><p className="eyebrow">ABOUT YOU · THE CHATHELP USER</p><h2>Your messaging playbook</h2>
+            <p className="section-explainer">These instructions describe you and how you want to communicate. They do not describe {contact?.name || "the selected contact"}.</p>
+            <label>Your role or team<input value={workspace.guidance.role} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, role: event.target.value } }))} /></label>
+            <label>Your relationship goal with {contact?.name || "this contact"}<textarea value={workspace.guidance.objective} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, objective: event.target.value } }))} /></label>
+            <label>How your messages should sound<input value={workspace.guidance.voice} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: event.target.value } }))} /></label>
+            <label>Rules every reply must follow<textarea value={workspace.guidance.boundaries} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, boundaries: event.target.value } }))} /></label>
           </div>
           <div className="panel-card compose-card">
-            <p className="eyebrow">PRIVATE AI</p><h2>Draft the next reply</h2>
-            <label>Question or agenda<textarea value={agenda} onChange={(event) => setAgenda(event.target.value)} placeholder="What did they ask, and what do you want this reply to accomplish?" /></label>
-            <label>AI provider<select value={workspace.modelId} onChange={(event) => updateWorkspace((current) => ({ ...current, modelId: event.target.value }))}><option value={CLOUDFLARE_MODEL_ID}>{CLOUDFLARE_MODEL_NAME} · no local LLM load</option><option value="Llama-3.2-3B-Instruct-q4f16_1-MLC">Llama 3.2 3B · local WebGPU</option><option value="Llama-3.2-1B-Instruct-q4f16_1-MLC">Llama 3.2 1B · lighter local WebGPU</option><option value={CPU_FALLBACK_MODEL_ID}>Qwen 2.5 0.5B · local CPU/WASM</option></select></label>
-            {cloudSelected && <>
-              <label>Cloud access code<input type="password" autoComplete="off" value={workspace.cloudInference.accessToken} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, accessToken: event.target.value.slice(0, 200) } }))} placeholder="Enter once; stored only in the encrypted vault" /></label>
-              <label className="consent-check"><input type="checkbox" checked={Boolean(workspace.cloudInference.consentedAt)} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, consentedAt: event.target.checked ? new Date().toISOString() : "" } }))} /><span>I understand that ChatHelp will send the relevant recent chat, selected context, and my guidance as text to Cloudflare Workers AI to create drafts. Screenshots, the full vault, and credentials are not sent.</span></label>
-            </>}
-            <button className="primary" disabled={!contact || !agenda.trim() || (cloudSelected && !cloudReady) || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("Capture processed"))} onClick={() => void generate()}>Generate 3 private drafts</button>
+            <p className="eyebrow">CLOUDFLARE PRIVATE AI</p><h2>Your next reply to {contact?.name || "the selected contact"}</h2>
+            <label>What should your next message accomplish?<textarea value={agenda} onChange={(event) => setAgenda(event.target.value)} placeholder={contact ? `Example: Answer ${contact.name}'s latest question naturally and ask one relevant follow-up.` : "Example: Answer their latest question naturally and ask one relevant follow-up."} /></label>
+            <div className="provider-summary" role="status"><span>Runs in the cloud</span><strong>{CLOUDFLARE_MODEL_NAME}</strong><small>No LLM model is downloaded or run on this device.</small></div>
+            <label>Cloud access code · session-only by default<input type="password" autoComplete="off" value={cloudAccessCode} onChange={(event) => {
+              const nextCode = event.target.value.slice(0, 200);
+              setCloudAccessCode(nextCode);
+              if (workspace.cloudInference.rememberAccessToken) updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, accessToken: nextCode } }));
+            }} placeholder="Enter the code yourself; it is not saved unless you grant permission below" /></label>
+            <label className="consent-check"><input type="checkbox" checked={workspace.cloudInference.rememberAccessToken} onChange={(event) => {
+              const rememberAccessToken = event.target.checked;
+              updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, rememberAccessToken, accessToken: rememberAccessToken ? cloudAccessCode : "" } }));
+            }} /><span>Remember this access code in this browser&apos;s encrypted vault. Leave unchecked to forget it when the workspace is locked or closed.</span></label>
+            <label className="consent-check"><input type="checkbox" checked={Boolean(workspace.cloudInference.consentedAt)} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, consentedAt: event.target.checked ? new Date().toISOString() : "" } }))} /><span>I understand that ChatHelp will send the relevant recent chat, selected context, my guidance, and agenda as text to Cloudflare Workers AI. Screenshots, the full vault, and the access code are not included in the AI prompt.</span></label>
+            {!conversationReady && contact && <p className="missing-context" role="note">Before generating, capture the LinkedIn conversation screen with {contact.name} or add at least one chat message. Profile information alone is not enough to write an accurate reply.</p>}
+            <button className="primary" disabled={!contact || !conversationReady || !agenda.trim() || !cloudReady || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("processed locally"))} onClick={() => void generate()}>Generate 3 cloud drafts for {contact?.name || "selected contact"}</button>
             {aiStatus && <p className="status" aria-live="polite">{aiStatus}</p>}
-            <p className="fine-print">{cloudSelected ? "Cloud mode avoids downloading or running an LLM on this device. The Worker uses no app storage or AI Gateway, and Cloudflare states Workers AI customer content is not used to train models. The access code and consent record are encrypted in your local vault." : "Local mode downloads pinned model weights and runs in this browser. If WebGPU is unavailable, ChatHelp switches to CPU/WASM. Prompts never go to the model host."} Review every draft before sending.</p>
+            <p className="fine-print">Cloud mode avoids downloading or running an LLM on this device. The Worker uses no app storage or AI Gateway. Review every draft before sending.</p>
           </div>
           <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={draft + index}><div><span>OPTION {index + 1}</span><div><button onClick={() => void navigator.clipboard.writeText(draft)}>Copy</button><button title="Useful" onClick={() => rateDraft(draft, "useful")}>👍</button><button title="Not useful" onClick={() => rateDraft(draft, "not-useful")}>👎</button></div></div><p>{draft}</p></article>)}</div>
           {contact && <div className="panel-card compact"><h3>Conversation outcome</h3><div className="inline-form"><select value={outcomeResult} onChange={(event) => setOutcomeResult(event.target.value as typeof outcomeResult)}><option value="positive">Positive</option><option value="neutral">Neutral</option><option value="negative">Negative</option></select><input value={outcomeNote} onChange={(event) => setOutcomeNote(event.target.value)} placeholder="What worked or went wrong?" /><button onClick={addOutcome}>Save</button></div></div>}
@@ -488,7 +529,7 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
           await generate(nextAgenda, contactId);
         }}
       />}
-      <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Local AI:</strong> prompts stay in the browser. The pinned model host sees ordinary model-download metadata, not prompts.</li><li><strong>Cloud AI (opt-in):</strong> only the relevant recent chat, selected text context, guidance, and agenda are sent to ChatHelp&apos;s authenticated Cloudflare Worker. The Worker has no database, object storage, AI Gateway, or application logging configured.</li><li><strong>Never uploaded:</strong> screen images, the encrypted vault, its passphrase, and the cloud access code are not included in the AI request.</li><li><strong>Screen capture:</strong> the browser asks you to choose a visible screen. OCR runs locally with self-hosted assets; extracted text is encrypted in your vault.</li><li><strong>Sending:</strong> ChatHelp never sends a LinkedIn message or email. You review and manually copy a draft.</li><li><strong>Limits:</strong> Cloudflare processes cloud prompts to provide Workers AI. Browser malware, a compromised origin, or someone who knows your passphrase can still expose data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
+      <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>No browser LLM:</strong> ChatHelp does not download or run language-model weights on this device.</li><li><strong>Cloud AI (opt-in):</strong> only the relevant recent chat, selected text context, guidance, and agenda are sent to ChatHelp&apos;s authenticated Cloudflare Worker. The Worker has no database, object storage, AI Gateway, or application logging configured.</li><li><strong>Never uploaded:</strong> screen images, the encrypted vault, its passphrase, and the cloud access code are not included in the AI prompt.</li><li><strong>Access-code storage:</strong> the code is session-only unless you explicitly allow ChatHelp to remember it in the encrypted vault.</li><li><strong>Screen capture:</strong> the browser asks you to choose a visible screen. OCR runs locally with self-hosted assets; extracted text is encrypted in your vault.</li><li><strong>Sending:</strong> ChatHelp never sends a LinkedIn message or email. You review and manually copy a draft.</li><li><strong>Limits:</strong> Cloudflare processes cloud prompts to provide Workers AI. Browser malware, a compromised origin, or someone who knows your passphrase can still expose data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
     </main>
   );
 }

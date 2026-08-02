@@ -6,8 +6,8 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "ChatHelp — Private, on-device conversation copilot",
-  description: "Generate thoughtful professional messages with an on-device language model, reviewed context, and no AI API.",
+  title: "ChatHelp — Private cloud conversation copilot",
+  description: "Generate reviewed professional replies with Cloudflare Workers AI and user-selected local screen capture.",
   applicationName: "ChatHelp",
   appleWebApp: { capable: true, title: "ChatHelp", statusBarStyle: "default" },
   formatDetection: { telephone: false },

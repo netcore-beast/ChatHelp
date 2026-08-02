@@ -30,6 +30,12 @@ describe("secure workspace interaction", () => {
     await user.type(screen.getByLabelText("New contact name"), "Alex Morgan");
     await user.click(screen.getByRole("button", { name: "Add" }));
     expect(await screen.findByRole("heading", { name: "Alex Morgan" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Alex Morgan's LinkedIn profile" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Capture Alex Morgan's profile screen" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Capture conversation screen with Alex Morgan" })).toBeTruthy();
+    expect(screen.getByText("No LLM model is downloaded or run on this device.")).toBeTruthy();
+    expect(screen.queryByLabelText("AI provider")).toBeNull();
+    expect((screen.getByRole("button", { name: "Generate 3 cloud drafts for Alex Morgan" }) as HTMLButtonElement).disabled).toBe(true);
 
     await waitFor(() => expect(document.querySelector(".save-state")?.textContent).toContain("Encrypted"), { timeout: 3000 });
     await user.click(screen.getByRole("button", { name: "Lock" }));
