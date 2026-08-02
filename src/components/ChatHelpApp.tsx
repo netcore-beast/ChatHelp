@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyRetention } from "@/lib/retention";
-import { buildOutcomeSummary, isConversationCapture, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
-import { captureVisibleScreen, extractTextFromImage } from "@/lib/localOcr";
+import { buildOutcomeSummary, containsLinkedInPageNoise, isConversationCapture, isLikelyFullLinkedInPageCapture, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
+import { captureVisibleScreen, cropImageToRegion, extractTextFromImage, type NormalizedCropRegion } from "@/lib/localOcr";
 import { CLOUDFLARE_MODEL_NAME, generatePrivateDrafts, unloadPrivateModel } from "@/lib/privateAi";
 import { PLATFORM_OPTIONS, platformLabel, safePlatformUrl } from "@/lib/platforms";
 import { LinkedInTestWizard } from "@/components/LinkedInTestWizard";
 import { PwaInstall } from "@/components/PwaInstall";
+import { ScreenRegionSelector } from "@/components/ScreenRegionSelector";
 import {
   createVault,
   eraseVault,
@@ -50,7 +51,7 @@ function formatError(error: unknown): string {
 }
 
 function hasConversationContext(contact: Contact): boolean {
-  return contact.chat.length > 0 || contact.documents.some(isConversationCapture);
+  return contact.chat.length > 0 || contact.documents.some((document) => isConversationCapture(document) && !isLikelyFullLinkedInPageCapture(document));
 }
 
 export default function ChatHelpApp() {
@@ -207,6 +208,12 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
   const [messageRole, setMessageRole] = useState<MessageRole>("them");
   const [outcomeNote, setOutcomeNote] = useState("");
   const [outcomeResult, setOutcomeResult] = useState<"positive" | "neutral" | "negative">("positive");
+  const [cropRequest, setCropRequest] = useState<{
+    image: Blob;
+    contactName: string;
+    purpose: "profile" | "chat";
+    resolve: (region: NormalizedCropRegion | null) => void;
+  } | null>(null);
   const documentRef = useRef<HTMLInputElement>(null);
 
   const contact = workspace.contacts.find((item) => item.id === selectedId) ?? workspace.contacts[0] ?? null;
@@ -327,8 +334,17 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
         ? `Choose the LinkedIn profile tab for ${targetName} in the system picker…`
         : `Choose the LinkedIn Messaging tab showing your conversation with ${targetName}…`);
       const image = await captureVisibleScreen();
-      const text = await extractTextFromImage(image, setAiStatus);
+      setAiStatus(`Select only ${purpose === "chat" ? `${targetName}'s message column` : `${targetName}'s profile details`} for local OCR…`);
+      const region = await new Promise<NormalizedCropRegion | null>((resolve) => setCropRequest({ image, contactName: targetName, purpose, resolve }));
+      if (!region) {
+        setAiStatus("");
+        return;
+      }
+      setAiStatus("Cropping the selected area locally…");
+      const croppedImage = await cropImageToRegion(image, region);
+      const text = await extractTextFromImage(croppedImage, setAiStatus);
       if (!text) throw new Error("No readable text was found in the selected screen.");
+      if (containsLinkedInPageNoise(text)) throw new Error(`That area still includes LinkedIn navigation, other conversations, or job suggestions. Capture again and select only ${purpose === "chat" ? `${targetName}'s central message column` : `${targetName}'s main profile details`}.`);
       updateContactById(contactId, (current) => ({
         ...current,
         documents: [...current.documents, {
@@ -384,14 +400,17 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
     const requestAgenda = (agendaOverride ?? agenda).trim();
     if (!activeContact || !requestAgenda) return;
     if (!hasConversationContext(activeContact)) {
-      setAppError(`Add recent chat history with ${activeContact.name} before generating. Capture the LinkedIn conversation screen or add at least one message.`);
+      const rejectedFullPage = activeContact.documents.some((document) => isConversationCapture(document) && isLikelyFullLinkedInPageCapture(document));
+      setAppError(rejectedFullPage
+        ? `The saved capture for ${activeContact.name} contains LinkedIn navigation, other chats, or job suggestions, so ChatHelp will not send it to AI. Remove it and capture only the central message column.`
+        : `Add recent chat history with ${activeContact.name} before generating. Capture only the LinkedIn message area or add at least one message.`);
       return;
     }
     setAppError("");
     setDrafts([]);
     try {
       const query = [requestAgenda, activeContact.profileNotes, activeContact.chat.slice(-8).map((item) => item.body).join(" ")].join(" ");
-      const relevant = selectRelevantContext(activeContact.documents.filter((document) => !isConversationCapture(document)), query);
+      const relevant = selectRelevantContext(activeContact.documents.filter((document) => !isConversationCapture(document) && !isLikelyFullLinkedInPageCapture(document)), query);
       const feedbackSummary = workspace.feedback.filter((item) => item.contactId === activeContact.id).slice(-20).map((item) => item.rating + ": " + item.note).join("\n");
       const nextDrafts = await generatePrivateDrafts(CLOUDFLARE_MODEL_ID, {
         contact: activeContact,
@@ -433,7 +452,7 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
         <div><p className="eyebrow">CHATHELP</p><h1>Private conversation studio</h1></div>
         <div className="top-actions"><button className="wizard-launch" data-testid="open-linkedin-test-wizard" onClick={() => setWizardOpen(true)}>Guided LinkedIn test</button><PwaInstall /><span className="save-state">● {saveStatus}</span><button onClick={() => void downloadBackup()}>Encrypted backup</button><button onClick={onLock}>Lock</button></div>
       </header>
-      <div className="privacy-strip"><strong>Cloud AI mode:</strong> Draft generation runs in Cloudflare Workers AI; ChatHelp does not download or run an LLM in this browser. Screen OCR runs locally, and images and the encrypted vault stay on this device. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
+      <div className="privacy-strip"><strong>Cloud AI mode:</strong> Draft generation runs in Cloudflare Workers AI; ChatHelp does not download or run an LLM in this browser. You crop the relevant screen area before local OCR, and images and the encrypted vault stay on this device. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
       {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
       <div className="workspace-grid">
         <aside className="contacts-panel">
@@ -455,18 +474,21 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
               <label>Contact&apos;s name<input value={contact.name} onChange={(event) => updateContact((current) => ({ ...current, name: event.target.value.slice(0, 200) }))} /></label>
               <label>Contact&apos;s headline, role, or company<input value={contact.headline} onChange={(event) => updateContact((current) => ({ ...current, headline: event.target.value.slice(0, 500) }))} placeholder={`Example: ${contact.name}'s role, company, or relevant expertise`} /></label>
               <label>Relevant notes about {contact.name}<textarea value={contact.profileNotes} onChange={(event) => updateContact((current) => ({ ...current, profileNotes: event.target.value.slice(0, 20_000) }))} placeholder={`Only add relevant, non-sensitive context about ${contact.name}.`} /></label>
-              <div className="capture-guide"><strong>To capture profile context</strong><ol><li>Open {contact.name}&apos;s LinkedIn profile.</li><li>Click the button below.</li><li>In the system picker, choose the tab or window showing {contact.name}&apos;s profile—not your profile and not the chat.</li></ol></div>
+              <div className="capture-guide"><strong>To capture profile context</strong><ol><li>Open {contact.name}&apos;s LinkedIn profile.</li><li>Click the button below.</li><li>In the system picker, choose the tab or window showing {contact.name}&apos;s profile—not your profile and not the chat.</li><li>In ChatHelp&apos;s private preview, select only {contact.name}&apos;s relevant profile details. Navigation and side panels will be excluded.</li></ol></div>
               <div className="button-row"><button onClick={() => void captureContext()}>Capture {contact.name}&apos;s profile screen</button><button onClick={() => documentRef.current?.click()}>Import profile/context file</button><input ref={documentRef} hidden type="file" accept=".txt,.md,.json,text/plain,application/json" onChange={(event) => event.target.files?.[0] && void importDocument(event.target.files[0])} /></div>
-              {contact.documents.filter((document) => !isConversationCapture(document)).map((document) => <div className="document-row" key={document.id}><div><strong>{document.name}</strong><small>{document.text.length.toLocaleString()} encrypted characters</small></div><button aria-label={"Delete " + document.name} onClick={() => updateContact((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== document.id) }))}>Remove</button></div>)}
+              {contact.documents.filter((document) => !isConversationCapture(document)).map((document) => <div className="document-row" key={document.id}><div><strong>{document.name}</strong><small>{isLikelyFullLinkedInPageCapture(document) ? "Not used by AI — full LinkedIn page detected" : `${document.text.length.toLocaleString()} encrypted characters`}</small></div><button aria-label={"Delete " + document.name} onClick={() => updateContact((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== document.id) }))}>Remove</button></div>)}
             </div>
             <div className="panel-card">
               <h3>Your conversation with {contact.name}</h3>
               <p className="section-explainer"><strong>You</strong> means the person using ChatHelp. <strong>{contact.name}</strong> is the selected LinkedIn contact who will receive your reply.</p>
-              <div className="capture-guide"><strong>To capture chat history</strong><ol><li>Open LinkedIn Messaging and select your conversation with {contact.name}.</li><li>Scroll so the latest incoming message and enough recent history are visible.</li><li>Click below and choose that LinkedIn Messaging tab or window in the system picker.</li><li>For older history, scroll and capture another conversation screen.</li></ol><button onClick={() => void captureConversation()}>Capture conversation screen with {contact.name}</button></div>
-              {contact.documents.filter(isConversationCapture).map((document) => <article className="captured-context" key={document.id}>
-                <div className="document-row"><div><strong>{document.name}</strong><small>Exact locally extracted text used as conversation history</small></div><button aria-label={"Delete " + document.name} onClick={() => updateContact((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== document.id) }))}>Remove</button></div>
+              <div className="capture-guide"><strong>To capture chat history</strong><ol><li>Open LinkedIn Messaging and select your conversation with {contact.name}.</li><li>Scroll so the latest incoming message and enough recent history are visible.</li><li>Click below and choose that LinkedIn Messaging tab or window in the system picker.</li><li>In ChatHelp&apos;s private preview, select only the central message column. Exclude navigation, other chats, job cards, and side panels.</li><li>For older history, scroll and capture another message area.</li></ol><button onClick={() => void captureConversation()}>Capture conversation messages with {contact.name}</button></div>
+              {contact.documents.filter(isConversationCapture).map((document) => {
+                const noisy = isLikelyFullLinkedInPageCapture(document);
+                return <article className="captured-context" key={document.id}>
+                <div className="document-row"><div><strong>{document.name}</strong><small>{noisy ? "Not used by AI — full LinkedIn page detected" : "Exact locally extracted text used as conversation history"}</small></div><button aria-label={"Delete " + document.name} onClick={() => updateContact((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== document.id) }))}>Remove</button></div>
+                {noisy && <p className="capture-warning" role="note">This capture contains LinkedIn navigation, another conversation list, or job suggestions. Remove it and capture again, selecting only {contact.name}&apos;s central message column.</p>}
                 <pre aria-label={`Captured conversation text for ${contact.name}`}>{document.text}</pre>
-              </article>)}
+              </article>;})}
               <textarea value={chatPaste} onChange={(event) => setChatPaste(event.target.value)} placeholder={"Paste selected lines only, for example:\nMe: Great to reconnect\nAlex: Likewise—how is the new role?"} />
               <button onClick={importChat}>Import manually pasted chat lines</button>
               <div className="inline-form"><select aria-label="Message sender" value={messageRole} onChange={(event) => setMessageRole(event.target.value as MessageRole)}><option value="them">{contact.name}</option><option value="me">You</option></select><input value={messageBody} onChange={(event) => setMessageBody(event.target.value)} placeholder={`Add one message from ${messageRole === "me" ? "you" : contact.name}`} /><button onClick={addMessage}>Add</button></div>
@@ -501,7 +523,7 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
               updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, rememberAccessToken, accessToken: rememberAccessToken ? cloudAccessCode : "" } }));
             }} /><span>Remember this access code in this browser&apos;s encrypted vault. Leave unchecked to forget it when the workspace is locked or closed.</span></label>
             <label className="consent-check"><input type="checkbox" checked={Boolean(workspace.cloudInference.consentedAt)} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, consentedAt: event.target.checked ? new Date().toISOString() : "" } }))} /><span>I understand that ChatHelp will send the relevant recent chat, selected context, my guidance, and agenda as text to Cloudflare Workers AI. Screenshots, the full vault, and the access code are not included in the AI prompt.</span></label>
-            {!conversationReady && contact && <p className="missing-context" role="note">Before generating, capture the LinkedIn conversation screen with {contact.name} or add at least one chat message. Profile information alone is not enough to write an accurate reply.</p>}
+            {!conversationReady && contact && <p className="missing-context" role="note">Before generating, capture only the message area for your LinkedIn conversation with {contact.name}, or add at least one chat message. Full-page captures containing navigation, other chats, or job suggestions are not used.</p>}
             <button className="primary" disabled={!contact || !conversationReady || !agenda.trim() || !cloudReady || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("processed locally"))} onClick={() => void generate()}>Generate 3 cloud drafts for {contact?.name || "selected contact"}</button>
             {aiStatus && <p className="status" aria-live="polite">{aiStatus}</p>}
             <p className="fine-print">Cloud mode avoids downloading or running an LLM on this device. The Worker uses no app storage or AI Gateway. Review every draft before sending.</p>
@@ -528,7 +550,16 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
           await generate(nextAgenda, contactId);
         }}
       />}
-      <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>No browser LLM:</strong> ChatHelp does not download or run language-model weights on this device.</li><li><strong>Cloud AI (opt-in):</strong> only the relevant recent chat, selected text context, guidance, and agenda are sent to ChatHelp&apos;s authenticated Cloudflare Worker. The Worker has no database, object storage, AI Gateway, or application logging configured.</li><li><strong>Never uploaded:</strong> screen images, the encrypted vault, its passphrase, and the cloud access code are not included in the AI prompt.</li><li><strong>Access-code storage:</strong> the code is session-only unless you explicitly allow ChatHelp to remember it in the encrypted vault.</li><li><strong>Screen capture:</strong> the browser asks you to choose a visible screen. OCR runs locally with self-hosted assets; extracted text is encrypted in your vault.</li><li><strong>Sending:</strong> ChatHelp never sends a LinkedIn message or email. You review and manually copy a draft.</li><li><strong>Limits:</strong> Cloudflare processes cloud prompts to provide Workers AI. Browser malware, a compromised origin, or someone who knows your passphrase can still expose data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
+      {cropRequest && <ScreenRegionSelector image={cropRequest.image} contactName={cropRequest.contactName} purpose={cropRequest.purpose} onCancel={() => {
+        const request = cropRequest;
+        setCropRequest(null);
+        request.resolve(null);
+      }} onConfirm={(region) => {
+        const request = cropRequest;
+        setCropRequest(null);
+        request.resolve(region);
+      }} />}
+      <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>No browser LLM:</strong> ChatHelp does not download or run language-model weights on this device.</li><li><strong>Cloud AI (opt-in):</strong> only the relevant recent chat, selected text context, guidance, and agenda are sent to ChatHelp&apos;s authenticated Cloudflare Worker. The Worker has no database, object storage, AI Gateway, or application logging configured.</li><li><strong>Never uploaded:</strong> screen images, the encrypted vault, its passphrase, and the cloud access code are not included in the AI prompt.</li><li><strong>Access-code storage:</strong> the code is session-only unless you explicitly allow ChatHelp to remember it in the encrypted vault.</li><li><strong>Screen capture:</strong> the browser asks you to choose a visible screen, then ChatHelp asks you to select only the relevant area. Cropping and OCR run locally with self-hosted assets; extracted text is encrypted in your vault.</li><li><strong>Sending:</strong> ChatHelp never sends a LinkedIn message or email. You review and manually copy a draft.</li><li><strong>Limits:</strong> Cloudflare processes cloud prompts to provide Workers AI. Browser malware, a compromised origin, or someone who knows your passphrase can still expose data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
     </main>
   );
 }

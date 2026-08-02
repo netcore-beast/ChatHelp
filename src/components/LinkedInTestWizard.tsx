@@ -79,7 +79,7 @@ export function LinkedInTestWizard({ initialContact, guidance, drafts, aiStatus,
           {step === 0 && <div className="wizard-step">
             <p className="eyebrow">STEP 1 OF 6</p><h3>Start with a strict privacy boundary</h3>
             <p>This wizard never signs in to LinkedIn, reads your account in the background, or sends a message. You choose one contact, their profile screen, and the conversation screen you want ChatHelp to process.</p>
-            <ul className="wizard-checks"><li>LinkedIn remains open in its own tab or app.</li><li>Screen OCR runs locally; the captured image is not uploaded.</li><li>Draft generation runs in Cloudflare Workers AI; no LLM is downloaded to this device.</li><li>Selected text context is encrypted in your vault.</li><li>You review, copy, and send manually.</li></ul>
+            <ul className="wizard-checks"><li>LinkedIn remains open in its own tab or app.</li><li>You select the relevant screen area before local OCR; the captured image is not uploaded.</li><li>Draft generation runs in Cloudflare Workers AI; no LLM is downloaded to this device.</li><li>Selected text context is encrypted in your vault.</li><li>You review, copy, and send manually.</li></ul>
             <label className="consent-check"><input type="checkbox" checked={consented} onChange={(event) => setConsented(event.target.checked)} />I understand that I must have a legitimate reason to use this person’s information and should add only what is necessary.</label>
           </div>}
 
@@ -94,7 +94,7 @@ export function LinkedInTestWizard({ initialContact, guidance, drafts, aiStatus,
 
           {step === 2 && <div className="wizard-step">
             <p className="eyebrow">STEP 3 OF 6</p><h3>Capture {name || "the contact"}&apos;s profile—not your profile</h3>
-            <p>Open the selected contact&apos;s LinkedIn profile first. Click below, then choose the tab or window showing that profile in the system picker. Do not choose your own profile or the messaging screen in this step.</p>
+            <p>Open the selected contact&apos;s LinkedIn profile first. Click below, choose that tab or window, then select only their relevant profile details in ChatHelp&apos;s local preview. Exclude navigation, recommendations, and side panels.</p>
             <button type="button" className="primary" disabled={capturing} onClick={async () => { const id = contactId || saveProfile(); setCapturing(true); setLocalError(""); try { await onCapture(id, "profile"); } catch (error) { setLocalError(error instanceof Error ? error.message : "The selected screen could not be processed."); } finally { setCapturing(false); } }}>{capturing ? "Processing profile screen locally…" : `Capture ${name || "the contact"}'s LinkedIn profile screen`}</button>
             <label>Relevant notes about {name || "the contact"}<textarea value={notes} onChange={(event) => setNotes(event.target.value.slice(0, 20_000))} placeholder="Current role, relevant expertise, or conversation-specific context…" /></label>
             <p className="fine-print">Avoid sensitive or unrelated personal information. You can remove captured context from the person’s profile card at any time.</p>
@@ -102,9 +102,9 @@ export function LinkedInTestWizard({ initialContact, guidance, drafts, aiStatus,
 
           {step === 3 && <div className="wizard-step">
             <p className="eyebrow">STEP 4 OF 6</p><h3>Capture your conversation with {name || "the contact"}</h3>
-            <p>Open LinkedIn Messaging, select the conversation with {name || "the contact"}, and scroll until the latest incoming message plus enough recent history are visible. Then choose that messaging tab or window in the system picker. Repeat after scrolling if you need older history.</p>
+            <p>Open LinkedIn Messaging, select the conversation with {name || "the contact"}, and scroll until the latest incoming message plus enough recent history are visible. Choose that tab or window, then select only the central message column in ChatHelp&apos;s local preview. Exclude navigation, other chats, job cards, and side panels.</p>
             <a className="platform-link" href="https://www.linkedin.com/messaging/" target="_blank" rel="noreferrer">Open LinkedIn Messaging ↗</a>
-            <button type="button" className="primary" disabled={capturing} onClick={async () => { const id = contactId || saveProfile(); setCapturing(true); setLocalError(""); try { await onCapture(id, "chat"); } catch (error) { setLocalError(error instanceof Error ? error.message : "The selected conversation screen could not be processed."); } finally { setCapturing(false); } }}>{capturing ? "Processing conversation screen locally…" : `Capture conversation screen with ${name || "the contact"}`}</button>
+            <button type="button" className="primary" disabled={capturing} onClick={async () => { const id = contactId || saveProfile(); setCapturing(true); setLocalError(""); try { await onCapture(id, "chat"); } catch (error) { setLocalError(error instanceof Error ? error.message : "The selected conversation screen could not be processed."); } finally { setCapturing(false); } }}>{capturing ? "Selecting and processing messages locally…" : `Capture only messages with ${name || "the contact"}`}</button>
             <label>Optional manual chat lines<textarea value={chatText} onChange={(event) => setChatText(event.target.value.slice(0, 100_000))} placeholder={"Me: Great to reconnect.\nAlex: Likewise—what kind of partnership did you have in mind?"} /></label>
             <p className="fine-print">Prefix your lines with “Me:” or “I:”. Other lines are treated as the other person’s messages.</p>
           </div>}

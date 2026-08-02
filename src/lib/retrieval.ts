@@ -18,9 +18,20 @@ export function isConversationCapture(document: Pick<ContextDocument, "name">): 
   return document.name.startsWith(LINKEDIN_CONVERSATION_CAPTURE_PREFIX);
 }
 
+export function containsLinkedInPageNoise(text: string): boolean {
+  const normalized = text.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+  return normalized.includes("home my network jobs messaging notifications")
+    || normalized.includes("jobs unread connections inmail starred")
+    || normalized.includes("get the latest jobs and industry news");
+}
+
+export function isLikelyFullLinkedInPageCapture(document: Pick<ContextDocument, "name" | "text">): boolean {
+  return /^LinkedIn (?:conversation|profile) screen/.test(document.name) && containsLinkedInPageNoise(document.text);
+}
+
 export function selectRecentConversationCaptures(documents: ContextDocument[], limit = 3): RankedContext[] {
   return documents
-    .filter(isConversationCapture)
+    .filter((document) => isConversationCapture(document) && !isLikelyFullLinkedInPageCapture(document))
     .slice(-limit)
     .map((document) => ({
       documentId: document.id,

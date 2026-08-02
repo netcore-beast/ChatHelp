@@ -1,5 +1,5 @@
 import { CLOUDFLARE_MODEL_ID, type CloudInferenceSettings, type Contact, type Guidance } from "./workspaceTypes";
-import { selectRecentConversationCaptures, type RankedContext } from "./retrieval";
+import { isLikelyFullLinkedInPageCapture, selectRecentConversationCaptures, type RankedContext } from "./retrieval";
 
 export interface PrivateAiInput {
   contact: Contact;
@@ -51,10 +51,11 @@ export function buildPrompt(input: PrivateAiInput): string {
   const chatHistory = clipForPrompt(input.contact.chat.slice(-40).map((message) => (message.role === "me" ? "USER" : input.contact.name) + ": " + clipForPrompt(message.body, 1_000)).join("\n"), 3_500);
   const conversationCaptures = selectRecentConversationCaptures(input.contact.documents);
   const capturedIds = new Set(conversationCaptures.map((item) => item.documentId));
+  const rejectedFullPageIds = new Set(input.contact.documents.filter(isLikelyFullLinkedInPageCapture).map((document) => document.id));
   const capturedConversation = conversationCaptures.length
     ? conversationCaptures.map((item, index) => "[Conversation screen " + (index + 1) + " for " + input.contact.name + "]\n" + clipForPrompt(item.text, 2_800)).join("\n\n")
     : "No conversation screen captured.";
-  const supportingContext = input.retrievedContext.filter((item) => !capturedIds.has(item.documentId));
+  const supportingContext = input.retrievedContext.filter((item) => !capturedIds.has(item.documentId) && !rejectedFullPageIds.has(item.documentId));
   const evidence = supportingContext.length
     ? clipForPrompt(supportingContext.map((item, index) => "[Supporting evidence " + (index + 1) + " from " + item.documentName + "]\n" + item.text).join("\n\n"), 1_800)
     : "No imported supporting context.";
