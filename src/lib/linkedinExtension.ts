@@ -3,6 +3,7 @@ import type { Contact, ConversationAttachment, Message, PipelineStage } from "./
 export const LINKEDIN_SNAPSHOT_EVENT = "CHATHELP_LINKEDIN_SNAPSHOT";
 export const LINKEDIN_SNAPSHOT_REQUEST_EVENT = "CHATHELP_REQUEST_LINKEDIN_SNAPSHOT";
 export const LINKEDIN_SNAPSHOT_ACK_EVENT = "CHATHELP_ACK_LINKEDIN_SNAPSHOT";
+export const LINKEDIN_SELECTED_CONTACT_EVENT = "CHATHELP_SET_SELECTED_LINKEDIN_CONTACT";
 export const LINKEDIN_EXTENSION_SOURCE = "chathelp-linkedin-extension";
 
 export type LinkedInCaptureMethod = "detecting" | "extension" | "screen" | "manual";
@@ -21,8 +22,7 @@ export function isLikelyMobileDevice(userAgent: string, maxTouchPoints = 0): boo
 
 export function recommendLinkedInCaptureMethod(capabilities: LinkedInCaptureCapabilities): LinkedInCaptureMethod {
   if (!capabilities.detected) return "detecting";
-  if (!capabilities.isMobile && capabilities.extensionConnected) return "extension";
-  if (!capabilities.isMobile && capabilities.supportsScreenCapture) return "screen";
+  if (!capabilities.isMobile) return "extension";
   return "manual";
 }
 
@@ -57,6 +57,12 @@ export interface LinkedInExtensionSnapshot {
     createdAt: string;
     attachments: ConversationAttachment[];
   }>;
+}
+
+export interface LinkedInSelectedContact {
+  contactId: string;
+  name: string;
+  profileUrl: string;
 }
 
 function boundedString(value: unknown, limit: number): string {
@@ -180,13 +186,30 @@ function normalizedName(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-export function mergeLinkedInSnapshot(contacts: Contact[], snapshot: LinkedInExtensionSnapshot): { contacts: Contact[]; contactId: string; importedMessages: number } {
-  const profileUrl = snapshot.contact.profileUrl;
-  const existing = contacts.find((item) => item.platform === "linkedin" && (
-    (profileUrl && item.profileUrl === profileUrl) || normalizedName(item.name) === normalizedName(snapshot.contact.name)
-  ));
-  const contactId = existing?.id ?? `contact-linkedin-${hashText(profileUrl || snapshot.contact.name)}`;
-  const currentMessages = existing?.chat ?? [];
+export function linkedInSelectionForContact(contact: Contact | null | undefined): LinkedInSelectedContact | null {
+  if (!contact || contact.platform !== "linkedin" || !contact.id.trim() || !contact.name.trim()) return null;
+  return {
+    contactId: contact.id.slice(0, 200),
+    name: contact.name.trim().slice(0, 200),
+    profileUrl: safeLinkedInUrl(contact.profileUrl, "profile"),
+  };
+}
+
+export function isLinkedInSnapshotForContact(contact: Contact, snapshot: LinkedInExtensionSnapshot): boolean {
+  if (contact.platform !== "linkedin") return false;
+  const selectedProfileUrl = safeLinkedInUrl(contact.profileUrl, "profile");
+  if (selectedProfileUrl && snapshot.contact.profileUrl) return selectedProfileUrl === snapshot.contact.profileUrl;
+  return normalizedName(contact.name) === normalizedName(snapshot.contact.name);
+}
+
+export function mergeLinkedInSnapshotForContact(
+  contacts: Contact[],
+  contactId: string,
+  snapshot: LinkedInExtensionSnapshot,
+): { contacts: Contact[]; contactId: string; importedMessages: number } | null {
+  const existing = contacts.find((item) => item.id === contactId);
+  if (!existing || !isLinkedInSnapshotForContact(existing, snapshot)) return null;
+  const currentMessages = existing.chat;
   const knownIds = new Set(currentMessages.map((message) => message.id));
   const knownFingerprints = new Set(currentMessages.map(messageFingerprint));
   let importedMessages = 0;
@@ -212,32 +235,21 @@ export function mergeLinkedInSnapshot(contacts: Contact[], snapshot: LinkedInExt
   });
 
   const nextContact: Contact = {
-    id: contactId,
-    name: snapshot.contact.name,
+    ...existing,
+    id: existing.id,
+    name: existing.name,
     headline: snapshot.contact.headline || existing?.headline || "",
-    profileNotes: existing?.profileNotes ?? "",
     platform: "linkedin",
-    platformUrl: existing?.platformUrl ?? "",
     chat: [...currentMessages, ...imported].slice(-1000),
-    documents: existing?.documents ?? [],
-    outcomes: existing?.outcomes ?? [],
-    retentionDays: existing?.retentionDays ?? 90,
-    profileUrl: profileUrl || existing?.profileUrl || "",
-    avatarUrl: snapshot.contact.avatarUrl || existing?.avatarUrl || "",
-    conversationUrl: snapshot.pageUrl || existing?.conversationUrl || "",
-    labels: existing?.labels ?? [],
-    pipelineStage: existing?.pipelineStage ?? "inbox",
-    notes: existing?.notes ?? "",
-    snoozedUntil: existing?.snoozedUntil ?? "",
-    followUpAt: existing?.followUpAt ?? "",
-    archivedAt: existing?.archivedAt ?? "",
+    profileUrl: snapshot.contact.profileUrl || existing.profileUrl || "",
+    avatarUrl: snapshot.contact.avatarUrl || existing.avatarUrl || "",
+    conversationUrl: snapshot.pageUrl || existing.conversationUrl || "",
     lastSyncedAt: snapshot.capturedAt,
-    draftHistory: existing?.draftHistory ?? [],
   };
 
   return {
-    contacts: existing ? contacts.map((item) => item.id === existing.id ? nextContact : item) : [nextContact, ...contacts],
-    contactId,
+    contacts: contacts.map((item) => item.id === existing.id ? nextContact : item),
+    contactId: existing.id,
     importedMessages,
   };
 }

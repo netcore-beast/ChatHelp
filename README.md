@@ -41,11 +41,12 @@ The test suite covers automatic device encryption, one-time migration of older p
 ## Desktop LinkedIn extension workflow
 
 1. Load the unpacked `extension` directory in desktop Chrome during private beta testing.
-2. Open exactly one LinkedIn Messaging conversation.
-3. Click the ChatHelp extension icon. Its temporary `activeTab` grant reads the open visible conversation only.
-4. ChatHelp opens or focuses, validates the snapshot, merges new messages into the matching contact, encrypts it locally, and clears the extension&apos;s pending copy.
-5. Triage the conversation with pipeline stages, labels, notes, snooze/follow-up times, and keyboard shortcuts. Generate three editable drafts only when needed.
-6. Copy the chosen draft, review it on LinkedIn, and send it yourself. ChatHelp never types or clicks Send.
+2. Add or select the intended LinkedIn contact in ChatHelp.
+3. Open that same contact's LinkedIn Messaging conversation.
+4. Click the ChatHelp extension icon. Its temporary `activeTab` grant verifies the visible contact before reading any message nodes; a different conversation is blocked.
+5. ChatHelp opens or focuses, validates the snapshot, merges new messages into only the selected existing contact, encrypts it locally, and clears the extension&apos;s pending copy.
+6. Triage the conversation with pipeline stages, labels, notes, snooze/follow-up times, and keyboard shortcuts. Generate three editable drafts only when needed.
+7. Copy the chosen draft, review it on LinkedIn, and send it yourself. ChatHelp never types or clicks Send.
 
 See [extension/README.md](extension/README.md) and [docs/DESKTOP_LINKEDIN_WORKFLOW.md](docs/DESKTOP_LINKEDIN_WORKFLOW.md).
 

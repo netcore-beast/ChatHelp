@@ -4,7 +4,9 @@ This Manifest V3 extension is the desktop companion for ChatHelp. It receives te
 
 ## Manual-safe boundary
 
-- Reads only the currently open, visible conversation after an explicit click.
+- Requires an existing LinkedIn contact to be selected in ChatHelp first.
+- Verifies the open conversation matches that selected contact before traversing any message nodes.
+- Reads only that matching, currently open, visible conversation after an explicit click.
 - Does not enumerate conversations, contacts, notifications, or connection graphs.
 - Does not click, type into, submit, or send anything on LinkedIn.
 - Keeps one pending snapshot in `chrome.storage.local` until the authenticated ChatHelp app imports and acknowledges it.
@@ -15,7 +17,8 @@ This Manifest V3 extension is the desktop companion for ChatHelp. It receives te
 
 1. Open `chrome://extensions`, enable Developer mode, and choose **Load unpacked**.
 2. Select this `extension` directory.
-3. Open one LinkedIn Messaging conversation and click the ChatHelp extension icon.
-4. ChatHelp opens or focuses, imports the visible contact/thread into the encrypted local vault, then clears the pending extension snapshot.
+3. Add or select a LinkedIn contact in ChatHelp.
+4. Open that same contact's LinkedIn Messaging conversation and click the ChatHelp extension icon.
+5. ChatHelp opens or focuses, imports the visible messages into only that existing contact's encrypted local record, then clears the pending extension snapshot. A different contact is blocked before message reading begins.
 
 LinkedIn may change its DOM. When capture fails, the extension stops and asks the user to keep the conversation header and at least one message visible; it never falls back to scanning the whole page.

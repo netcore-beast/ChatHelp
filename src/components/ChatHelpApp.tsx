@@ -8,15 +8,17 @@ import { CLOUDFLARE_MODEL_NAME, generatePrivateDrafts } from "@/lib/privateAi";
 import { PLATFORM_OPTIONS, platformLabel, safePlatformUrl } from "@/lib/platforms";
 import {
   LINKEDIN_EXTENSION_SOURCE,
+  LINKEDIN_SELECTED_CONTACT_EVENT,
   LINKEDIN_SNAPSHOT_ACK_EVENT,
   LINKEDIN_SNAPSHOT_EVENT,
   LINKEDIN_SNAPSHOT_REQUEST_EVENT,
   PIPELINE_STAGES,
   contactStage,
   isActivelySnoozed,
+  linkedInSelectionForContact,
   isLikelyMobileDevice,
   isReminderDue,
-  mergeLinkedInSnapshot,
+  mergeLinkedInSnapshotForContact,
   parseLinkedInExtensionSnapshot,
   recommendLinkedInCaptureMethod,
 } from "@/lib/linkedinExtension";
@@ -200,7 +202,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [inboxView, setInboxView] = useState<InboxView>("inbox");
   const [contactSearch, setContactSearch] = useState("");
   const [labelFilter, setLabelFilter] = useState("");
-  const [extensionStatus, setExtensionStatus] = useState("Detecting secure import options for this device…");
+  const [extensionStatus, setExtensionStatus] = useState("Chrome extension not connected yet. Load or reload it in Chrome, then refresh ChatHelp. Screen capture remains available under other import options.");
   const [extensionConnected, setExtensionConnected] = useState(false);
   const [captureEnvironment, setCaptureEnvironment] = useState({ detected: false, isMobile: false, supportsScreenCapture: false });
   const [showImportAlternatives, setShowImportAlternatives] = useState(false);
@@ -232,11 +234,17 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const labelsRef = useRef<HTMLInputElement>(null);
   const shortcutDialogRef = useRef<HTMLDialogElement>(null);
   const workspaceRef = useRef(workspace);
+  const selectedIdRef = useRef(selectedId);
+  const extensionConnectedRef = useRef(false);
   const shortcutSequenceRef = useRef("");
 
   const contact = workspace.contacts.find((item) => item.id === selectedId) ?? workspace.contacts[0] ?? null;
+  const selectedContactName = contact?.name ?? "";
+  const selectedContactProfileUrl = contact?.profileUrl ?? "";
+  const selectedContactPlatform = contact?.platform ?? "";
 
   useEffect(() => { workspaceRef.current = workspace; }, [workspace]);
+  useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
@@ -253,8 +261,12 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       const data = event.data as { source?: unknown; type?: unknown; payload?: unknown } | null;
       if (!data || data.source !== LINKEDIN_EXTENSION_SOURCE) return;
       if (data.type === "CHATHELP_EXTENSION_READY") {
+        extensionConnectedRef.current = true;
         setExtensionConnected(true);
-        setExtensionStatus("Chrome extension connected. Captures import automatically after you click its icon on an open LinkedIn conversation.");
+        const selected = workspaceRef.current.contacts.find((item) => item.id === selectedIdRef.current);
+        const selection = linkedInSelectionForContact(selected);
+        setExtensionStatus(selection ? `Chrome extension connected and locked to ${selection.name}. It will refuse to read a different conversation.` : "Chrome extension connected. Add and select a LinkedIn contact before capturing messages.");
+        window.postMessage({ source: "chathelp-app", type: LINKEDIN_SELECTED_CONTACT_EVENT, contact: selection }, targetOrigin);
         window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_REQUEST_EVENT }, targetOrigin);
         return;
       }
@@ -264,13 +276,23 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         setExtensionStatus("The extension capture was rejected because it was incomplete or unsafe.");
         return;
       }
+      extensionConnectedRef.current = true;
       setExtensionConnected(true);
-      const preview = mergeLinkedInSnapshot(workspaceRef.current.contacts, snapshot);
-      setWorkspace((current) => ({ ...current, contacts: mergeLinkedInSnapshot(current.contacts, snapshot).contacts }));
-      setSelectedId(preview.contactId);
+      const selectedContactId = selectedIdRef.current;
+      const selected = workspaceRef.current.contacts.find((item) => item.id === selectedContactId);
+      const preview = mergeLinkedInSnapshotForContact(workspaceRef.current.contacts, selectedContactId, snapshot);
+      if (!preview) {
+        const expectedName = selected?.name || "the selected ChatHelp contact";
+        setExtensionStatus(`Capture blocked and discarded. The open LinkedIn conversation is not ${expectedName}. Select ${expectedName} in ChatHelp, then open that same conversation before clicking the extension.`);
+        window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_ACK_EVENT, captureId: snapshot.captureId }, targetOrigin);
+        return;
+      }
+      setWorkspace((current) => {
+        const merged = mergeLinkedInSnapshotForContact(current.contacts, selectedContactId, snapshot);
+        return merged ? { ...current, contacts: merged.contacts } : current;
+      });
       setInboxView("inbox");
-      setDrafts(workspaceRef.current.contacts.find((item) => item.id === preview.contactId)?.draftHistory?.at(-1)?.drafts ?? []);
-      setExtensionStatus(`${snapshot.contact.name} imported: ${preview.importedMessages} new visible message${preview.importedMessages === 1 ? "" : "s"}. Stored only in this encrypted local vault.`);
+      setExtensionStatus(`${selected?.name || snapshot.contact.name} imported: ${preview.importedMessages} new visible message${preview.importedMessages === 1 ? "" : "s"}. The extension read only the selected contact's open conversation.`);
       window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_ACK_EVENT, captureId: snapshot.captureId }, targetOrigin);
     };
     window.addEventListener("message", handleSnapshot);
@@ -281,6 +303,20 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       window.removeEventListener("message", handleSnapshot);
     };
   }, []);
+
+  useEffect(() => {
+    const targetOrigin = window.location.origin === "null" ? "*" : window.location.origin;
+    const selected = workspaceRef.current.contacts.find((item) => item.id === selectedIdRef.current);
+    const selection = linkedInSelectionForContact(selected);
+    window.postMessage({ source: "chathelp-app", type: LINKEDIN_SELECTED_CONTACT_EVENT, contact: selection }, targetOrigin);
+  }, [selectedId, selectedContactName, selectedContactProfileUrl, selectedContactPlatform]);
+
+  useEffect(() => {
+    if (!extensionConnectedRef.current) return;
+    const selected = workspaceRef.current.contacts.find((item) => item.id === selectedIdRef.current);
+    const selection = linkedInSelectionForContact(selected);
+    setExtensionStatus(selection ? `Chrome extension connected and locked to ${selection.name}. It will refuse to read a different conversation.` : "Chrome extension connected. Add and select a LinkedIn contact before capturing messages.");
+  }, [selectedId, selectedContactName, selectedContactPlatform]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -298,6 +334,11 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setWorkspace((current) => updater(current));
   }
 
+  function setActiveContactId(contactId: string) {
+    selectedIdRef.current = contactId;
+    setSelectedId(contactId);
+  }
+
   function updateContactById(contactId: string, updater: (current: Contact) => Contact) {
     updateWorkspace((current) => ({
       ...current,
@@ -311,7 +352,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   }
 
   function selectContact(nextContact: Contact) {
-    setSelectedId(nextContact.id);
+    setActiveContactId(nextContact.id);
     setDrafts(nextContact.draftHistory?.at(-1)?.drafts ?? []);
     setShowImportAlternatives(false);
   }
@@ -393,7 +434,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     const id = newId("contact");
     const next: Contact = { id, name, headline: "", profileNotes: "", platform: newPlatform, platformUrl: "", chat: [], documents: [], outcomes: [], retentionDays: 90, profileUrl: "", avatarUrl: "", conversationUrl: "", labels: [], pipelineStage: "inbox", notes: "", snoozedUntil: "", followUpAt: "", archivedAt: "", lastSyncedAt: "", draftHistory: [] };
     updateWorkspace((current) => ({ ...current, contacts: [...current.contacts, next] }));
-    setSelectedId(id);
+    setActiveContactId(id);
     setNewContactName("");
   }
 
@@ -401,7 +442,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     if (!contact || !window.confirm("Permanently delete this contact and all of their local context?")) return;
     const remaining = workspace.contacts.filter((item) => item.id !== contact.id);
     updateWorkspace((current) => ({ ...current, contacts: remaining, feedback: current.feedback.filter((item) => item.contactId !== contact.id) }));
-    setSelectedId(remaining[0]?.id ?? "");
+    setActiveContactId(remaining[0]?.id ?? "");
     setDrafts([]);
   }
 
@@ -610,7 +651,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         const currentIndex = Math.max(0, visibleContacts.findIndex((item) => item.id === contact?.id));
         const nextIndex = key === "j" ? Math.min(visibleContacts.length - 1, currentIndex + 1) : Math.max(0, currentIndex - 1);
         const nextContact = visibleContacts[nextIndex];
-        setSelectedId(nextContact.id);
+        setActiveContactId(nextContact.id);
         setDrafts(nextContact.draftHistory?.at(-1)?.drafts ?? []);
       } else if (key === "e" && contact) {
         event.preventDefault();
@@ -648,7 +689,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         <div><p className="eyebrow">CHATHELP</p><h1>Private conversation studio</h1></div>
         <div className="top-actions">{dueReminderCount > 0 && <button className="reminder-badge" onClick={() => setInboxView("reminders")}>{dueReminderCount} reminder{dueReminderCount === 1 ? "" : "s"} due</button>}<button onClick={() => shortcutDialogRef.current?.showModal()} aria-label="Show keyboard shortcuts">Shortcuts</button><button className="wizard-launch" data-testid="open-linkedin-test-wizard" onClick={() => setWizardOpen(true)}>Guided LinkedIn test</button><PwaInstall /><span className="save-state">● {saveStatus} on this device</span></div>
       </header>
-      <div className="privacy-strip"><strong>Manual-safe {captureEnvironment.isMobile ? "mobile" : "desktop"} mode:</strong> ChatHelp recommends the safest available import method for this device. It never clicks, types, or sends on LinkedIn. Imported text stays in this device vault; only selected text context is sent to Cloudflare Workers AI when you request drafts. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
+      <div className="privacy-strip"><strong>Manual-safe {captureEnvironment.isMobile ? "mobile" : "desktop"} mode:</strong> {captureEnvironment.isMobile ? "ChatHelp recommends manual paste or import on this device." : "The Chrome extension is the primary desktop reader and is locked to the contact selected in ChatHelp."} It never scans the inbox, clicks, types, or sends on LinkedIn. Imported text stays in this device vault; only selected text context is sent to Cloudflare Workers AI when you request drafts. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
       {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
       <div className={inboxView === "pipeline" ? "workspace-grid pipeline-active" : "workspace-grid"}>
         <aside className="contacts-panel">
@@ -722,13 +763,13 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 <div className="capture-recommendation-copy">
                   <span className="capture-method-label">Recommended for this device</span>
                   {captureMethod === "detecting" && <><h4>Choosing the safest import method…</h4><p>ChatHelp is checking this browser&apos;s local capabilities. No LinkedIn data is being read.</p></>}
-                  {captureMethod === "extension" && <><h4>Chrome extension connected</h4><p>Open {contact.name}&apos;s conversation on LinkedIn and click the ChatHelp extension icon. The visible names, messages, timestamps, and attachment labels will import automatically—without OCR or background inbox scanning.</p></>}
+                  {captureMethod === "extension" && <><h4>{extensionConnected ? "Chrome extension connected" : "Chrome extension recommended for this desktop"}</h4><p>Select {contact.name} in ChatHelp, open that same contact&apos;s LinkedIn conversation, and click the ChatHelp extension icon. Before reading any messages, the extension verifies the open conversation matches {contact.name}. A different contact is blocked.</p></>}
                   {captureMethod === "screen" && <><h4>Screen capture recommended for this desktop</h4><p>Choose the LinkedIn Messaging tab or window, then select only the central message column in ChatHelp&apos;s private preview. Navigation, other chats, job cards, and side panels are excluded.</p></>}
                   {captureMethod === "manual" && <><h4>Paste or import recommended on this device</h4><p>{captureEnvironment.isMobile ? "Mobile browsers do not provide the safe desktop capture flow. Copy only the relevant LinkedIn messages and paste them below." : "This browser does not provide a compatible screen-capture or extension connection. Copy only the relevant LinkedIn messages and paste them below."}</p></>}
                 </div>
                 <div className="capture-primary-action">
                   {captureMethod === "detecting" && <button disabled>Choosing best method…</button>}
-                  {captureMethod === "extension" && <a className="capture-action" href={handoffUrl ?? "https://www.linkedin.com/messaging/"} target="_blank" rel="noreferrer">Open LinkedIn conversation</a>}
+                  {captureMethod === "extension" && <a className="capture-action" href={handoffUrl ?? "https://www.linkedin.com/messaging/"} target="_blank" rel="noreferrer">Open {contact.name}&apos;s LinkedIn conversation</a>}
                   {captureMethod === "screen" && <button onClick={() => void captureConversation()}>Capture conversation screen</button>}
                   {captureMethod === "manual" && <button onClick={() => chatPasteRef.current?.focus()}>Paste messages manually</button>}
                 </div>
@@ -811,7 +852,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         onImportChat={importChatFor}
         onGuidanceChange={(field, value) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, [field]: value } }))}
         onGenerate={async (contactId, nextAgenda) => {
-          setSelectedId(contactId);
+          setActiveContactId(contactId);
           setAgenda(nextAgenda);
           await generate(nextAgenda, contactId);
         }}
