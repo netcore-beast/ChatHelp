@@ -6,7 +6,7 @@ vi.mock("@/lib/secureVault", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/secureVault")>();
   return {
     ...actual,
-    vaultExists: vi.fn(async () => { throw new Error("Secure storage is blocked by another ChatHelp tab."); }),
+    getVaultMode: vi.fn(async () => { throw new Error("Secure storage is blocked by another ChatHelp tab."); }),
   };
 });
 

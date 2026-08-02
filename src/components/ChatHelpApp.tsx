@@ -1,23 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { applyRetention } from "@/lib/retention";
 import { buildOutcomeSummary, containsLinkedInPageNoise, isConversationCapture, isLikelyFullLinkedInPageCapture, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
 import { captureVisibleScreen, cropImageToRegion, extractTextFromImage, type NormalizedCropRegion } from "@/lib/localOcr";
-import { CLOUDFLARE_MODEL_NAME, generatePrivateDrafts, unloadPrivateModel } from "@/lib/privateAi";
+import { CLOUDFLARE_MODEL_NAME, generatePrivateDrafts } from "@/lib/privateAi";
 import { PLATFORM_OPTIONS, platformLabel, safePlatformUrl } from "@/lib/platforms";
 import { LinkedInTestWizard } from "@/components/LinkedInTestWizard";
 import { PwaInstall } from "@/components/PwaInstall";
 import { ScreenRegionSelector } from "@/components/ScreenRegionSelector";
 import {
-  createVault,
+  createDeviceVault,
   eraseVault,
-  exportEncryptedBackup,
-  importEncryptedBackup,
+  getVaultMode,
+  migrateLegacyVault,
+  openDeviceVault,
   parseLegacyWorkspace,
   saveVault,
-  unlockVault,
-  vaultExists,
   type VaultSession,
 } from "@/lib/secureVault";
 import {
@@ -31,7 +30,6 @@ import {
 } from "@/lib/workspaceTypes";
 
 const LEGACY_KEY = "chathelp-private-v2";
-const AUTO_LOCK_MS = 15 * 60 * 1000;
 const STORAGE_CHECK_TIMEOUT_MS = 8_000;
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
@@ -56,31 +54,33 @@ function hasConversationContext(contact: Contact): boolean {
 
 export default function ChatHelpApp() {
   const [checking, setChecking] = useState(true);
-  const [exists, setExists] = useState(false);
   const [unlocked, setUnlocked] = useState<{ workspace: WorkspaceData; session: VaultSession } | null>(null);
-  const [passphrase, setPassphrase] = useState("");
-  const [confirmation, setConfirmation] = useState("");
+  const [legacyMigrationRequired, setLegacyMigrationRequired] = useState(false);
+  const [legacyPassphrase, setLegacyPassphrase] = useState("");
   const [error, setError] = useState("");
   const [startupError, setStartupError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [legacy, setLegacy] = useState<WorkspaceData | null>(null);
-  const importRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let active = true;
     void (async () => {
       try {
-        const found = await withTimeout(vaultExists(), STORAGE_CHECK_TIMEOUT_MS);
         let legacyWorkspace: WorkspaceData | null = null;
         try {
           legacyWorkspace = parseLegacyWorkspace(localStorage.getItem(LEGACY_KEY));
         } catch {
           // Legacy localStorage is optional. The encrypted IndexedDB vault remains the source of truth.
         }
-        if (active) {
-          setExists(found);
-          setLegacy(legacyWorkspace);
+        const mode = await withTimeout(getVaultMode(), STORAGE_CHECK_TIMEOUT_MS);
+        if (mode === "legacy-passphrase") {
+          if (active) setLegacyMigrationRequired(true);
+          return;
         }
+        const result = mode === "device"
+          ? await withTimeout(openDeviceVault(), STORAGE_CHECK_TIMEOUT_MS)
+          : await withTimeout(createDeviceVault(legacyWorkspace ?? createEmptyWorkspace()), STORAGE_CHECK_TIMEOUT_MS);
+        if (legacyWorkspace && mode === "empty") localStorage.removeItem(LEGACY_KEY);
+        if (active) setUnlocked({ ...result, workspace: applyRetention(result.workspace) });
       } catch (caught) {
         if (active) setStartupError(formatError(caught));
       } finally {
@@ -90,37 +90,14 @@ export default function ChatHelpApp() {
     return () => { active = false; };
   }, []);
 
-  const lock = useCallback(() => {
-    void unloadPrivateModel();
-    setUnlocked(null);
-    setPassphrase("");
-    setConfirmation("");
-  }, []);
-
-  useEffect(() => {
-    if (!unlocked) return;
-    let timer = window.setTimeout(lock, AUTO_LOCK_MS);
-    const reset = () => {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(lock, AUTO_LOCK_MS);
-    };
-    const events: (keyof WindowEventMap)[] = ["pointerdown", "keydown", "scroll", "touchstart"];
-    events.forEach((event) => window.addEventListener(event, reset, { passive: true }));
-    return () => {
-      window.clearTimeout(timer);
-      events.forEach((event) => window.removeEventListener(event, reset));
-    };
-  }, [lock, unlocked]);
-
-  async function createSecureWorkspace() {
+  async function migrateExistingWorkspace() {
     setError("");
-    if (passphrase !== confirmation) return setError("The passphrases do not match.");
     setBusy(true);
     try {
-      const result = await createVault(passphrase, legacy ?? createEmptyWorkspace());
-      if (legacy) localStorage.removeItem(LEGACY_KEY);
+      const result = await migrateLegacyVault(legacyPassphrase);
       setUnlocked({ ...result, workspace: applyRetention(result.workspace) });
-      setExists(true);
+      setLegacyPassphrase("");
+      setLegacyMigrationRequired(false);
     } catch (caught) {
       setError(formatError(caught));
     } finally {
@@ -128,12 +105,14 @@ export default function ChatHelpApp() {
     }
   }
 
-  async function unlock() {
-    setError("");
+  async function replaceLegacyWorkspace() {
+    if (!window.confirm("Erase the old passphrase-protected vault on this browser and start with an empty workspace? This cannot be undone.")) return;
     setBusy(true);
     try {
-      const result = await unlockVault(passphrase);
-      setUnlocked({ ...result, workspace: applyRetention(result.workspace) });
+      await eraseVault();
+      const result = await createDeviceVault();
+      setUnlocked(result);
+      setLegacyMigrationRequired(false);
     } catch (caught) {
       setError(formatError(caught));
     } finally {
@@ -141,57 +120,34 @@ export default function ChatHelpApp() {
     }
   }
 
-  async function importBackup(file: File) {
-    setError("");
-    setBusy(true);
-    try {
-      const result = await importEncryptedBackup(await file.text(), passphrase);
-      localStorage.removeItem(LEGACY_KEY);
-      setUnlocked({ ...result, workspace: applyRetention(result.workspace) });
-      setExists(true);
-    } catch (caught) {
-      setError(formatError(caught));
-    } finally {
-      if (importRef.current) importRef.current.value = "";
-      setBusy(false);
-    }
-  }
-
-  if (checking) return <main className="vault-shell"><section className="vault-card"><p>Checking this browser for an encrypted workspace…</p></section></main>;
+  if (checking) return <main className="vault-shell"><section className="vault-card"><p>Opening this browser&apos;s encrypted workspace…</p></section></main>;
   if (startupError) return <main className="vault-shell"><section className="vault-card" aria-labelledby="storage-error-title"><div className="brand-mark" aria-hidden="true">!</div><p className="eyebrow">SECURE STORAGE UNAVAILABLE</p><h1 id="storage-error-title">ChatHelp could not open the encrypted workspace.</h1><p className="lede">Close other ChatHelp tabs or installed-app windows, confirm this site is allowed to store data, then retry. Your existing encrypted data has not been erased.</p><p className="error" role="alert">{startupError}</p><button className="primary" onClick={() => window.location.reload()}>Retry secure storage</button><p className="fine-print">Do not clear site data if you need an existing vault. If this continues, copy the browser console error for support.</p></section></main>;
-  if (unlocked) return <UnlockedWorkspace initial={unlocked.workspace} session={unlocked.session} onLock={lock} />;
+  if (unlocked) return <UnlockedWorkspace initial={unlocked.workspace} session={unlocked.session} />;
 
-  return (
+  if (legacyMigrationRequired) return (
     <main className="vault-shell">
       <section className="vault-card" aria-labelledby="vault-title">
         <div className="brand-mark" aria-hidden="true">CH</div>
-        <p className="eyebrow">PRIVATE BY DESIGN</p>
-        <h1 id="vault-title">Your conversations stay under your key.</h1>
-        <p className="lede">ChatHelp encrypts the workspace in this browser with AES-256-GCM. Your passphrase is never stored, sent, or recoverable by us.</p>
-        <div className="trust-grid">
-          <span>Encrypted at rest</span><span>Cloud AI is opt-in</span><span>No platform automation</span>
-        </div>
-        {legacy && !exists && <div className="notice warning"><strong>Privacy upgrade available.</strong> A plaintext workspace from the earlier version was found. Creating the vault will encrypt it and remove the plaintext copy.</div>}
-        <label>Passphrase
-          <input type="password" autoComplete={exists ? "current-password" : "new-password"} value={passphrase} onChange={(event) => setPassphrase(event.target.value)} minLength={12} placeholder="At least 12 characters" />
+        <p className="eyebrow">ONE-TIME PRIVACY UPGRADE</p>
+        <h1 id="vault-title">Unlock your existing workspace once.</h1>
+        <p className="lede">This browser contains a vault created before Cloudflare email and MFA access was enabled. Enter its old passphrase once to convert it to automatic device encryption. ChatHelp will not ask for it again.</p>
+        <label>Existing vault passphrase
+          <input type="password" autoComplete="current-password" value={legacyPassphrase} onChange={(event) => setLegacyPassphrase(event.target.value)} minLength={12} placeholder="Your previous ChatHelp passphrase" />
         </label>
-        {!exists && <label>Confirm passphrase
-          <input type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} minLength={12} />
-        </label>}
         {error && <p className="error" role="alert">{error}</p>}
-        <button className="primary" disabled={busy || passphrase.length < 12 || (!exists && confirmation.length < 12)} onClick={() => void (exists ? unlock() : createSecureWorkspace())}>
-          {busy ? "Working…" : exists ? "Unlock private workspace" : "Create encrypted workspace"}
+        <button className="primary" disabled={busy || legacyPassphrase.length < 12} onClick={() => void migrateExistingWorkspace()}>
+          {busy ? "Upgrading…" : "Upgrade and continue"}
         </button>
-        <button className="secondary" disabled={busy || passphrase.length < 12} onClick={() => importRef.current?.click()}>Import encrypted backup</button>
-        <input ref={importRef} hidden type="file" accept="application/json,.json" onChange={(event) => event.target.files?.[0] && void importBackup(event.target.files[0])} />
-        <p className="fine-print"><strong>No recovery:</strong> losing the passphrase means losing the data. This is a deliberate privacy property. Use an encrypted backup and a password manager.</p>
-          <PwaInstall />
+        <button className="secondary" disabled={busy} onClick={() => void replaceLegacyWorkspace()}>Erase old vault and start empty</button>
+        <p className="fine-print">New and upgraded workspaces use a non-exportable AES-256 device key stored by this browser. Clearing site data removes the local workspace.</p>
       </section>
     </main>
   );
+
+  return null;
 }
 
-function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceData; session: VaultSession; onLock: () => void }) {
+function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; session: VaultSession }) {
   const [workspace, setWorkspace] = useState(() => applyRetention(initial));
   const [selectedId, setSelectedId] = useState(initial.contacts[0]?.id ?? "");
   const [saveStatus, setSaveStatus] = useState("Encrypted");
@@ -291,25 +247,10 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
     setDrafts([]);
   }
 
-  async function downloadBackup() {
-    setAppError("");
-    try {
-      await saveVault(applyRetention(workspace), session);
-      const contents = await exportEncryptedBackup();
-      const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = "chathelp-encrypted-backup-" + new Date().toISOString().slice(0, 10) + ".json";
-      anchor.click();
-      URL.revokeObjectURL(url);
-    } catch (error) { setAppError(formatError(error)); }
-  }
-
   async function eraseEverything() {
-    if (!window.confirm("Erase the encrypted vault from this browser? Export a backup first if you may need it.")) return;
+    if (!window.confirm("Erase the encrypted workspace and device key from this browser? This cannot be undone.")) return;
     await eraseVault();
     localStorage.removeItem(LEGACY_KEY);
-    onLock();
     window.location.reload();
   }
 
@@ -450,7 +391,7 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
     <main className="app-shell">
       <header className="topbar">
         <div><p className="eyebrow">CHATHELP</p><h1>Private conversation studio</h1></div>
-        <div className="top-actions"><button className="wizard-launch" data-testid="open-linkedin-test-wizard" onClick={() => setWizardOpen(true)}>Guided LinkedIn test</button><PwaInstall /><span className="save-state">● {saveStatus}</span><button onClick={() => void downloadBackup()}>Encrypted backup</button><button onClick={onLock}>Lock</button></div>
+        <div className="top-actions"><button className="wizard-launch" data-testid="open-linkedin-test-wizard" onClick={() => setWizardOpen(true)}>Guided LinkedIn test</button><PwaInstall /><span className="save-state">● {saveStatus} on this device</span></div>
       </header>
       <div className="privacy-strip"><strong>Cloud AI mode:</strong> Draft generation runs in Cloudflare Workers AI; ChatHelp does not download or run an LLM in this browser. You crop the relevant screen area before local OCR, and images and the encrypted vault stay on this device. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
       {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
@@ -559,7 +500,7 @@ function UnlockedWorkspace({ initial, session, onLock }: { initial: WorkspaceDat
         setCropRequest(null);
         request.resolve(region);
       }} />}
-      <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>No browser LLM:</strong> ChatHelp does not download or run language-model weights on this device.</li><li><strong>Cloud AI (opt-in):</strong> only the relevant recent chat, selected text context, guidance, and agenda are sent to ChatHelp&apos;s authenticated Cloudflare Worker. The Worker has no database, object storage, AI Gateway, or application logging configured.</li><li><strong>Never uploaded:</strong> screen images, the encrypted vault, its passphrase, and the cloud access code are not included in the AI prompt.</li><li><strong>Access-code storage:</strong> the code is session-only unless you explicitly allow ChatHelp to remember it in the encrypted vault.</li><li><strong>Screen capture:</strong> the browser asks you to choose a visible screen, then ChatHelp asks you to select only the relevant area. Cropping and OCR run locally with self-hosted assets; extracted text is encrypted in your vault.</li><li><strong>Sending:</strong> ChatHelp never sends a LinkedIn message or email. You review and manually copy a draft.</li><li><strong>Limits:</strong> Cloudflare processes cloud prompts to provide Workers AI. Browser malware, a compromised origin, or someone who knows your passphrase can still expose data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
+      <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>No browser LLM:</strong> ChatHelp does not download or run language-model weights on this device.</li><li><strong>Cloud AI (opt-in):</strong> only the relevant recent chat, selected text context, guidance, and agenda are sent to ChatHelp&apos;s authenticated Cloudflare Worker. The Worker has no database, object storage, AI Gateway, or application logging configured.</li><li><strong>Never uploaded:</strong> screen images, the encrypted vault, its device key, and the cloud access code are not included in the AI prompt.</li><li><strong>Device encryption:</strong> this browser stores a non-exportable AES-256 key and uses it to open the local vault automatically after Cloudflare Access authentication. Clearing site data permanently removes this local workspace.</li><li><strong>Access-code storage:</strong> the code is session-only unless you explicitly allow ChatHelp to remember it in the encrypted vault.</li><li><strong>Screen capture:</strong> the browser asks you to choose a visible screen, then ChatHelp asks you to select only the relevant area. Cropping and OCR run locally with self-hosted assets; extracted text is encrypted in your vault.</li><li><strong>Sending:</strong> ChatHelp never sends a LinkedIn message or email. You review and manually copy a draft.</li><li><strong>Limits:</strong> Cloudflare processes cloud prompts to provide Workers AI. Browser malware, a compromised origin, or someone who controls this browser profile can still expose unlocked data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
     </main>
   );
 }

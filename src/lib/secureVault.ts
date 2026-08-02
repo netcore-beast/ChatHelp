@@ -4,19 +4,29 @@ const DB_NAME = "chathelp-secure";
 const DB_VERSION = 1;
 const STORE_NAME = "vault";
 const RECORD_KEY = "primary";
-const AAD = new TextEncoder().encode("ChatHelp vault v1");
+const DEVICE_KEY_RECORD = "device-key-v2";
+const LEGACY_AAD = new TextEncoder().encode("ChatHelp vault v1");
+const DEVICE_AAD = new TextEncoder().encode("ChatHelp device vault v2");
 export const KDF_ITERATIONS = 600_000;
 
-export interface VaultEnvelope {
+interface LegacyVaultEnvelope {
   format: "chathelp-encrypted-v1";
   kdf: { name: "PBKDF2"; hash: "SHA-256"; iterations: number; salt: string };
   cipher: { name: "AES-GCM"; iv: string; ciphertext: string };
   updatedAt: string;
 }
 
+interface DeviceVaultEnvelope {
+  format: "chathelp-device-v2";
+  cipher: { name: "AES-GCM"; iv: string; ciphertext: string };
+  updatedAt: string;
+}
+
+type StoredVaultEnvelope = LegacyVaultEnvelope | DeviceVaultEnvelope;
+export type VaultMode = "empty" | "device" | "legacy-passphrase";
+
 export interface VaultSession {
   key: CryptoKey;
-  salt: Uint8Array;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -98,8 +108,8 @@ async function deriveKey(passphrase: string, salt: Uint8Array, iterations = KDF_
   );
 }
 
-function assertEnvelope(value: unknown): asserts value is VaultEnvelope {
-  const item = value as Partial<VaultEnvelope> | null;
+function assertLegacyEnvelope(value: unknown): asserts value is LegacyVaultEnvelope {
+  const item = value as Partial<LegacyVaultEnvelope> | null;
   if (!item || item.format !== "chathelp-encrypted-v1" || item.kdf?.name !== "PBKDF2" ||
       item.kdf.hash !== "SHA-256" || item.cipher?.name !== "AES-GCM" ||
       typeof item.kdf.salt !== "string" || typeof item.cipher.iv !== "string" ||
@@ -108,57 +118,89 @@ function assertEnvelope(value: unknown): asserts value is VaultEnvelope {
   }
 }
 
-async function encryptWorkspace(workspace: WorkspaceData, session: VaultSession): Promise<VaultEnvelope> {
+function assertDeviceEnvelope(value: unknown): asserts value is DeviceVaultEnvelope {
+  const item = value as Partial<DeviceVaultEnvelope> | null;
+  if (!item || item.format !== "chathelp-device-v2" || item.cipher?.name !== "AES-GCM" ||
+      typeof item.cipher.iv !== "string" || typeof item.cipher.ciphertext !== "string") {
+    throw new Error("This browser's encrypted workspace is not valid.");
+  }
+}
+
+async function encryptWorkspace(workspace: WorkspaceData, session: VaultSession): Promise<DeviceVaultEnvelope> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const plaintext = new TextEncoder().encode(JSON.stringify(workspace));
   const encrypted = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv: iv as BufferSource, additionalData: AAD as BufferSource },
+    { name: "AES-GCM", iv: iv as BufferSource, additionalData: DEVICE_AAD as BufferSource },
     session.key,
     plaintext as BufferSource,
   );
   return {
-    format: "chathelp-encrypted-v1",
-    kdf: { name: "PBKDF2", hash: "SHA-256", iterations: KDF_ITERATIONS, salt: bytesToBase64(session.salt) },
+    format: "chathelp-device-v2",
     cipher: { name: "AES-GCM", iv: bytesToBase64(iv), ciphertext: bytesToBase64(new Uint8Array(encrypted)) },
     updatedAt: new Date().toISOString(),
   };
 }
 
-async function decryptEnvelope(envelope: VaultEnvelope, passphrase: string): Promise<{ workspace: WorkspaceData; session: VaultSession }> {
+async function decryptLegacyEnvelope(envelope: LegacyVaultEnvelope, passphrase: string): Promise<WorkspaceData> {
   const salt = base64ToBytes(envelope.kdf.salt);
   const key = await deriveKey(passphrase, salt, envelope.kdf.iterations);
   try {
     const plaintext = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: base64ToBytes(envelope.cipher.iv) as BufferSource, additionalData: AAD as BufferSource },
+      { name: "AES-GCM", iv: base64ToBytes(envelope.cipher.iv) as BufferSource, additionalData: LEGACY_AAD as BufferSource },
       key,
       base64ToBytes(envelope.cipher.ciphertext) as BufferSource,
     );
-    const workspace = normalizeWorkspace(JSON.parse(new TextDecoder().decode(plaintext)));
-    return { workspace, session: { key, salt } };
+    return normalizeWorkspace(JSON.parse(new TextDecoder().decode(plaintext)));
   } catch {
     throw new Error("Incorrect passphrase or the encrypted vault has been changed.");
   }
 }
 
-export async function vaultExists(): Promise<boolean> {
-  return Boolean(await withStore("readonly", (store) => store.get(RECORD_KEY)));
+async function decryptDeviceEnvelope(envelope: DeviceVaultEnvelope, key: CryptoKey): Promise<WorkspaceData> {
+  try {
+    const plaintext = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: base64ToBytes(envelope.cipher.iv) as BufferSource, additionalData: DEVICE_AAD as BufferSource },
+      key,
+      base64ToBytes(envelope.cipher.ciphertext) as BufferSource,
+    );
+    return normalizeWorkspace(JSON.parse(new TextDecoder().decode(plaintext)));
+  } catch {
+    throw new Error("This browser could not unlock its encrypted workspace. The local device key may have been removed or changed.");
+  }
 }
 
-export async function createVault(passphrase: string, workspace = createEmptyWorkspace()): Promise<{ workspace: WorkspaceData; session: VaultSession }> {
-  if (passphrase.length < 12) throw new Error("Use a passphrase with at least 12 characters.");
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const key = await deriveKey(passphrase, salt);
-  const session = { key, salt };
+export async function getVaultMode(): Promise<VaultMode> {
+  const envelope = await withStore<StoredVaultEnvelope | undefined>("readonly", (store) => store.get(RECORD_KEY));
+  if (!envelope) return "empty";
+  if (envelope.format === "chathelp-encrypted-v1") return "legacy-passphrase";
+  assertDeviceEnvelope(envelope);
+  return "device";
+}
+
+export async function createDeviceVault(workspace = createEmptyWorkspace()): Promise<{ workspace: WorkspaceData; session: VaultSession }> {
+  const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+  const session = { key };
   const envelope = await encryptWorkspace(workspace, session);
+  await withStore("readwrite", (store) => store.put(key, DEVICE_KEY_RECORD));
   await withStore("readwrite", (store) => store.put(envelope, RECORD_KEY));
   return { workspace, session };
 }
 
-export async function unlockVault(passphrase: string): Promise<{ workspace: WorkspaceData; session: VaultSession }> {
-  const envelope = await withStore<VaultEnvelope | undefined>("readonly", (store) => store.get(RECORD_KEY));
-  if (!envelope) throw new Error("No secure vault exists on this browser profile.");
-  assertEnvelope(envelope);
-  return decryptEnvelope(envelope, passphrase);
+export async function openDeviceVault(): Promise<{ workspace: WorkspaceData; session: VaultSession }> {
+  const envelope = await withStore<StoredVaultEnvelope | undefined>("readonly", (store) => store.get(RECORD_KEY));
+  if (!envelope) throw new Error("No encrypted workspace exists on this browser profile.");
+  if (envelope.format === "chathelp-encrypted-v1") throw new Error("This workspace needs a one-time passphrase migration.");
+  assertDeviceEnvelope(envelope);
+  const key = await withStore<CryptoKey | undefined>("readonly", (store) => store.get(DEVICE_KEY_RECORD));
+  if (!key) throw new Error("The encryption key for this browser is missing. Erase this device's vault to start again.");
+  return { workspace: await decryptDeviceEnvelope(envelope, key), session: { key } };
+}
+
+export async function migrateLegacyVault(passphrase: string): Promise<{ workspace: WorkspaceData; session: VaultSession }> {
+  const envelope = await withStore<StoredVaultEnvelope | undefined>("readonly", (store) => store.get(RECORD_KEY));
+  assertLegacyEnvelope(envelope);
+  const workspace = await decryptLegacyEnvelope(envelope, passphrase);
+  return createDeviceVault(workspace);
 }
 
 export async function saveVault(workspace: WorkspaceData, session: VaultSession): Promise<void> {
@@ -166,23 +208,9 @@ export async function saveVault(workspace: WorkspaceData, session: VaultSession)
   await withStore("readwrite", (store) => store.put(envelope, RECORD_KEY));
 }
 
-export async function exportEncryptedBackup(): Promise<string> {
-  const envelope = await withStore<VaultEnvelope | undefined>("readonly", (store) => store.get(RECORD_KEY));
-  if (!envelope) throw new Error("No secure vault exists to export.");
-  assertEnvelope(envelope);
-  return JSON.stringify(envelope, null, 2);
-}
-
-export async function importEncryptedBackup(contents: string, passphrase: string): Promise<{ workspace: WorkspaceData; session: VaultSession }> {
-  const envelope: unknown = JSON.parse(contents);
-  assertEnvelope(envelope);
-  const unlocked = await decryptEnvelope(envelope, passphrase);
-  await withStore("readwrite", (store) => store.put(envelope, RECORD_KEY));
-  return unlocked;
-}
-
 export async function eraseVault(): Promise<void> {
   await withStore("readwrite", (store) => store.delete(RECORD_KEY));
+  await withStore("readwrite", (store) => store.delete(DEVICE_KEY_RECORD));
 }
 
 function normalizeMessage(value: Partial<Message>, index: number): Message {
@@ -246,6 +274,33 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
 export function parseLegacyWorkspace(raw: string | null): WorkspaceData | null {
   if (!raw) return null;
   try { return normalizeWorkspace(JSON.parse(raw)); } catch { return null; }
+}
+
+export async function createLegacyVaultForTests(passphrase: string, workspace = createEmptyWorkspace()): Promise<void> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await deriveKey(passphrase, salt);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const plaintext = new TextEncoder().encode(JSON.stringify(workspace));
+  const encrypted = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: iv as BufferSource, additionalData: LEGACY_AAD as BufferSource },
+    key,
+    plaintext as BufferSource,
+  );
+  const envelope: LegacyVaultEnvelope = {
+    format: "chathelp-encrypted-v1",
+    kdf: { name: "PBKDF2", hash: "SHA-256", iterations: KDF_ITERATIONS, salt: bytesToBase64(salt) },
+    cipher: { name: "AES-GCM", iv: bytesToBase64(iv), ciphertext: bytesToBase64(new Uint8Array(encrypted)) },
+    updatedAt: new Date().toISOString(),
+  };
+  await withStore("readwrite", (store) => store.put(envelope, RECORD_KEY));
+}
+
+export async function readVaultEnvelopeForTests(): Promise<unknown> {
+  return withStore("readonly", (store) => store.get(RECORD_KEY));
+}
+
+export async function writeVaultEnvelopeForTests(envelope: unknown): Promise<void> {
+  await withStore("readwrite", (store) => store.put(envelope, RECORD_KEY));
 }
 
 export async function resetVaultForTests(): Promise<void> {

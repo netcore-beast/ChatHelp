@@ -87,8 +87,8 @@ Current limitations:
 ## Next hardening work
 
 1. Move private inference to a dedicated Web Worker so long generation cannot block the interface.
-2. Add encrypted IndexedDB storage with a user-held passphrase.
-3. Add local export/import for encrypted backup.
+2. Evaluate opt-in cloud synchronization and recovery separately from the current device-only encrypted vault.
+3. Design a recovery mechanism before reintroducing encrypted backup/export.
 4. Self-host pinned model artifacts with integrity metadata.
 5. Add local retrieval over user-approved guidance and reference documents.
 6. Add outcome notes and per-contact retention controls.
