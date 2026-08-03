@@ -3,8 +3,11 @@ import type { Contact, ConversationAttachment, Message, PipelineStage } from "./
 export const LINKEDIN_SNAPSHOT_EVENT = "CHATHELP_LINKEDIN_SNAPSHOT";
 export const LINKEDIN_SNAPSHOT_REQUEST_EVENT = "CHATHELP_REQUEST_LINKEDIN_SNAPSHOT";
 export const LINKEDIN_SNAPSHOT_ACK_EVENT = "CHATHELP_ACK_LINKEDIN_SNAPSHOT";
+export const LINKEDIN_EXTENSION_STATUS_EVENT = "CHATHELP_LINKEDIN_EXTENSION_STATUS";
+export const LINKEDIN_EXTENSION_STATUS_ACK_EVENT = "CHATHELP_ACK_LINKEDIN_EXTENSION_STATUS";
 export const LINKEDIN_SELECTED_CONTACT_EVENT = "CHATHELP_SET_SELECTED_LINKEDIN_CONTACT";
 export const LINKEDIN_EXTENSION_SOURCE = "chathelp-linkedin-extension";
+export const REQUIRED_LINKEDIN_EXTENSION_VERSION = "0.3.0";
 
 export type LinkedInCaptureMethod = "detecting" | "extension" | "screen" | "manual";
 
@@ -65,6 +68,20 @@ export interface LinkedInSelectedContact {
   profileUrl: string;
 }
 
+export interface LinkedInExtensionStatus {
+  source: typeof LINKEDIN_EXTENSION_SOURCE;
+  version: 1;
+  statusId: string;
+  occurredAt: string;
+  kind: "success" | "error";
+  code: string;
+  message: string;
+  observedContact: {
+    name: string;
+    profileUrl: string;
+  } | null;
+}
+
 function boundedString(value: unknown, limit: number): string {
   return typeof value === "string" ? value.trim().slice(0, limit) : "";
 }
@@ -85,12 +102,54 @@ function safeLinkedInUrl(value: unknown, kind: "profile" | "conversation"): stri
     if (kind === "profile" && !url.pathname.startsWith("/in/")) return "";
     if (kind === "conversation" && !url.pathname.startsWith("/messaging/")) return "";
     url.hostname = "www.linkedin.com";
+    url.pathname = `${url.pathname.replace(/\/+$/, "")}/`;
     url.search = "";
     url.hash = "";
     return url.toString();
   } catch {
     return "";
   }
+}
+
+export function isCurrentLinkedInExtensionVersion(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const parse = (version: string) => version.split(".").map((part) => Number.parseInt(part, 10));
+  const current = parse(value);
+  const required = parse(REQUIRED_LINKEDIN_EXTENSION_VERSION);
+  if (current.length !== 3 || current.some((part) => !Number.isInteger(part) || part < 0)) return false;
+  for (let index = 0; index < 3; index += 1) {
+    if (current[index] > required[index]) return true;
+    if (current[index] < required[index]) return false;
+  }
+  return true;
+}
+
+export function parseLinkedInExtensionStatus(value: unknown): LinkedInExtensionStatus | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (raw.source !== LINKEDIN_EXTENSION_SOURCE || raw.version !== 1) return null;
+  const statusId = boundedString(raw.statusId, 200);
+  const occurredAt = safeIsoDate(raw.occurredAt);
+  const kind = raw.kind === "success" ? "success" : raw.kind === "error" ? "error" : null;
+  const code = boundedString(raw.code, 100);
+  const message = boundedString(raw.message, 1_000);
+  if (!statusId || !occurredAt || !kind || !code || !message) return null;
+  let observedContact: LinkedInExtensionStatus["observedContact"] = null;
+  if (raw.observedContact && typeof raw.observedContact === "object") {
+    const observed = raw.observedContact as Record<string, unknown>;
+    const name = boundedString(observed.name, 200);
+    if (name) observedContact = { name, profileUrl: safeLinkedInUrl(observed.profileUrl, "profile") };
+  }
+  return {
+    source: LINKEDIN_EXTENSION_SOURCE,
+    version: 1,
+    statusId,
+    occurredAt,
+    kind,
+    code,
+    message,
+    observedContact,
+  };
 }
 
 function safeAvatarUrl(value: unknown): string {

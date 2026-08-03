@@ -5,7 +5,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ChatHelpApp from "../src/components/ChatHelpApp";
-import { LINKEDIN_EXTENSION_SOURCE, LINKEDIN_SNAPSHOT_EVENT } from "../src/lib/linkedinExtension";
+import { LINKEDIN_EXTENSION_SOURCE, LINKEDIN_EXTENSION_STATUS_EVENT, LINKEDIN_SNAPSHOT_EVENT } from "../src/lib/linkedinExtension";
 import { resetVaultForTests } from "../src/lib/secureVault";
 
 vi.mock("@/lib/localOcr", () => ({
@@ -78,7 +78,7 @@ describe("secure workspace interaction", () => {
     window.dispatchEvent(new MessageEvent("message", {
       source: window,
       origin: window.location.origin,
-      data: { source: LINKEDIN_EXTENSION_SOURCE, type: "CHATHELP_EXTENSION_READY" },
+      data: { source: LINKEDIN_EXTENSION_SOURCE, type: "CHATHELP_EXTENSION_READY", version: "0.3.0" },
     }));
     const wrongPayload = {
       source: LINKEDIN_EXTENSION_SOURCE,
@@ -124,6 +124,42 @@ describe("secure workspace interaction", () => {
     expect(screen.getByText(/read only the selected contact's open conversation/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Check for capture" })).toBeNull();
     expect(screen.getByText(/never scans the inbox, clicks, types, or sends/i)).toBeTruthy();
+  });
+
+  it("surfaces a safe header-only identity mismatch and lets the user confirm it", async () => {
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
+    await user.type(screen.getByLabelText("New contact name"), "Amit");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    window.dispatchEvent(new MessageEvent("message", {
+      source: window,
+      origin: window.location.origin,
+      data: { source: LINKEDIN_EXTENSION_SOURCE, type: "CHATHELP_EXTENSION_READY", version: "0.3.0" },
+    }));
+    window.dispatchEvent(new MessageEvent("message", {
+      source: window,
+      origin: window.location.origin,
+      data: {
+        source: LINKEDIN_EXTENSION_SOURCE,
+        type: LINKEDIN_EXTENSION_STATUS_EVENT,
+        payload: {
+          source: LINKEDIN_EXTENSION_SOURCE,
+          version: 1,
+          statusId: "status-mismatch",
+          occurredAt: "2026-08-02T12:00:00.000Z",
+          kind: "error",
+          code: "contact_mismatch",
+          message: "ChatHelp is locked to Amit, but the open conversation is Amit Dabral.",
+          observedContact: { name: "Amit Dabral", profileUrl: "https://www.linkedin.com/in/amit-dabral/" },
+        },
+      },
+    }));
+
+    expect(await screen.findByText(/read no messages because it did not match/i)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Confirm Amit Dabral is this contact" }));
+    expect(await screen.findByRole("heading", { name: "Amit Dabral" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Confirm Amit Dabral/i })).toBeNull();
   });
 
   it("recognizes a mobile device and recommends manual import instead of the desktop extension", async () => {

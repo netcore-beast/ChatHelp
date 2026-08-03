@@ -3,11 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   LINKEDIN_EXTENSION_SOURCE,
   isActivelySnoozed,
+  isCurrentLinkedInExtensionVersion,
   isLinkedInSnapshotForContact,
   isLikelyMobileDevice,
   isReminderDue,
   linkedInSelectionForContact,
   mergeLinkedInSnapshotForContact,
+  parseLinkedInExtensionStatus,
   parseLinkedInExtensionSnapshot,
   recommendLinkedInCaptureMethod,
   type LinkedInExtensionSnapshot,
@@ -80,6 +82,26 @@ describe("explicit LinkedIn extension import", () => {
     expect(snapshot?.messages[1].attachments).toEqual([{ id: "attachment-1", label: "Roadmap preview", kind: "image" }]);
   });
 
+  it("validates extension versions and safe capture status details", () => {
+    expect(isCurrentLinkedInExtensionVersion("0.3.0")).toBe(true);
+    expect(isCurrentLinkedInExtensionVersion("0.4.0")).toBe(true);
+    expect(isCurrentLinkedInExtensionVersion("0.2.9")).toBe(false);
+    expect(isCurrentLinkedInExtensionVersion(undefined)).toBe(false);
+    expect(parseLinkedInExtensionStatus({
+      source: LINKEDIN_EXTENSION_SOURCE,
+      version: 1,
+      statusId: "status-1",
+      occurredAt: "2026-08-02T12:00:00.000Z",
+      kind: "error",
+      code: "contact_mismatch",
+      message: "The open conversation is Amit Dabral.",
+      observedContact: { name: "Amit Dabral", profileUrl: "https://linkedin.com/in/amit-dabral?trk=remove" },
+    })).toMatchObject({
+      code: "contact_mismatch",
+      observedContact: { name: "Amit Dabral", profileUrl: "https://www.linkedin.com/in/amit-dabral/" },
+    });
+  });
+
   it("imports only into the selected matching contact and never creates another contact", () => {
     const snapshot = parseLinkedInExtensionSnapshot(rawSnapshot) as LinkedInExtensionSnapshot;
     const selected = contact({ labels: ["warm lead"], notes: "Send the case study", pipelineStage: "warm" });
@@ -115,18 +137,22 @@ describe("explicit LinkedIn extension import", () => {
   });
 
   it("uses minimal Chrome permissions and contains no send or network automation", () => {
-    const manifest = JSON.parse(readFileSync("extension/manifest.json", "utf8")) as { permissions: string[]; host_permissions: string[] };
+    const manifest = JSON.parse(readFileSync("extension/manifest.json", "utf8")) as { version: string; permissions: string[]; host_permissions: string[] };
     const background = readFileSync("extension/background.js", "utf8");
+    const extractor = readFileSync("extension/extractor.js", "utf8");
     const bridge = readFileSync("extension/app-bridge.js", "utf8");
     expect(manifest.permissions).toEqual(["activeTab", "scripting", "storage"]);
+    expect(manifest.version).toBe("0.3.0");
     expect(manifest.host_permissions.some((permission) => permission.includes("linkedin.com"))).toBe(false);
     expect(background).toContain("chrome.action.onClicked");
     expect(background).toContain("chrome.scripting.executeScript");
     expect(background).toContain("CHATHELP_SET_SELECTED_LINKEDIN_CONTACT");
-    expect(background.indexOf("identityMatches")).toBeLessThan(background.indexOf("const eventNodes"));
+    expect(extractor.indexOf("identityMatches")).toBeLessThan(extractor.indexOf("const eventNodes"));
     expect(background).not.toMatch(/\.click\s*\(/);
     expect(background).not.toMatch(/fetch\s*\(/);
     expect(background).not.toContain("XMLHttpRequest");
+    expect(extractor).not.toMatch(/\.click\s*\(/);
+    expect(extractor).not.toMatch(/fetch\s*\(/);
     expect(bridge).toContain("announceReady();");
     expect(bridge).toContain("event.data.type === REQUEST");
   });

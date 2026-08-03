@@ -118,6 +118,9 @@ p.error { margin: 0; padding: .7rem; border-radius: 8px; }
 .capture-primary-action button:hover, .capture-action:hover { border-color: var(--green-2); background: var(--green-2); }
 .capture-recommendation > small { grid-column: 1 / -1; color: #355443; line-height: 1.45; }
 .capture-options-toggle { grid-column: 1 / -1; justify-self: start; padding: .2rem 0; border: 0; border-radius: 0; background: transparent; color: var(--green); font-size: .7rem; text-decoration: underline; }
+.extension-identity-confirmation { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: .8rem; padding: .72rem .8rem; border: 1px solid #d8bb79; border-radius: 9px; background: #fff8e8; }
+.extension-identity-confirmation p { margin: 0; color: #654a0d; font-size: .74rem; line-height: 1.45; }
+.extension-identity-confirmation button { flex: 0 0 auto; border-color: #8a6417; color: #654a0d; background: #fff; }
 .capture-alternatives { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: .5rem; padding-top: .7rem; border-top: 1px solid rgba(20, 92, 62, .18); }
 .capture-alternatives button { padding: .5rem .65rem; background: rgba(255, 255, 255, .8); font-size: .72rem; }
 .provider-summary { display: grid; gap: .2rem; padding: .8rem; border: 1px solid #a9d3c4; border-radius: 10px; background: var(--mint); }
