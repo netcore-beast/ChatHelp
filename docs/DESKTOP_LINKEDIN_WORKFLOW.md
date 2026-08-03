@@ -11,6 +11,7 @@ ChatHelp&apos;s desktop workflow borrows the useful inbox and pipeline ideas fro
         → Chrome grants temporary activeTab access
         → an isolated function reads the visible contact header
         → the extension verifies that header matches the selected ChatHelp contact
+        → if only the saved name differs, ChatHelp can ask the user to confirm the header-only identity without reading messages
         → only then does it read the visible message thread
         → one validated snapshot is held in chrome.storage.local
         → the authenticated ChatHelp tab receives it through the extension bridge
@@ -34,4 +35,4 @@ ChatHelp can copy an edited draft to the clipboard. The user switches to LinkedI
 
 ## Failure behavior
 
-If the open conversation is not the contact currently selected in ChatHelp, extraction stops before traversing message nodes. If LinkedIn changes its DOM, extraction also fails closed with an extension badge message. It never broadens capture to the page, other conversations, or the user&apos;s network. Users can use the existing cropped local OCR or manual paste fallback until selectors are reviewed and updated.
+If the open conversation is not the contact currently selected in ChatHelp, extraction stops before traversing message nodes. The extension passes a bounded error and, for identity mismatches, only the visible header identity to ChatHelp so the reason is not lost when the badge disappears. If LinkedIn changes its DOM, extraction also fails closed. It never broadens capture to the page, other conversations, or the user&apos;s network. Users can use the existing cropped local OCR or manual paste fallback until selectors are reviewed and updated.

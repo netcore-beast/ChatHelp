@@ -8,6 +8,8 @@ import { CLOUDFLARE_MODEL_NAME, generatePrivateDrafts } from "@/lib/privateAi";
 import { PLATFORM_OPTIONS, platformLabel, safePlatformUrl } from "@/lib/platforms";
 import {
   LINKEDIN_EXTENSION_SOURCE,
+  LINKEDIN_EXTENSION_STATUS_ACK_EVENT,
+  LINKEDIN_EXTENSION_STATUS_EVENT,
   LINKEDIN_SELECTED_CONTACT_EVENT,
   LINKEDIN_SNAPSHOT_ACK_EVENT,
   LINKEDIN_SNAPSHOT_EVENT,
@@ -15,10 +17,12 @@ import {
   PIPELINE_STAGES,
   contactStage,
   isActivelySnoozed,
+  isCurrentLinkedInExtensionVersion,
   linkedInSelectionForContact,
   isLikelyMobileDevice,
   isReminderDue,
   mergeLinkedInSnapshotForContact,
+  parseLinkedInExtensionStatus,
   parseLinkedInExtensionSnapshot,
   recommendLinkedInCaptureMethod,
 } from "@/lib/linkedinExtension";
@@ -204,6 +208,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [labelFilter, setLabelFilter] = useState("");
   const [extensionStatus, setExtensionStatus] = useState("Chrome extension not connected yet. Load or reload it in Chrome, then refresh ChatHelp. Screen capture remains available under other import options.");
   const [extensionConnected, setExtensionConnected] = useState(false);
+  const [extensionIdentityCandidate, setExtensionIdentityCandidate] = useState<{ name: string; profileUrl: string } | null>(null);
   const [captureEnvironment, setCaptureEnvironment] = useState({ detected: false, isMobile: false, supportsScreenCapture: false });
   const [showImportAlternatives, setShowImportAlternatives] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -236,6 +241,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const workspaceRef = useRef(workspace);
   const selectedIdRef = useRef(selectedId);
   const extensionConnectedRef = useRef(false);
+  const extensionVersionRef = useRef("");
   const shortcutSequenceRef = useRef("");
 
   const contact = workspace.contacts.find((item) => item.id === selectedId) ?? workspace.contacts[0] ?? null;
@@ -258,16 +264,31 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     const targetOrigin = window.location.origin === "null" ? "*" : window.location.origin;
     const handleSnapshot = (event: MessageEvent) => {
       if (event.source !== window || (window.location.origin !== "null" && event.origin !== window.location.origin)) return;
-      const data = event.data as { source?: unknown; type?: unknown; payload?: unknown } | null;
+      const data = event.data as { source?: unknown; type?: unknown; payload?: unknown; version?: unknown } | null;
       if (!data || data.source !== LINKEDIN_EXTENSION_SOURCE) return;
       if (data.type === "CHATHELP_EXTENSION_READY") {
         extensionConnectedRef.current = true;
-        setExtensionConnected(true);
+        const version = typeof data.version === "string" ? data.version : "";
+        extensionVersionRef.current = version;
+        const currentVersion = isCurrentLinkedInExtensionVersion(version);
+        setExtensionConnected(currentVersion);
         const selected = workspaceRef.current.contacts.find((item) => item.id === selectedIdRef.current);
         const selection = linkedInSelectionForContact(selected);
-        setExtensionStatus(selection ? `Chrome extension connected and locked to ${selection.name}. It will refuse to read a different conversation.` : "Chrome extension connected. Add and select a LinkedIn contact before capturing messages.");
+        setExtensionStatus(currentVersion
+          ? selection ? `Chrome extension ${version} connected and locked to ${selection.name}. It will refuse to read a different conversation.` : `Chrome extension ${version} connected. Add and select a LinkedIn contact before capturing messages.`
+          : `An older ChatHelp extension${version ? ` (${version})` : ""} is installed. In chrome://extensions, reload the current ChatHelp extension folder, then reload this tab.`);
         window.postMessage({ source: "chathelp-app", type: LINKEDIN_SELECTED_CONTACT_EVENT, contact: selection }, targetOrigin);
         window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_REQUEST_EVENT }, targetOrigin);
+        return;
+      }
+      if (data.type === LINKEDIN_EXTENSION_STATUS_EVENT) {
+        const status = parseLinkedInExtensionStatus(data.payload);
+        if (!status) return;
+        extensionConnectedRef.current = true;
+        if (isCurrentLinkedInExtensionVersion(extensionVersionRef.current)) setExtensionConnected(true);
+        setExtensionStatus(status.message);
+        setExtensionIdentityCandidate(status.code === "contact_mismatch" ? status.observedContact : null);
+        window.postMessage({ source: "chathelp-app", type: LINKEDIN_EXTENSION_STATUS_ACK_EVENT, statusId: status.statusId }, targetOrigin);
         return;
       }
       if (data.type !== LINKEDIN_SNAPSHOT_EVENT) return;
@@ -278,6 +299,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       }
       extensionConnectedRef.current = true;
       setExtensionConnected(true);
+      setExtensionIdentityCandidate(null);
       const selectedContactId = selectedIdRef.current;
       const selected = workspaceRef.current.contacts.find((item) => item.id === selectedContactId);
       const preview = mergeLinkedInSnapshotForContact(workspaceRef.current.contacts, selectedContactId, snapshot);
@@ -297,9 +319,13 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     };
     window.addEventListener("message", handleSnapshot);
     window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_REQUEST_EVENT }, targetOrigin);
+    const extensionTimer = window.setTimeout(() => {
+      if (!extensionConnectedRef.current) setExtensionStatus("No extension bridge was detected on this ChatHelp tab. Open ChatHelp in regular desktop Chrome, reload the ChatHelp extension in chrome://extensions, allow site access for this app, then reload this tab.");
+    }, 2_500);
     return () => {
       window.clearInterval(timer);
       window.clearTimeout(capabilityTimer);
+      window.clearTimeout(extensionTimer);
       window.removeEventListener("message", handleSnapshot);
     };
   }, []);
@@ -315,7 +341,11 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     if (!extensionConnectedRef.current) return;
     const selected = workspaceRef.current.contacts.find((item) => item.id === selectedIdRef.current);
     const selection = linkedInSelectionForContact(selected);
-    setExtensionStatus(selection ? `Chrome extension connected and locked to ${selection.name}. It will refuse to read a different conversation.` : "Chrome extension connected. Add and select a LinkedIn contact before capturing messages.");
+    setExtensionIdentityCandidate(null);
+    const version = extensionVersionRef.current;
+    setExtensionStatus(isCurrentLinkedInExtensionVersion(version)
+      ? selection ? `Chrome extension ${version} connected and locked to ${selection.name}. It will refuse to read a different conversation.` : `Chrome extension ${version} connected. Add and select a LinkedIn contact before capturing messages.`
+      : `An older ChatHelp extension${version ? ` (${version})` : ""} is installed. In chrome://extensions, reload the current ChatHelp extension folder, then reload this tab.`);
   }, [selectedId, selectedContactName, selectedContactPlatform]);
 
   useEffect(() => {
@@ -349,6 +379,18 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   function updateContact(updater: (current: Contact) => Contact) {
     if (!contact) return;
     updateContactById(contact.id, updater);
+  }
+
+  function confirmObservedLinkedInIdentity() {
+    if (!contact || !extensionIdentityCandidate) return;
+    const observed = extensionIdentityCandidate;
+    updateContact((current) => ({
+      ...current,
+      name: observed.name,
+      profileUrl: observed.profileUrl || current.profileUrl,
+    }));
+    setExtensionIdentityCandidate(null);
+    setExtensionStatus(`${observed.name} is now linked to this ChatHelp contact. Return to that open LinkedIn conversation and click the ChatHelp extension once more to capture its visible messages.`);
   }
 
   function selectContact(nextContact: Contact) {
@@ -774,6 +816,10 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                   {captureMethod === "manual" && <button onClick={() => chatPasteRef.current?.focus()}>Paste messages manually</button>}
                 </div>
                 {captureMethod === "extension" && <small role="status" aria-live="polite">{extensionStatus}</small>}
+                {captureMethod === "extension" && extensionIdentityCandidate && <div className="extension-identity-confirmation" role="alert">
+                  <p>The extension found <strong>{extensionIdentityCandidate.name}</strong> in the open LinkedIn header but read no messages because it did not match this contact.</p>
+                  <button onClick={confirmObservedLinkedInIdentity}>Confirm {extensionIdentityCandidate.name} is this contact</button>
+                </div>}
                 {captureMethod !== "detecting" && <button className="capture-options-toggle" aria-expanded={showImportAlternatives} onClick={() => setShowImportAlternatives((current) => !current)}>{showImportAlternatives ? "Hide other import options" : "Show other import options"}</button>}
                 {showImportAlternatives && captureMethod !== "detecting" && <div className="capture-alternatives">
                   {captureEnvironment.supportsScreenCapture && captureMethod !== "screen" && <button onClick={() => void captureConversation()}>Capture conversation screen</button>}
