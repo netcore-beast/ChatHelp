@@ -27,6 +27,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   Object.defineProperty(navigator, "userAgent", { value: desktopUserAgent, configurable: true });
 });
 
@@ -66,6 +67,30 @@ describe("secure workspace interaction", () => {
     render(<ChatHelpApp />);
     expect(await screen.findByRole("heading", { name: "Alex Morgan" })).toBeTruthy();
     expect(screen.queryByLabelText("Passphrase")).toBeNull();
+  }, 20_000);
+
+  it("keeps the Cloudflare Access session and shows an inline error when Access returns HTML", async () => {
+    const request = vi.fn().mockResolvedValue(new Response("<!doctype html><title>Sign in</title>", {
+      status: 200,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    }));
+    vi.stubGlobal("fetch", request);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+
+    expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
+    await user.type(screen.getByLabelText("New contact name"), "Cloud Test Contact");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.type(screen.getByLabelText("Paste conversation messages"), "Cloud Test Contact: Thanks for connecting.");
+    await user.click(screen.getByRole("button", { name: "Import manually pasted chat lines" }));
+    await user.type(screen.getByLabelText("What should your next message accomplish?"), "Write a short reply.");
+    await user.type(screen.getByLabelText(/Cloud access code/), "test-only-placeholder-value");
+    await user.click(screen.getByRole("checkbox", { name: /I understand that ChatHelp will send/ }));
+    await user.click(screen.getByRole("button", { name: "Generate 3 cloud drafts for Cloud Test Contact" }));
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Drafts were not generated.*Cloudflare sign-in session could not be verified/);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls[0][1]?.credentials).toBe("same-origin");
   }, 20_000);
 
   it("imports an explicit extension snapshot into the local inbox without sending", async () => {

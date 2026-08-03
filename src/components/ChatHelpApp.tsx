@@ -219,6 +219,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [agenda, setAgenda] = useState("");
   const [drafts, setDrafts] = useState<string[]>(() => initial.contacts[0]?.draftHistory?.at(-1)?.drafts ?? []);
   const [aiStatus, setAiStatus] = useState("");
+  const [draftError, setDraftError] = useState("");
   const [appError, setAppError] = useState("");
   const [cloudAccessCode, setCloudAccessCode] = useState(() => initial.cloudInference.rememberAccessToken ? initial.cloudInference.accessToken : "");
   const [chatPaste, setChatPaste] = useState("");
@@ -395,6 +396,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   function selectContact(nextContact: Contact) {
     setActiveContactId(nextContact.id);
     setDrafts(nextContact.draftHistory?.at(-1)?.drafts ?? []);
+    setDraftError("");
     setShowImportAlternatives(false);
   }
 
@@ -588,6 +590,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       return;
     }
     setAppError("");
+    setDraftError("");
     setDrafts([]);
     try {
       const query = [requestAgenda, activeContact.profileNotes, activeContact.chat.slice(-8).map((item) => item.body).join(" ")].join(" ");
@@ -622,7 +625,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       setAiStatus("Generated in Cloudflare Workers AI. No LLM was downloaded or run on this device, and nothing was sent to LinkedIn.");
     } catch (error) {
       setAiStatus("");
-      setAppError(formatError(error));
+      setDraftError(formatError(error));
     }
   }
 
@@ -871,6 +874,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
             {!conversationReady && contact && <p className="missing-context" role="note">Before generating, capture only the message area for your LinkedIn conversation with {contact.name}, or add at least one chat message. Full-page captures containing navigation, other chats, or job suggestions are not used.</p>}
             <button className="primary" disabled={!contact || !conversationReady || !agenda.trim() || !cloudReady || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("processed locally"))} onClick={() => void generate()}>Generate 3 cloud drafts for {contact?.name || "selected contact"}</button>
             {aiStatus && <p className="status" aria-live="polite">{aiStatus}</p>}
+            {draftError && <div className="notice error inline-draft-error" role="alert"><span><strong>Drafts were not generated.</strong> {draftError}</span><button aria-label="Dismiss draft generation error" onClick={() => setDraftError("")}>×</button></div>}
             <p className="fine-print">Cloud mode avoids downloading or running an LLM on this device. The Worker uses no app storage or AI Gateway. Review every draft before sending.</p>
           </div>
           <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={`${contact?.id || "draft"}-${index}`}><div><span>EDITABLE DRAFT {index + 1}</span><div><button onClick={() => {
@@ -890,7 +894,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         initialContact={contact}
         guidance={workspace.guidance}
         drafts={drafts}
-        aiStatus={aiStatus}
+        aiStatus={draftError ? `Drafts were not generated. ${draftError}` : aiStatus}
         onClose={() => setWizardOpen(false)}
         onSaveProfile={saveWizardProfile}
         onCapture={captureContextFor}

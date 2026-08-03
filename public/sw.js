@@ -17,8 +17,11 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
 
   if (request.mode === "navigate") {
-    event.respondWith(fetch(request).then((response) => {
-      if (response.ok) caches.open(SHELL_CACHE).then((cache) => cache.put(request, response.clone()));
+    event.respondWith(fetch(request).then(async (response) => {
+      if (response.ok) {
+        const cacheCopy = response.clone();
+        try { await (await caches.open(SHELL_CACHE)).put(request, cacheCopy); } catch { /* A cache failure must not block the live page. */ }
+      }
       return response;
     }).catch(async () => (await caches.match(request)) || (await caches.match("/")) || caches.match("/offline.html")));
     return;
@@ -27,8 +30,11 @@ self.addEventListener("fetch", (event) => {
   const cacheable = ["/_next/static/", "/tesseract/", "/tesseract-core/", "/tessdata/"].some((prefix) => url.pathname.startsWith(prefix)) || ["/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"].includes(url.pathname);
   if (!cacheable) return;
 
-  event.respondWith(caches.match(request).then((cached) => cached || fetch(request).then((response) => {
-    if (response.ok) caches.open(STATIC_CACHE).then((cache) => cache.put(request, response.clone()));
+  event.respondWith(caches.match(request).then((cached) => cached || fetch(request).then(async (response) => {
+    if (response.ok) {
+      const cacheCopy = response.clone();
+      try { await (await caches.open(STATIC_CACHE)).put(request, cacheCopy); } catch { /* Continue with the network response. */ }
+    }
     return response;
   })));
 });

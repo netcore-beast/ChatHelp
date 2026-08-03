@@ -39,6 +39,8 @@ button.secondary { background: transparent; }
 .notice.error, .error { color: #7d231c; background: #fde6e3; }
 p.error { margin: 0; padding: .7rem; border-radius: 8px; }
 .notice button { float: right; border: 0; background: transparent; padding: 0; font-size: 1.2rem; }
+.inline-draft-error { display: flex; align-items: flex-start; justify-content: space-between; gap: .75rem; margin: 0; }
+.inline-draft-error button { float: none; flex: 0 0 auto; }
 .app-shell { min-height: 100vh; }
 .topbar { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.35rem; border-bottom: 1px solid var(--line); background: rgba(255, 254, 250, .92); backdrop-filter: blur(14px); position: sticky; top: 0; z-index: 10; }
 .topbar h1 { margin: 0; font-family: Georgia, serif; font-size: 1.35rem; }

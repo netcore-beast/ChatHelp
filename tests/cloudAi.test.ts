@@ -57,7 +57,7 @@ describe("cloud AI client boundary", () => {
     expect(request).toHaveBeenCalledTimes(1);
     const [url, init] = request.mock.calls[0];
     expect(url).toBe("/api/drafts");
-    expect(init.credentials).toBe("omit");
+    expect(init.credentials).toBe("same-origin");
     expect(init.cache).toBe("no-store");
     expect(init.headers.Authorization).toBe("Bearer " + accessToken);
     const body = JSON.parse(init.body);
@@ -78,6 +78,19 @@ describe("cloud AI client boundary", () => {
       consentedAt: "2026-08-01T00:00:00.000Z",
       rememberAccessToken: false,
     }, undefined, request as unknown as typeof fetch)).rejects.toThrow("Invalid ChatHelp access code.");
+  });
+
+  it("explains when Cloudflare Access returns a sign-in page instead of Worker JSON", async () => {
+    const request = vi.fn().mockResolvedValue(new Response("<!doctype html><title>Sign in</title>", {
+      status: 200,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    }));
+
+    await expect(generateWithCloud(input(), {
+      accessToken: "a-valid-access-token-with-enough-length",
+      consentedAt: "2026-08-01T00:00:00.000Z",
+      rememberAccessToken: false,
+    }, undefined, request as unknown as typeof fetch)).rejects.toThrow(/Cloudflare sign-in session could not be verified/);
   });
 
   it("tells the model which person is the sender and requires paste-ready text", () => {
