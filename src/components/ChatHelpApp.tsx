@@ -278,7 +278,6 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
           ? selection ? `Chrome extension ${version} connected and locked to ${selection.name}. It will refuse to read a different conversation.` : `Chrome extension ${version} connected. Add and select a LinkedIn contact before capturing messages.`
           : `An older ChatHelp extension${version ? ` (${version})` : ""} is installed. In chrome://extensions, reload the current ChatHelp extension folder, then reload this tab.`);
         window.postMessage({ source: "chathelp-app", type: LINKEDIN_SELECTED_CONTACT_EVENT, contact: selection }, targetOrigin);
-        window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_REQUEST_EVENT }, targetOrigin);
         return;
       }
       if (data.type === LINKEDIN_EXTENSION_STATUS_EVENT) {
