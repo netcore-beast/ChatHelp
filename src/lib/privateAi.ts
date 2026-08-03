@@ -155,7 +155,10 @@ export async function generateWithCloud(
   const response = await request(cloudDraftEndpoint(), {
     method: "POST",
     cache: "no-store",
-    credentials: "omit",
+    // The app and API share an origin protected by Cloudflare Access. Keep the
+    // Access session on this same-origin request while still refusing to send
+    // credentials to any third-party origin.
+    credentials: "same-origin",
     referrerPolicy: "no-referrer",
     headers: {
       Accept: "application/json",
@@ -164,6 +167,11 @@ export async function generateWithCloud(
     },
     body: JSON.stringify({ prompt: buildPrompt(input).slice(0, 24_000) }),
   });
+
+  const contentType = response.headers.get("Content-Type")?.toLowerCase() ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new Error("Your Cloudflare sign-in session could not be verified. Refresh ChatHelp, sign in again if asked, then retry.");
+  }
 
   let payload: unknown = {};
   try {
