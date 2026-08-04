@@ -251,7 +251,7 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
     : {};
   const rememberAccessToken = cloudInference.rememberAccessToken === true;
   return {
-    version: 5,
+    version: 6,
     modelId: normalizeWorkspaceModelId(),
     cloudInference: {
       accessToken: rememberAccessToken && typeof cloudInference.accessToken === "string" ? cloudInference.accessToken.slice(0, 200) : "",
@@ -287,14 +287,18 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
         retentionDays: contact.retentionDays === 0 || contact.retentionDays === 30 || contact.retentionDays === 365 ? contact.retentionDays : 90,
         profileUrl: typeof contact.profileUrl === "string" ? contact.profileUrl.slice(0, 2_000) : "",
         avatarUrl: typeof contact.avatarUrl === "string" ? contact.avatarUrl.slice(0, 2_000) : "",
+        company: typeof contact.company === "string" ? contact.company.slice(0, 500) : "",
         conversationUrl: typeof contact.conversationUrl === "string" ? contact.conversationUrl.slice(0, 2_000) : "",
+        source: contact.source === "linkedin-extension" ? "linkedin-extension" : "manual",
         labels: normalizeLabels(contact.labels),
         pipelineStage: normalizeStage(contact.pipelineStage),
         notes: typeof contact.notes === "string" ? contact.notes.slice(0, 20_000) : "",
         snoozedUntil: typeof contact.snoozedUntil === "string" ? contact.snoozedUntil.slice(0, 100) : "",
         followUpAt: typeof contact.followUpAt === "string" ? contact.followUpAt.slice(0, 100) : "",
         archivedAt: typeof contact.archivedAt === "string" ? contact.archivedAt.slice(0, 100) : "",
+        firstSyncedAt: typeof contact.firstSyncedAt === "string" ? contact.firstSyncedAt.slice(0, 100) : "",
         lastSyncedAt: typeof contact.lastSyncedAt === "string" ? contact.lastSyncedAt.slice(0, 100) : "",
+        lastSyncMessageCount: typeof contact.lastSyncMessageCount === "number" && Number.isFinite(contact.lastSyncMessageCount) ? Math.max(0, Math.floor(contact.lastSyncMessageCount)) : 0,
         draftHistory: Array.isArray(contact.draftHistory) ? contact.draftHistory.slice(-20).flatMap((draft, draftIndex) => {
           if (!draft || typeof draft !== "object") return [];
           const item = draft as Record<string, unknown>;

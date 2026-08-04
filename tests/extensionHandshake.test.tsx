@@ -36,7 +36,7 @@ describe("ChatHelp extension handshake", () => {
       configurable: true,
       value: {
         runtime: {
-          getManifest: () => ({ version: "0.3.0" }),
+          getManifest: () => ({ version: "0.4.0" }),
           sendMessage,
           onMessage: { addListener: vi.fn() },
         },

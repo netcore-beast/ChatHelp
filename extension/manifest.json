@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ChatHelp LinkedIn Conversation Reader",
-  "description": "Reads only the LinkedIn conversation you explicitly capture and hands it to your local ChatHelp vault. It never sends messages.",
-  "version": "0.3.0",
+  "description": "With your permission, reads only the visible LinkedIn conversation you manually open and hands it to your encrypted local ChatHelp vault. It never scans or sends.",
+  "version": "0.4.0",
   "minimum_chrome_version": "120",
   "action": {
     "default_title": "Capture the open LinkedIn conversation for ChatHelp"
@@ -17,6 +17,9 @@
   ],
   "host_permissions": [
     "https://chathelp-private-cloud.project-mission-ai.workers.dev/*"
+  ],
+  "optional_host_permissions": [
+    "https://www.linkedin.com/*"
   ],
   "content_scripts": [
     {

@@ -1,6 +1,7 @@
 export type MessageRole = "me" | "them";
 export type ConversationPlatform = "linkedin" | "gmail" | "outlook" | "other";
 export type PipelineStage = "inbox" | "hot" | "warm" | "cold" | "follow-up" | "replied" | "snoozed" | "done";
+export type ContactSource = "manual" | "linkedin-extension";
 
 export interface ConversationAttachment {
   id: string;
@@ -51,14 +52,18 @@ export interface Contact {
   retentionDays: 0 | 30 | 90 | 365;
   profileUrl?: string;
   avatarUrl?: string;
+  company?: string;
   conversationUrl?: string;
+  source?: ContactSource;
   labels?: string[];
   pipelineStage?: PipelineStage;
   notes?: string;
   snoozedUntil?: string;
   followUpAt?: string;
   archivedAt?: string;
+  firstSyncedAt?: string;
   lastSyncedAt?: string;
+  lastSyncMessageCount?: number;
   draftHistory?: DraftHistoryEntry[];
 }
 
@@ -95,7 +100,7 @@ export interface AiUsageEntry {
 }
 
 export interface WorkspaceData {
-  version: 5;
+  version: 6;
   modelId: string;
   cloudInference: CloudInferenceSettings;
   contacts: Contact[];
@@ -120,7 +125,7 @@ export function newId(prefix = "item"): string {
 
 export function createEmptyWorkspace(): WorkspaceData {
   return {
-    version: 5,
+    version: 6,
     modelId: DEFAULT_MODEL_ID,
     cloudInference: {
       accessToken: "",

@@ -5,11 +5,13 @@ export const LINKEDIN_SNAPSHOT_REQUEST_EVENT = "CHATHELP_REQUEST_LINKEDIN_SNAPSH
 export const LINKEDIN_SNAPSHOT_ACK_EVENT = "CHATHELP_ACK_LINKEDIN_SNAPSHOT";
 export const LINKEDIN_EXTENSION_STATUS_EVENT = "CHATHELP_LINKEDIN_EXTENSION_STATUS";
 export const LINKEDIN_EXTENSION_STATUS_ACK_EVENT = "CHATHELP_ACK_LINKEDIN_EXTENSION_STATUS";
-export const LINKEDIN_SELECTED_CONTACT_EVENT = "CHATHELP_SET_SELECTED_LINKEDIN_CONTACT";
+export const LINKEDIN_SYNC_COMMAND_EVENT = "CHATHELP_LINKEDIN_SYNC_COMMAND";
+export const LINKEDIN_SYNC_STATE_EVENT = "CHATHELP_LINKEDIN_SYNC_STATE";
 export const LINKEDIN_EXTENSION_SOURCE = "chathelp-linkedin-extension";
-export const REQUIRED_LINKEDIN_EXTENSION_VERSION = "0.3.0";
+export const REQUIRED_LINKEDIN_EXTENSION_VERSION = "0.4.0";
 
 export type LinkedInCaptureMethod = "detecting" | "extension" | "screen" | "manual";
+export type LinkedInSyncCommand = "enable" | "pause" | "resume" | "disable" | "refresh";
 
 export interface LinkedInCaptureCapabilities {
   detected: boolean;
@@ -42,18 +44,21 @@ export const PIPELINE_STAGES: ReadonlyArray<{ value: PipelineStage; label: strin
 
 export interface LinkedInExtensionSnapshot {
   source: typeof LINKEDIN_EXTENSION_SOURCE;
-  version: 1;
+  version: 2;
+  captureMode: "automatic" | "manual";
   captureId: string;
   capturedAt: string;
   pageUrl: string;
   contact: {
     name: string;
     headline: string;
+    company: string;
     profileUrl: string;
     avatarUrl: string;
   };
   messages: Array<{
     id: string;
+    sourceId: string;
     role: "me" | "them";
     speaker: string;
     body: string;
@@ -62,24 +67,40 @@ export interface LinkedInExtensionSnapshot {
   }>;
 }
 
-export interface LinkedInSelectedContact {
-  contactId: string;
-  name: string;
-  profileUrl: string;
-}
-
 export interface LinkedInExtensionStatus {
   source: typeof LINKEDIN_EXTENSION_SOURCE;
-  version: 1;
+  version: 2;
   statusId: string;
   occurredAt: string;
-  kind: "success" | "error";
+  kind: "success" | "error" | "info";
   code: string;
   message: string;
   observedContact: {
     name: string;
     profileUrl: string;
   } | null;
+}
+
+export interface LinkedInSyncState {
+  source: typeof LINKEDIN_EXTENSION_SOURCE;
+  version: 1;
+  stateId: string;
+  occurredAt: string;
+  enabled: boolean;
+  paused: boolean;
+  permissionGranted: boolean;
+  code: string;
+  message: string;
+  lastContactName: string;
+  lastMessageCount: number;
+}
+
+export interface LinkedInSnapshotUpsertResult {
+  contacts: Contact[];
+  contactId: string;
+  importedMessages: number;
+  action: "created" | "updated" | "no-change" | "ambiguous";
+  matchedBy: "profile" | "conversation" | "name" | "new" | "ambiguous";
 }
 
 function boundedString(value: unknown, limit: number): string {
@@ -111,6 +132,14 @@ function safeLinkedInUrl(value: unknown, kind: "profile" | "conversation"): stri
   }
 }
 
+export function normalizeLinkedInProfileUrl(value: unknown): string {
+  return safeLinkedInUrl(value, "profile");
+}
+
+export function normalizeLinkedInConversationUrl(value: unknown): string {
+  return safeLinkedInUrl(value, "conversation");
+}
+
 export function isCurrentLinkedInExtensionVersion(value: unknown): boolean {
   if (typeof value !== "string") return false;
   const parse = (version: string) => version.split(".").map((part) => Number.parseInt(part, 10));
@@ -122,34 +151,6 @@ export function isCurrentLinkedInExtensionVersion(value: unknown): boolean {
     if (current[index] < required[index]) return false;
   }
   return true;
-}
-
-export function parseLinkedInExtensionStatus(value: unknown): LinkedInExtensionStatus | null {
-  if (!value || typeof value !== "object") return null;
-  const raw = value as Record<string, unknown>;
-  if (raw.source !== LINKEDIN_EXTENSION_SOURCE || raw.version !== 1) return null;
-  const statusId = boundedString(raw.statusId, 200);
-  const occurredAt = safeIsoDate(raw.occurredAt);
-  const kind = raw.kind === "success" ? "success" : raw.kind === "error" ? "error" : null;
-  const code = boundedString(raw.code, 100);
-  const message = boundedString(raw.message, 1_000);
-  if (!statusId || !occurredAt || !kind || !code || !message) return null;
-  let observedContact: LinkedInExtensionStatus["observedContact"] = null;
-  if (raw.observedContact && typeof raw.observedContact === "object") {
-    const observed = raw.observedContact as Record<string, unknown>;
-    const name = boundedString(observed.name, 200);
-    if (name) observedContact = { name, profileUrl: safeLinkedInUrl(observed.profileUrl, "profile") };
-  }
-  return {
-    source: LINKEDIN_EXTENSION_SOURCE,
-    version: 1,
-    statusId,
-    occurredAt,
-    kind,
-    code,
-    message,
-    observedContact,
-  };
 }
 
 function safeAvatarUrl(value: unknown): string {
@@ -177,32 +178,72 @@ function parseAttachments(value: unknown): ConversationAttachment[] {
     const item = raw as Record<string, unknown>;
     const label = boundedString(item.label, 300);
     if (!label) return [];
-    return [{
-      id: boundedString(item.id, 200) || `attachment-${index}`,
-      label,
-      kind: attachmentKind(item.kind),
-    }];
+    return [{ id: boundedString(item.id, 200) || `attachment-${index}`, label, kind: attachmentKind(item.kind) }];
   });
+}
+
+export function parseLinkedInExtensionStatus(value: unknown): LinkedInExtensionStatus | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (raw.source !== LINKEDIN_EXTENSION_SOURCE || (raw.version !== 1 && raw.version !== 2)) return null;
+  const statusId = boundedString(raw.statusId, 200);
+  const occurredAt = safeIsoDate(raw.occurredAt);
+  const kind = raw.kind === "success" ? "success" : raw.kind === "error" ? "error" : raw.kind === "info" ? "info" : null;
+  const code = boundedString(raw.code, 100);
+  const message = boundedString(raw.message, 1_000);
+  if (!statusId || !occurredAt || !kind || !code || !message) return null;
+  let observedContact: LinkedInExtensionStatus["observedContact"] = null;
+  if (raw.observedContact && typeof raw.observedContact === "object") {
+    const observed = raw.observedContact as Record<string, unknown>;
+    const name = boundedString(observed.name, 200);
+    if (name) observedContact = { name, profileUrl: safeLinkedInUrl(observed.profileUrl, "profile") };
+  }
+  return { source: LINKEDIN_EXTENSION_SOURCE, version: 2, statusId, occurredAt, kind, code, message, observedContact };
+}
+
+export function parseLinkedInSyncState(value: unknown): LinkedInSyncState | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (raw.source !== LINKEDIN_EXTENSION_SOURCE || raw.version !== 1) return null;
+  const stateId = boundedString(raw.stateId, 200);
+  const occurredAt = safeIsoDate(raw.occurredAt);
+  const code = boundedString(raw.code, 100);
+  const message = boundedString(raw.message, 1_000);
+  if (!stateId || !occurredAt || !code || !message) return null;
+  return {
+    source: LINKEDIN_EXTENSION_SOURCE,
+    version: 1,
+    stateId,
+    occurredAt,
+    enabled: raw.enabled === true,
+    paused: raw.paused === true,
+    permissionGranted: raw.permissionGranted === true,
+    code,
+    message,
+    lastContactName: boundedString(raw.lastContactName, 200),
+    lastMessageCount: typeof raw.lastMessageCount === "number" && Number.isFinite(raw.lastMessageCount) ? Math.max(0, Math.floor(raw.lastMessageCount)) : 0,
+  };
 }
 
 export function parseLinkedInExtensionSnapshot(value: unknown): LinkedInExtensionSnapshot | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
-  if (raw.source !== LINKEDIN_EXTENSION_SOURCE || raw.version !== 1 || !raw.contact || typeof raw.contact !== "object") return null;
+  if (raw.source !== LINKEDIN_EXTENSION_SOURCE || (raw.version !== 1 && raw.version !== 2) || !raw.contact || typeof raw.contact !== "object") return null;
   const contact = raw.contact as Record<string, unknown>;
   const name = boundedString(contact.name, 200);
   const captureId = boundedString(raw.captureId, 200);
   const capturedAt = safeIsoDate(raw.capturedAt);
   if (!name || !captureId || !capturedAt || !Array.isArray(raw.messages)) return null;
-
   const messages = raw.messages.slice(0, 500).flatMap((message, index) => {
     if (!message || typeof message !== "object") return [];
     const item = message as Record<string, unknown>;
     const body = boundedString(item.body, 20_000);
     const attachments = parseAttachments(item.attachments);
     if (!body && !attachments.length) return [];
+    const id = boundedString(item.id, 200) || `${captureId}-message-${index}`;
     return [{
-      id: boundedString(item.id, 200) || `${captureId}-message-${index}`,
+      id,
+      sourceId: boundedString(item.sourceId, 200) || (raw.version === 1 ? id : ""),
       role: item.role === "me" ? "me" as const : "them" as const,
       speaker: boundedString(item.speaker, 200),
       body,
@@ -211,16 +252,17 @@ export function parseLinkedInExtensionSnapshot(value: unknown): LinkedInExtensio
     }];
   });
   if (!messages.length) return null;
-
   return {
     source: LINKEDIN_EXTENSION_SOURCE,
-    version: 1,
+    version: 2,
+    captureMode: raw.captureMode === "automatic" ? "automatic" : "manual",
     captureId,
     capturedAt,
     pageUrl: safeLinkedInUrl(raw.pageUrl, "conversation"),
     contact: {
       name,
       headline: boundedString(contact.headline, 500),
+      company: boundedString(contact.company, 500),
       profileUrl: safeLinkedInUrl(contact.profileUrl, "profile"),
       avatarUrl: safeAvatarUrl(contact.avatarUrl),
     },
@@ -237,80 +279,162 @@ function hashText(value: string): string {
   return (hash >>> 0).toString(36);
 }
 
-function messageFingerprint(message: Pick<Message, "role" | "body" | "createdAt">): string {
-  return `${message.role}|${message.body.trim().replace(/\s+/g, " ").toLowerCase()}|${message.createdAt || "undated"}`;
+function normalizedText(value: string): string {
+  return value.trim().replace(/\s+/g, " ").normalize("NFKC").toLocaleLowerCase();
 }
 
 function normalizedName(value: string): string {
-  return value.trim().replace(/\s+/g, " ").toLowerCase();
+  return normalizedText(value);
 }
 
-export function linkedInSelectionForContact(contact: Contact | null | undefined): LinkedInSelectedContact | null {
-  if (!contact || contact.platform !== "linkedin" || !contact.id.trim() || !contact.name.trim()) return null;
+function messageFingerprint(identity: string, message: Pick<Message, "role" | "body" | "createdAt" | "speaker" | "attachments">): string {
+  const attachmentLabels = (message.attachments ?? []).map((attachment) => normalizedText(attachment.label)).join("|");
+  return [identity, message.role, normalizedText(message.speaker ?? ""), normalizedText(message.body), message.createdAt || "undated", attachmentLabels].join("|");
+}
+
+function snapshotIdentity(snapshot: LinkedInExtensionSnapshot): string {
+  return snapshot.contact.profileUrl || snapshot.pageUrl || normalizedName(snapshot.contact.name);
+}
+
+function newContactId(snapshot: LinkedInExtensionSnapshot): string {
+  const suffix = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${hashText(snapshot.captureId)}`;
+  return `contact-${suffix}`;
+}
+
+function emptyLinkedInContact(snapshot: LinkedInExtensionSnapshot): Contact {
   return {
-    contactId: contact.id.slice(0, 200),
-    name: contact.name.trim().slice(0, 200),
-    profileUrl: safeLinkedInUrl(contact.profileUrl, "profile"),
+    id: newContactId(snapshot),
+    name: snapshot.contact.name,
+    headline: snapshot.contact.headline,
+    company: snapshot.contact.company,
+    profileNotes: "",
+    platform: "linkedin",
+    platformUrl: "",
+    chat: [],
+    documents: [],
+    outcomes: [],
+    retentionDays: 90,
+    profileUrl: snapshot.contact.profileUrl,
+    avatarUrl: snapshot.contact.avatarUrl,
+    conversationUrl: snapshot.pageUrl,
+    source: "linkedin-extension",
+    labels: [],
+    pipelineStage: "inbox",
+    notes: "",
+    snoozedUntil: "",
+    followUpAt: "",
+    archivedAt: "",
+    firstSyncedAt: snapshot.capturedAt,
+    lastSyncedAt: snapshot.capturedAt,
+    lastSyncMessageCount: 0,
+    draftHistory: [],
   };
 }
 
-export function isLinkedInSnapshotForContact(contact: Contact, snapshot: LinkedInExtensionSnapshot): boolean {
-  if (contact.platform !== "linkedin") return false;
-  const selectedProfileUrl = safeLinkedInUrl(contact.profileUrl, "profile");
-  if (selectedProfileUrl && snapshot.contact.profileUrl) return selectedProfileUrl === snapshot.contact.profileUrl;
-  return normalizedName(contact.name) === normalizedName(snapshot.contact.name);
-}
-
-export function mergeLinkedInSnapshotForContact(
-  contacts: Contact[],
-  contactId: string,
-  snapshot: LinkedInExtensionSnapshot,
-): { contacts: Contact[]; contactId: string; importedMessages: number } | null {
-  const existing = contacts.find((item) => item.id === contactId);
-  if (!existing || !isLinkedInSnapshotForContact(existing, snapshot)) return null;
-  const currentMessages = existing.chat;
-  const knownIds = new Set(currentMessages.map((message) => message.id));
-  const knownFingerprints = new Set(currentMessages.map(messageFingerprint));
-  let importedMessages = 0;
+function mergeMessages(contact: Contact, snapshot: LinkedInExtensionSnapshot): { contact: Contact; importedMessages: number } {
+  const identity = snapshotIdentity(snapshot);
+  const knownIds = new Set(contact.chat.map((message) => message.id));
+  const knownFingerprints = new Set(contact.chat.map((message) => messageFingerprint(identity, message)));
   const imported: Message[] = [];
-
-  snapshot.messages.forEach((message) => {
+  for (const message of snapshot.messages) {
     const createdAt = message.createdAt || snapshot.capturedAt;
-    const id = `linkedin-${hashText(`${message.id}|${message.role}|${message.body}|${message.createdAt}`)}`;
+    const visibleTimestamp = message.createdAt || "undated";
     const next: Message = {
-      id,
+      id: `linkedin-${hashText(message.sourceId ? `${identity}|source|${message.sourceId}` : `${identity}|fallback|${message.role}|${message.speaker}|${message.body}|${visibleTimestamp}|${message.attachments.map((item) => item.label).join("|")}`)}`,
       role: message.role,
       body: message.body,
       createdAt,
       speaker: message.speaker,
       attachments: message.attachments,
     };
-    const fingerprint = messageFingerprint(next);
-    if (knownIds.has(id) || knownFingerprints.has(fingerprint)) return;
-    knownIds.add(id);
+    const fingerprint = messageFingerprint(identity, next);
+    if (knownIds.has(next.id) || knownFingerprints.has(fingerprint)) continue;
+    knownIds.add(next.id);
     knownFingerprints.add(fingerprint);
     imported.push(next);
-    importedMessages += 1;
-  });
-
-  const nextContact: Contact = {
-    ...existing,
-    id: existing.id,
-    name: existing.name,
-    headline: snapshot.contact.headline || existing?.headline || "",
-    platform: "linkedin",
-    chat: [...currentMessages, ...imported].slice(-1000),
-    profileUrl: snapshot.contact.profileUrl || existing.profileUrl || "",
-    avatarUrl: snapshot.contact.avatarUrl || existing.avatarUrl || "",
-    conversationUrl: snapshot.pageUrl || existing.conversationUrl || "",
-    lastSyncedAt: snapshot.capturedAt,
-  };
-
+  }
   return {
-    contacts: contacts.map((item) => item.id === existing.id ? nextContact : item),
-    contactId: existing.id,
-    importedMessages,
+    importedMessages: imported.length,
+    contact: {
+      ...contact,
+      name: snapshot.contact.name || contact.name,
+      headline: snapshot.contact.headline || contact.headline,
+      company: snapshot.contact.company || contact.company || "",
+      platform: "linkedin",
+      chat: [...contact.chat, ...imported].slice(-1000),
+      profileUrl: snapshot.contact.profileUrl || contact.profileUrl || "",
+      avatarUrl: snapshot.contact.avatarUrl || contact.avatarUrl || "",
+      conversationUrl: snapshot.pageUrl || contact.conversationUrl || "",
+      source: contact.source ?? "manual",
+      firstSyncedAt: contact.firstSyncedAt || snapshot.capturedAt,
+      lastSyncedAt: snapshot.capturedAt,
+      lastSyncMessageCount: snapshot.messages.length,
+    },
   };
+}
+
+export function upsertLinkedInSnapshot(contacts: Contact[], snapshot: LinkedInExtensionSnapshot): LinkedInSnapshotUpsertResult {
+  const linkedInContacts = contacts.filter((contact) => contact.platform === "linkedin");
+  const profileMatches = snapshot.contact.profileUrl
+    ? linkedInContacts.filter((contact) => normalizeLinkedInProfileUrl(contact.profileUrl) === snapshot.contact.profileUrl)
+    : [];
+  if (profileMatches.length > 1) return { contacts, contactId: "", importedMessages: 0, action: "ambiguous", matchedBy: "ambiguous" };
+
+  let existing = profileMatches[0];
+  let matchedBy: LinkedInSnapshotUpsertResult["matchedBy"] = existing ? "profile" : "new";
+  if (!existing && snapshot.pageUrl) {
+    const conversationMatches = linkedInContacts.filter((contact) => normalizeLinkedInConversationUrl(contact.conversationUrl) === snapshot.pageUrl);
+    if (conversationMatches.length > 1) return { contacts, contactId: "", importedMessages: 0, action: "ambiguous", matchedBy: "ambiguous" };
+    existing = conversationMatches[0];
+    if (existing) matchedBy = "conversation";
+  }
+
+  if (!existing) {
+    const nameMatches = linkedInContacts.filter((contact) => {
+      if (normalizedName(contact.name) !== normalizedName(snapshot.contact.name)) return false;
+      const existingProfile = normalizeLinkedInProfileUrl(contact.profileUrl);
+      const existingConversation = normalizeLinkedInConversationUrl(contact.conversationUrl);
+      if (snapshot.contact.profileUrl && existingProfile && snapshot.contact.profileUrl !== existingProfile) return false;
+      if (snapshot.pageUrl && existingConversation && snapshot.pageUrl !== existingConversation) return false;
+      return true;
+    });
+    if (nameMatches.length === 1) {
+      existing = nameMatches[0];
+      matchedBy = "name";
+    } else if (nameMatches.length > 1 && !snapshot.contact.profileUrl && !snapshot.pageUrl) {
+      return { contacts, contactId: "", importedMessages: 0, action: "ambiguous", matchedBy: "ambiguous" };
+    }
+  }
+
+  if (!existing) {
+    const created = emptyLinkedInContact(snapshot);
+    const merged = mergeMessages(created, snapshot);
+    return {
+      contacts: [...contacts, { ...merged.contact, source: "linkedin-extension" }],
+      contactId: created.id,
+      importedMessages: merged.importedMessages,
+      action: "created",
+      matchedBy: "new",
+    };
+  }
+
+  const merged = mergeMessages(existing, snapshot);
+  return {
+    contacts: contacts.map((contact) => contact.id === existing?.id ? merged.contact : contact),
+    contactId: existing.id,
+    importedMessages: merged.importedMessages,
+    action: merged.importedMessages ? "updated" : "no-change",
+    matchedBy,
+  };
+}
+
+export function isLinkedInSnapshotForContact(contact: Contact, snapshot: LinkedInExtensionSnapshot): boolean {
+  if (contact.platform !== "linkedin") return false;
+  const profileUrl = normalizeLinkedInProfileUrl(contact.profileUrl);
+  if (profileUrl && snapshot.contact.profileUrl) return profileUrl === snapshot.contact.profileUrl;
+  const conversationUrl = normalizeLinkedInConversationUrl(contact.conversationUrl);
+  if (conversationUrl && snapshot.pageUrl) return conversationUrl === snapshot.pageUrl;
+  return normalizedName(contact.name) === normalizedName(snapshot.contact.name);
 }
 
 export function contactStage(contact: Contact): PipelineStage {

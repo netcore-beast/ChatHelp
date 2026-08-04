@@ -7,16 +7,14 @@ interface ExtractionResult {
   ok: boolean;
   error?: { code: string; message: string; observedContact: { name: string; profileUrl: string } | null };
   snapshot?: {
-    contact: { name: string; profileUrl: string };
-    messages: Array<{ role: "me" | "them"; body: string }>;
+    captureMode: "automatic" | "manual";
+    contact: { name: string; profileUrl: string; company: string };
+    messages: Array<{ sourceId: string; role: "me" | "them"; body: string }>;
   };
 }
 
-type Extractor = (contact: { name: string; profileUrl: string }) => ExtractionResult;
-
-function extractor(): Extractor {
-  return (globalThis as typeof globalThis & { extractOpenLinkedInConversation: Extractor }).extractOpenLinkedInConversation;
-}
+type Extractor = (captureMode?: "automatic" | "manual") => ExtractionResult;
+const extractor = () => (globalThis as typeof globalThis & { extractOpenLinkedInConversation: Extractor }).extractOpenLinkedInConversation;
 
 beforeAll(() => {
   runInThisContext(readFileSync("extension/extractor.js", "utf8"), { filename: "extension/extractor.js" });
@@ -24,71 +22,62 @@ beforeAll(() => {
 
 beforeEach(() => {
   document.body.innerHTML = "";
-  Object.defineProperty(Element.prototype, "getClientRects", {
-    configurable: true,
-    value: () => [{ width: 100, height: 20 }],
-  });
+  Object.defineProperty(Element.prototype, "getClientRects", { configurable: true, value: () => [{ width: 100, height: 20 }] });
   window.history.replaceState({}, "", "/messaging/thread/amit-dabral/?trk=remove");
 });
 
-describe("LinkedIn visible conversation DOM extraction", () => {
-  it("captures modern visible message markup after a canonical profile match", () => {
-    document.body.innerHTML = `
-      <header data-view-name="message-thread-header">
-        <a href="https://www.linkedin.com/in/amit-dabral/?trk=message" aria-label="View Amit Dabral's profile">
-          <span data-anonymize="person-name">Amit Dabral</span>
-        </a>
-        <div data-view-name="message-thread-subtitle">Founder at Example Co</div>
-      </header>
-      <section data-view-name="message-thread-list">
-        <div data-view-name="message-event" data-event-urn="urn:li:msg:1">
-          <span data-view-name="message-sender">Amit Dabral</span>
-          <div data-view-name="message-bubble">Thanks for connecting.</div>
-          <time datetime="2026-08-02T12:00:00.000Z"></time>
-        </div>
-        <div data-view-name="message-event" data-event-urn="urn:li:msg:2" data-sender-is-viewer="true">
-          <span data-view-name="message-sender">You</span>
-          <div data-view-name="message-bubble">Glad to connect, Amit.</div>
-          <time datetime="2026-08-02T12:01:00.000Z"></time>
-        </div>
-      </section>`;
+describe("LinkedIn visible central conversation extraction", () => {
+  it("reads the visible header first and captures modern message markup", () => {
+    document.body.innerHTML = [
+      '<main>',
+      '<header data-view-name="message-thread-header">',
+      '<a href="https://www.linkedin.com/in/amit-dabral/?trk=message" aria-label="View Amit Dabral profile"><span data-anonymize="person-name">Amit Dabral</span></a>',
+      '<div data-view-name="message-thread-subtitle">Founder at Example Co</div>',
+      '</header>',
+      '<section data-view-name="message-thread-list">',
+      '<div data-view-name="message-event" data-event-urn="urn:li:msg:1"><span data-view-name="message-sender">Amit Dabral</span><div data-view-name="message-bubble">Thanks for connecting.</div><time datetime="2026-08-02T12:00:00.000Z"></time></div>',
+      '<div data-view-name="message-event" data-event-urn="urn:li:msg:2" data-sender-is-viewer="true"><span data-view-name="message-sender">You</span><div data-view-name="message-bubble">Glad to connect, Amit.</div></div>',
+      '</section>',
+      '</main>',
+    ].join("");
 
-    const result = extractor()({ name: "Amit Dabral", profileUrl: "https://linkedin.com/in/amit-dabral" });
+    const result = extractor()("automatic");
     expect(result.ok).toBe(true);
-    expect(result.snapshot?.contact).toMatchObject({ name: "Amit Dabral", profileUrl: "https://www.linkedin.com/in/amit-dabral/" });
+    expect(result.snapshot).toMatchObject({
+      captureMode: "automatic",
+      contact: { name: "Amit Dabral", profileUrl: "https://www.linkedin.com/in/amit-dabral/", company: "Example Co" },
+    });
     expect(result.snapshot?.messages).toEqual([
-      expect.objectContaining({ role: "them", body: "Thanks for connecting." }),
-      expect.objectContaining({ role: "me", body: "Glad to connect, Amit." }),
+      expect.objectContaining({ sourceId: "urn:li:msg:1", role: "them", body: "Thanks for connecting." }),
+      expect.objectContaining({ sourceId: "urn:li:msg:2", role: "me", body: "Glad to connect, Amit." }),
     ]);
   });
 
-  it("returns only the observed identity and does not traverse messages on a mismatch", () => {
-    document.body.innerHTML = `
-      <header class="msg-thread__top-card">
-        <a class="msg-thread__link-to-profile" href="https://www.linkedin.com/in/amit-dabral/">Amit Dabral · 1st degree connection</a>
-      </header>
-      <section class="msg-s-message-list-container">
-        <div class="msg-s-message-list__event"><p>Private message text must not be read.</p></div>
-      </section>`;
-    const thread = document.querySelector(".msg-s-message-list-container") as Element;
-    const messageTraversal = vi.spyOn(thread, "querySelectorAll");
-
-    const result = extractor()({ name: "Mathieu Henry", profileUrl: "" });
-    expect(result).toMatchObject({
-      ok: false,
-      error: {
-        code: "contact_mismatch",
-        observedContact: { name: "Amit Dabral", profileUrl: "https://www.linkedin.com/in/amit-dabral/" },
-      },
-    });
-    expect(messageTraversal).not.toHaveBeenCalled();
+  it("excludes background conversation-list previews and side panels", () => {
+    document.body.innerHTML = [
+      '<aside aria-label="Conversation list"><header data-view-name="message-thread-header"><a href="/in/wrong-person/"><span data-anonymize="person-name">Wrong Person</span></a></header><section data-view-name="message-thread-list"><div data-view-name="message-event"><div data-view-name="message-bubble">Private preview must be excluded.</div></div></section></aside>',
+      '<main>',
+      '<header data-view-name="message-thread-header"><a href="/in/mathieu-henry/"><span data-anonymize="person-name">Mathieu Henry</span></a></header>',
+      '<section data-view-name="message-thread-list"><div data-view-name="message-event" data-event-urn="central-1"><span data-view-name="message-sender">Mathieu Henry</span><div data-view-name="message-bubble">Visible central message.</div></div></section>',
+      '<aside><div data-view-name="message-event"><div data-view-name="message-bubble">Recommendation text.</div></div></aside>',
+      '</main>',
+    ].join("");
+    const result = extractor()();
+    expect(result.snapshot?.messages.map((message) => message.body)).toEqual(["Visible central message."]);
   });
 
-  it("explains when the matched conversation has no visible message nodes", () => {
-    document.body.innerHTML = `
-      <header class="msg-thread__top-card"><a class="msg-thread__link-to-profile" href="https://www.linkedin.com/in/mathieu-henry/">Mathieu Henry</a></header>
-      <section class="msg-s-message-list-container"><div>Scroll to the conversation</div></section>`;
-    const result = extractor()({ name: "Mathieu Henry", profileUrl: "https://www.linkedin.com/in/mathieu-henry/" });
-    expect(result).toMatchObject({ ok: false, error: { code: "messages_not_found" } });
+  it("does not traverse message nodes when the visible header is unsupported", () => {
+    document.body.innerHTML = '<main><section class="msg-s-message-list-container"><div class="msg-s-message-list__event"><p>Message body must not be read.</p></div></section></main>';
+    const thread = document.querySelector(".msg-s-message-list-container") as Element;
+    const traversal = vi.spyOn(thread, "querySelectorAll");
+    const result = extractor()();
+    expect(result).toMatchObject({ ok: false, error: { code: "contact_header_not_found" } });
+    expect(traversal).not.toHaveBeenCalled();
+  });
+
+  it("reports no conversation and unsupported empty-message states safely", () => {
+    expect(extractor()()).toMatchObject({ ok: false, error: { code: "conversation_not_found" } });
+    document.body.innerHTML = '<main><header class="msg-thread__top-card"><a class="msg-thread__link-to-profile" href="/in/mathieu-henry/">Mathieu Henry</a></header><section class="msg-s-message-list-container"><div>Nothing visible</div></section></main>';
+    expect(extractor()()).toMatchObject({ ok: false, error: { code: "messages_not_found" } });
   });
 });

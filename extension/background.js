@@ -1,12 +1,19 @@
 importScripts("extractor.js");
 
 const APP_URL = "https://chathelp-private-cloud.project-mission-ai.workers.dev/";
-const SNAPSHOT_KEY = "pendingLinkedInSnapshot";
-const STATUS_KEY = "pendingLinkedInCaptureStatus";
-const SELECTED_CONTACT_KEY = "selectedLinkedInContact";
+const LINKEDIN_ORIGIN = "https://www.linkedin.com/*";
+const LINKEDIN_MESSAGING = "https://www.linkedin.com/messaging/*";
+const SYNC_SCRIPT_ID = "chathelp-linkedin-auto-sync-v1";
+const SYNC_ENABLED_KEY = "linkedinAutoSyncEnabled";
+const SYNC_PAUSED_KEY = "linkedinAutoSyncPaused";
+const LAST_CONTACT_KEY = "linkedinLastSyncedContact";
+const LAST_MESSAGE_COUNT_KEY = "linkedinLastSyncedMessageCount";
+const MANUAL_SNAPSHOT_KEY = "pendingManualLinkedInSnapshot";
+const MANUAL_STATUS_KEY = "pendingManualLinkedInStatus";
 const SNAPSHOT_EVENT = "CHATHELP_LINKEDIN_SNAPSHOT";
 const STATUS_EVENT = "CHATHELP_LINKEDIN_EXTENSION_STATUS";
-const SELECTED_CONTACT_EVENT = "CHATHELP_SET_SELECTED_LINKEDIN_CONTACT";
+const SYNC_STATE_EVENT = "CHATHELP_LINKEDIN_SYNC_STATE";
+const SYNC_STATE_CHANGED = "CHATHELP_LINKEDIN_SYNC_STATE_CHANGED";
 
 function safeLinkedInUrl(value, prefix) {
   try {
@@ -22,14 +29,6 @@ function safeLinkedInUrl(value, prefix) {
   }
 }
 
-function normalizeSelectedContact(value) {
-  if (!value || typeof value !== "object") return null;
-  const contactId = String(value.contactId || "").trim().slice(0, 200);
-  const name = String(value.name || "").replace(/\s+/g, " ").trim().slice(0, 200);
-  const profileUrl = safeLinkedInUrl(value.profileUrl, "/in/");
-  return contactId && name ? { contactId, name, profileUrl } : null;
-}
-
 function normalizeObservedContact(value) {
   if (!value || typeof value !== "object") return null;
   const name = String(value.name || "").replace(/\s+/g, " ").trim().slice(0, 200);
@@ -40,12 +39,12 @@ function normalizeObservedContact(value) {
 function createStatus(kind, code, message, observedContact = null) {
   return {
     source: "chathelp-linkedin-extension",
-    version: 1,
+    version: 2,
     statusId: `status-${crypto.randomUUID()}`,
     occurredAt: new Date().toISOString(),
-    kind: kind === "success" ? "success" : "error",
-    code: String(code || "capture_error").slice(0, 100),
-    message: String(message || "ChatHelp could not capture this conversation.").replace(/\s+/g, " ").trim().slice(0, 1_000),
+    kind: kind === "success" ? "success" : kind === "error" ? "error" : "info",
+    code: String(code || "sync_status").slice(0, 100),
+    message: String(message || "ChatHelp automatic sync status changed.").replace(/\s+/g, " ").trim().slice(0, 1_000),
     observedContact: normalizeObservedContact(observedContact),
   };
 }
@@ -59,16 +58,36 @@ function isLinkedInConversation(url) {
   }
 }
 
+function isAppSender(sender) {
+  return typeof sender?.url === "string" && sender.url.startsWith(APP_URL);
+}
+
 async function showBadge(text, color, title) {
   await chrome.action.setBadgeText({ text });
   await chrome.action.setBadgeBackgroundColor({ color });
   await chrome.action.setTitle({ title });
-  if (text) setTimeout(() => chrome.action.setBadgeText({ text: "" }).catch(() => undefined), 8_000);
+  if (text && text !== "ON" && text !== "II") setTimeout(() => chrome.action.setBadgeText({ text: "" }).catch(() => undefined), 8_000);
+}
+
+async function queryAppTabs() {
+  return chrome.tabs.query({ url: `${APP_URL}*` });
+}
+
+async function sendStatusToApp(status) {
+  const tabs = await queryAppTabs();
+  await Promise.all(tabs.filter((tab) => tab.id).map((tab) => chrome.tabs.sendMessage(tab.id, { type: STATUS_EVENT, status }).catch(() => undefined)));
+  return tabs.length;
+}
+
+async function sendSnapshotToApp(snapshot) {
+  const tabs = await queryAppTabs();
+  await Promise.all(tabs.filter((tab) => tab.id).map((tab) => chrome.tabs.sendMessage(tab.id, { type: SNAPSHOT_EVENT, snapshot }).catch(() => undefined)));
+  return tabs.length;
 }
 
 async function openOrFocusChatHelp(snapshot, status) {
-  const matches = await chrome.tabs.query({ url: `${APP_URL}*` });
-  const existing = matches[0];
+  const tabs = await queryAppTabs();
+  const existing = tabs[0];
   if (existing?.id) {
     await chrome.tabs.update(existing.id, { active: true });
     if (typeof existing.windowId === "number") await chrome.windows.update(existing.windowId, { focused: true });
@@ -79,9 +98,144 @@ async function openOrFocusChatHelp(snapshot, status) {
   await chrome.tabs.create({ url: APP_URL });
 }
 
-async function reportFailure(code, message, observedContact = null) {
+async function permissionGranted() {
+  return chrome.permissions.contains({ origins: [LINKEDIN_ORIGIN] });
+}
+
+async function readSyncState(codeOverride = "", messageOverride = "") {
+  const [stored, granted, session] = await Promise.all([
+    chrome.storage.local.get([SYNC_ENABLED_KEY, SYNC_PAUSED_KEY]),
+    permissionGranted(),
+    chrome.storage.session.get([LAST_CONTACT_KEY, LAST_MESSAGE_COUNT_KEY]),
+  ]);
+  const requestedEnabled = stored[SYNC_ENABLED_KEY] === true;
+  const enabled = requestedEnabled && granted;
+  const paused = enabled && stored[SYNC_PAUSED_KEY] === true;
+  let code = codeOverride;
+  let message = messageOverride;
+  if (!code) {
+    if (requestedEnabled && !granted) {
+      code = "permission_removed";
+      message = "Permission removed. Automatic LinkedIn sync has stopped.";
+    } else if (!enabled) {
+      code = granted ? "automatic_sync_disabled" : "permission_required";
+      message = granted ? "Automatic sync disabled." : "Permission required to enable automatic LinkedIn conversation sync.";
+    } else if (paused) {
+      code = "sync_paused";
+      message = "Sync paused.";
+    } else {
+      code = "waiting_for_conversation";
+      message = "Waiting for a LinkedIn conversation you manually open.";
+    }
+  }
+  return {
+    source: "chathelp-linkedin-extension",
+    version: 1,
+    stateId: `state-${crypto.randomUUID()}`,
+    occurredAt: new Date().toISOString(),
+    enabled,
+    paused,
+    permissionGranted: granted,
+    code,
+    message,
+    lastContactName: String(session[LAST_CONTACT_KEY] || "").slice(0, 200),
+    lastMessageCount: Number.isFinite(session[LAST_MESSAGE_COUNT_KEY]) ? Math.max(0, Math.floor(session[LAST_MESSAGE_COUNT_KEY])) : 0,
+  };
+}
+
+async function ensureSyncContentScript() {
+  const registered = await chrome.scripting.getRegisteredContentScripts({ ids: [SYNC_SCRIPT_ID] });
+  if (registered.length) return;
+  await chrome.scripting.registerContentScripts([{
+    id: SYNC_SCRIPT_ID,
+    matches: [LINKEDIN_MESSAGING],
+    js: ["extractor.js", "linkedin-sync.js"],
+    runAt: "document_idle",
+    world: "ISOLATED",
+    persistAcrossSessions: true,
+  }]);
+}
+
+async function removeSyncContentScript() {
+  await chrome.scripting.unregisterContentScripts({ ids: [SYNC_SCRIPT_ID] }).catch(() => undefined);
+}
+
+async function messagingTabs() {
+  return chrome.tabs.query({ url: LINKEDIN_MESSAGING });
+}
+
+async function broadcastLinkedInState(state) {
+  const tabs = await messagingTabs().catch(() => []);
+  await Promise.all(tabs.filter((tab) => tab.id).map((tab) => chrome.tabs.sendMessage(tab.id, { type: SYNC_STATE_CHANGED, state }).catch(() => undefined)));
+}
+
+async function publishState(state) {
+  const tabs = await queryAppTabs();
+  await Promise.all(tabs.filter((tab) => tab.id).map((tab) => chrome.tabs.sendMessage(tab.id, { type: SYNC_STATE_EVENT, state }).catch(() => undefined)));
+  await broadcastLinkedInState(state);
+  await showBadge(state.enabled ? state.paused ? "II" : "ON" : "", state.paused ? "#8a6417" : "#245f47", state.message);
+  return state;
+}
+
+async function injectSyncIntoOpenMessagingTabs() {
+  const tabs = await messagingTabs();
+  await Promise.all(tabs.filter((tab) => tab.id).map((tab) => chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    files: ["extractor.js", "linkedin-sync.js"],
+    world: "ISOLATED",
+  }).catch(() => undefined)));
+}
+
+async function enableAutomaticSync() {
+  // This is intentionally the first awaited API call. The app bridge forwards
+  // the user's button gesture so Chrome can display its own permission prompt.
+  const granted = await chrome.permissions.request({ origins: [LINKEDIN_ORIGIN] });
+  if (!granted) return publishState(await readSyncState("permission_required", "Permission was not granted. Automatic sync remains off."));
+  await chrome.storage.local.set({ [SYNC_ENABLED_KEY]: true, [SYNC_PAUSED_KEY]: false });
+  await ensureSyncContentScript();
+  await injectSyncIntoOpenMessagingTabs();
+  return publishState(await readSyncState("waiting_for_conversation", "Automatic sync enabled. Waiting for a LinkedIn conversation you manually open."));
+}
+
+async function pauseAutomaticSync() {
+  const state = await readSyncState();
+  if (!state.enabled) return publishState(state);
+  await chrome.storage.local.set({ [SYNC_PAUSED_KEY]: true });
+  return publishState(await readSyncState("sync_paused", "Sync paused."));
+}
+
+async function resumeAutomaticSync() {
+  if (!await permissionGranted()) {
+    await chrome.storage.local.set({ [SYNC_ENABLED_KEY]: false, [SYNC_PAUSED_KEY]: false });
+    return publishState(await readSyncState("permission_removed", "Permission removed. Enable automatic sync again to continue."));
+  }
+  await chrome.storage.local.set({ [SYNC_ENABLED_KEY]: true, [SYNC_PAUSED_KEY]: false });
+  await ensureSyncContentScript();
+  await injectSyncIntoOpenMessagingTabs();
+  return publishState(await readSyncState("waiting_for_conversation", "Automatic sync resumed. Waiting for a LinkedIn conversation you manually open."));
+}
+
+async function disableAutomaticSync() {
+  await chrome.storage.local.set({ [SYNC_ENABLED_KEY]: false, [SYNC_PAUSED_KEY]: false });
+  const stoppingState = await readSyncState("automatic_sync_disabled", "Automatic sync disabled and LinkedIn permission revoked.");
+  await broadcastLinkedInState(stoppingState);
+  await removeSyncContentScript();
+  await chrome.permissions.remove({ origins: [LINKEDIN_ORIGIN] });
+  return publishState(await readSyncState("automatic_sync_disabled", "Automatic sync disabled and LinkedIn permission revoked."));
+}
+
+async function restoreSyncRegistration() {
+  const state = await readSyncState();
+  if (state.enabled) {
+    await ensureSyncContentScript();
+    await injectSyncIntoOpenMessagingTabs();
+  } else await removeSyncContentScript();
+  await publishState(state);
+}
+
+async function reportManualFailure(code, message, observedContact = null) {
   const status = createStatus("error", code, message, observedContact);
-  await chrome.storage.local.set({ [STATUS_KEY]: status });
+  await chrome.storage.session.set({ [MANUAL_STATUS_KEY]: status });
   await showBadge("!", "#a33a2b", status.message);
   await openOrFocusChatHelp(null, status);
 }
@@ -89,72 +243,113 @@ async function reportFailure(code, message, observedContact = null) {
 chrome.action.onClicked.addListener(async (tab) => {
   try {
     if (!tab.id || !isLinkedInConversation(tab.url)) {
-      await reportFailure("not_linkedin_conversation", "Open a LinkedIn Messaging conversation, then click ChatHelp again.");
-      return;
-    }
-    const stored = await chrome.storage.session.get(SELECTED_CONTACT_KEY);
-    const selectedContact = normalizeSelectedContact(stored[SELECTED_CONTACT_KEY]);
-    if (!selectedContact) {
-      await reportFailure("contact_not_selected", "Add and select a LinkedIn contact in ChatHelp before capturing messages.");
+      await reportManualFailure("not_linkedin_conversation", "Open a LinkedIn Messaging conversation, then click ChatHelp for a one-time capture.");
       return;
     }
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: globalThis.extractOpenLinkedInConversation,
-      args: [selectedContact],
+      args: ["manual"],
     });
     const extraction = results[0]?.result;
     if (!extraction?.ok) {
-      await reportFailure(
-        extraction?.error?.code || "capture_error",
-        extraction?.error?.message || "ChatHelp could not capture this conversation.",
-        extraction?.error?.observedContact || null,
-      );
+      await reportManualFailure(extraction?.error?.code || "capture_error", extraction?.error?.message || "ChatHelp could not capture this conversation.", extraction?.error?.observedContact || null);
       return;
     }
     const snapshot = extraction.snapshot;
-    if (!snapshot?.messages?.length) {
-      await reportFailure("messages_not_found", "No visible LinkedIn messages were captured. Keep at least one message visible and try again.", snapshot?.contact);
-      return;
-    }
-    const status = createStatus("success", "capture_complete", `Captured ${snapshot.messages.length} visible message${snapshot.messages.length === 1 ? "" : "s"} for ${snapshot.contact.name}.`);
-    await chrome.storage.local.set({ [SNAPSHOT_KEY]: snapshot, [STATUS_KEY]: status });
+    const status = createStatus("success", "manual_capture_complete", `Captured ${snapshot.messages.length} visible message${snapshot.messages.length === 1 ? "" : "s"} for ${snapshot.contact.name}.`);
+    await chrome.storage.session.set({ [MANUAL_SNAPSHOT_KEY]: snapshot, [MANUAL_STATUS_KEY]: status });
     await showBadge("OK", "#245f47", status.message);
     await openOrFocusChatHelp(snapshot, status);
   } catch (error) {
-    await reportFailure("unexpected_capture_error", error instanceof Error ? error.message : "ChatHelp could not capture this conversation.");
+    await reportManualFailure("unexpected_capture_error", error instanceof Error ? error.message : "ChatHelp could not capture this conversation.");
   }
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === SELECTED_CONTACT_EVENT) {
-    const selectedContact = normalizeSelectedContact(message.contact);
-    const operation = selectedContact
-      ? chrome.storage.session.set({ [SELECTED_CONTACT_KEY]: selectedContact })
-      : chrome.storage.session.remove(SELECTED_CONTACT_KEY);
-    operation.then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: false }));
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "CHATHELP_LINKEDIN_SYNC_COMMAND" && isAppSender(sender)) {
+    const operation = message.command === "enable" ? enableAutomaticSync()
+      : message.command === "pause" ? pauseAutomaticSync()
+      : message.command === "resume" ? resumeAutomaticSync()
+      : message.command === "disable" ? disableAutomaticSync()
+      : readSyncState().then(publishState);
+    operation.then((state) => sendResponse({ ok: true, state })).catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "Sync control failed." }));
     return true;
   }
-  if (message?.type === "CHATHELP_GET_PENDING_CAPTURE") {
-    chrome.storage.local.get([SNAPSHOT_KEY, STATUS_KEY]).then((result) => sendResponse({
-      snapshot: result[SNAPSHOT_KEY] || null,
-      status: result[STATUS_KEY] || null,
+  if (message?.type === "CHATHELP_GET_SYNC_STATE") {
+    readSyncState().then((state) => sendResponse(state)).catch(() => sendResponse(null));
+    return true;
+  }
+  if (message?.type === "CHATHELP_GET_PENDING_CAPTURE" && isAppSender(sender)) {
+    chrome.storage.session.get([MANUAL_SNAPSHOT_KEY, MANUAL_STATUS_KEY]).then((result) => sendResponse({
+      snapshot: result[MANUAL_SNAPSHOT_KEY] || null,
+      status: result[MANUAL_STATUS_KEY] || null,
     }));
     return true;
   }
-  if (message?.type === "CHATHELP_ACK_PENDING_SNAPSHOT" && typeof message.captureId === "string") {
-    chrome.storage.local.get(SNAPSHOT_KEY).then(async (result) => {
-      if (result[SNAPSHOT_KEY]?.captureId === message.captureId) await chrome.storage.local.remove(SNAPSHOT_KEY);
+  if (message?.type === "CHATHELP_ACK_PENDING_SNAPSHOT" && typeof message.captureId === "string" && isAppSender(sender)) {
+    chrome.storage.session.get(MANUAL_SNAPSHOT_KEY).then(async (result) => {
+      if (result[MANUAL_SNAPSHOT_KEY]?.captureId === message.captureId) await chrome.storage.session.remove(MANUAL_SNAPSHOT_KEY);
       sendResponse({ ok: true });
     });
     return true;
   }
-  if (message?.type === "CHATHELP_ACK_PENDING_STATUS" && typeof message.statusId === "string") {
-    chrome.storage.local.get(STATUS_KEY).then(async (result) => {
-      if (result[STATUS_KEY]?.statusId === message.statusId) await chrome.storage.local.remove(STATUS_KEY);
+  if (message?.type === "CHATHELP_ACK_PENDING_STATUS" && typeof message.statusId === "string" && isAppSender(sender)) {
+    chrome.storage.session.get(MANUAL_STATUS_KEY).then(async (result) => {
+      if (result[MANUAL_STATUS_KEY]?.statusId === message.statusId) await chrome.storage.session.remove(MANUAL_STATUS_KEY);
       sendResponse({ ok: true });
     });
+    return true;
+  }
+  if (message?.type === "CHATHELP_AUTO_SYNC_STATUS" && isLinkedInConversation(sender?.tab?.url || sender?.url)) {
+    readSyncState().then(async (state) => {
+      if (!state.enabled || state.paused) {
+        sendResponse({ ok: false, ignored: true });
+        return;
+      }
+      const errorCodes = new Set(["conversation_not_found", "contact_header_not_found", "contact_name_not_found", "messages_not_found", "linkedin_layout_unsupported"]);
+      const status = createStatus(errorCodes.has(message.code) ? "error" : "info", message.code, message.message, message.observedContact || null);
+      await sendStatusToApp(status);
+      sendResponse({ ok: true });
+    }).catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "Status handoff failed." }));
+    return true;
+  }
+  if (message?.type === "CHATHELP_AUTO_SYNC_SNAPSHOT" && isLinkedInConversation(sender?.tab?.url || sender?.url)) {
+    readSyncState().then(async (state) => {
+      if (!state.enabled || state.paused || !message.snapshot || message.snapshot.captureMode !== "automatic") {
+        sendResponse({ ok: false, ignored: true });
+        return;
+      }
+      const snapshot = message.snapshot;
+      const delivered = await sendSnapshotToApp(snapshot);
+      if (!delivered) {
+        await showBadge("APP", "#8a6417", "Open ChatHelp to receive synchronized conversations.");
+        sendResponse({ ok: false, delivered: false });
+        return;
+      }
+      await chrome.storage.session.set({
+        [LAST_CONTACT_KEY]: String(snapshot.contact?.name || "").slice(0, 200),
+        [LAST_MESSAGE_COUNT_KEY]: Array.isArray(snapshot.messages) ? snapshot.messages.length : 0,
+      });
+      const nextState = await readSyncState("conversation_synchronized", `Synchronized ${snapshot.contact?.name || "the open contact"} and ${snapshot.messages?.length || 0} visible messages.`);
+      await publishState(nextState);
+      sendResponse({ ok: true, delivered: true });
+    }).catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "Snapshot handoff failed." }));
     return true;
   }
   return false;
 });
+
+chrome.permissions.onRemoved.addListener((permissions) => {
+  if (!(permissions.origins || []).includes(LINKEDIN_ORIGIN)) return;
+  chrome.storage.local.set({ [SYNC_ENABLED_KEY]: false, [SYNC_PAUSED_KEY]: false }).then(async () => {
+    await removeSyncContentScript();
+    const state = await readSyncState("permission_removed", "Permission removed. Automatic LinkedIn sync has stopped.");
+    await publishState(state);
+    await sendStatusToApp(createStatus("error", "permission_removed", state.message));
+  });
+});
+
+chrome.runtime.onInstalled.addListener(() => { void restoreSyncRegistration(); });
+chrome.runtime.onStartup.addListener(() => { void restoreSyncRegistration(); });
+void restoreSyncRegistration();
