@@ -23,12 +23,19 @@
     return (result >>> 0).toString(36);
   };
 
-  const sendStatus = (code, message, observedContact = null) => chrome.runtime.sendMessage({
-    type: AUTO_STATUS,
-    code,
-    message,
-    observedContact,
-  }).catch(() => undefined);
+  const sendStatus = async (code, message, observedContact = null) => {
+    try {
+      await chrome.runtime.sendMessage({
+        type: AUTO_STATUS,
+        code,
+        message,
+        observedContact,
+      });
+    } catch {
+      // Reloading an unpacked extension invalidates the previous isolated
+      // content-script context. It cannot report through that same context.
+    }
+  };
 
   const snapshotSignature = (snapshot) => hash(JSON.stringify({
     pageUrl: snapshot.pageUrl,

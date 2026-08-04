@@ -14,6 +14,8 @@ const MANUAL_SNAPSHOT_KEY = "pendingManualLinkedInSnapshot";
 const MANUAL_STATUS_KEY = "pendingManualLinkedInStatus";
 const SNAPSHOT_EVENT = "CHATHELP_LINKEDIN_SNAPSHOT";
 const STATUS_EVENT = "CHATHELP_LINKEDIN_EXTENSION_STATUS";
+let syncContentScriptRegistration = null;
+let syncRestoreOperation = null;
 const SYNC_STATE_EVENT = "CHATHELP_LINKEDIN_SYNC_STATE";
 const SYNC_STATE_CHANGED = "CHATHELP_LINKEDIN_SYNC_STATE_CHANGED";
 
@@ -146,16 +148,25 @@ async function readSyncState(codeOverride = "", messageOverride = "") {
 }
 
 async function ensureSyncContentScript() {
-  const registered = await chrome.scripting.getRegisteredContentScripts({ ids: [SYNC_SCRIPT_ID] });
-  if (registered.length) return;
-  await chrome.scripting.registerContentScripts([{
-    id: SYNC_SCRIPT_ID,
-    matches: [LINKEDIN_MESSAGING],
-    js: ["extractor.js", "linkedin-sync.js"],
-    runAt: "document_idle",
-    world: "ISOLATED",
-    persistAcrossSessions: true,
-  }]);
+  if (syncContentScriptRegistration) return syncContentScriptRegistration;
+  const operation = (async () => {
+    const registered = await chrome.scripting.getRegisteredContentScripts({ ids: [SYNC_SCRIPT_ID] });
+    if (registered.length) return;
+    await chrome.scripting.registerContentScripts([{
+      id: SYNC_SCRIPT_ID,
+      matches: [LINKEDIN_MESSAGING],
+      js: ["extractor.js", "linkedin-sync.js"],
+      runAt: "document_idle",
+      world: "ISOLATED",
+      persistAcrossSessions: true,
+    }]);
+  })();
+  syncContentScriptRegistration = operation;
+  try {
+    await operation;
+  } finally {
+    if (syncContentScriptRegistration === operation) syncContentScriptRegistration = null;
+  }
 }
 
 async function removeSyncContentScript() {
@@ -233,6 +244,15 @@ async function restoreSyncRegistration() {
     await injectSyncIntoOpenMessagingTabs();
   } else await removeSyncContentScript();
   await publishState(state);
+}
+
+function restoreSyncRegistrationSafely() {
+  if (syncRestoreOperation) return;
+  const operation = restoreSyncRegistration();
+  syncRestoreOperation = operation;
+  void operation.catch(() => undefined).finally(() => {
+    if (syncRestoreOperation === operation) syncRestoreOperation = null;
+  });
 }
 
 async function reportManualFailure(code, message, observedContact = null) {
@@ -349,9 +369,9 @@ chrome.permissions.onRemoved.addListener((permissions) => {
     const state = await readSyncState("permission_removed", "Permission removed. Automatic LinkedIn sync has stopped.");
     await publishState(state);
     await sendStatusToApp(createStatus("error", "permission_removed", state.message));
-  });
+  }).catch(() => undefined);
 });
 
-chrome.runtime.onInstalled.addListener(() => { void restoreSyncRegistration(); });
-chrome.runtime.onStartup.addListener(() => { void restoreSyncRegistration(); });
-void restoreSyncRegistration();
+chrome.runtime.onInstalled.addListener(restoreSyncRegistrationSafely);
+chrome.runtime.onStartup.addListener(restoreSyncRegistrationSafely);
+restoreSyncRegistrationSafely();

@@ -9,7 +9,7 @@ export const LINKEDIN_EXTENSION_STATUS_ACK_EVENT = "CHATHELP_ACK_LINKEDIN_EXTENS
 export const LINKEDIN_SYNC_COMMAND_EVENT = "CHATHELP_LINKEDIN_SYNC_COMMAND";
 export const LINKEDIN_SYNC_STATE_EVENT = "CHATHELP_LINKEDIN_SYNC_STATE";
 export const LINKEDIN_EXTENSION_SOURCE = "chathelp-linkedin-extension";
-export const REQUIRED_LINKEDIN_EXTENSION_VERSION = "0.4.1";
+export const REQUIRED_LINKEDIN_EXTENSION_VERSION = "0.4.2";
 
 export type LinkedInCaptureMethod = "detecting" | "extension" | "screen" | "manual";
 export type LinkedInSyncCommand = "enable" | "pause" | "resume" | "disable" | "refresh";

@@ -7,12 +7,14 @@ const APP_URL = "https://chathelp-private-cloud.project-mission-ai.workers.dev/"
 const TESTING_APP_URL = "https://testing-chathelp-private-cloud.project-mission-ai.workers.dev/";
 const LINKEDIN_URL = "https://www.linkedin.com/messaging/thread/amit/";
 
-function loadBackground(options: { granted?: boolean; extraction?: unknown } = {}) {
+function loadBackground(options: { granted?: boolean; extraction?: unknown; enabled?: boolean } = {}) {
   const localData: Record<string, unknown> = {};
   const sessionData: Record<string, unknown> = {};
+  if (options.enabled) localData.linkedinAutoSyncEnabled = true;
   let granted = options.granted === true;
   let clickHandler: ((tab: { id?: number; url?: string }) => Promise<void>) | null = null;
   let runtimeListener: ((message: Record<string, unknown>, sender: Record<string, unknown>, sendResponse: (response: unknown) => void) => boolean) | null = null;
+  let installedListener: (() => void) | null = null;
   const removedListeners: Array<(permissions: { origins?: string[] }) => void> = [];
   const registeredScripts: Array<Record<string, unknown>> = [];
   const sendToTab = vi.fn(async (...args: [number, unknown]) => { void args; });
@@ -37,6 +39,9 @@ function loadBackground(options: { granted?: boolean; extraction?: unknown } = {
     return true;
   });
   const registerContentScripts = vi.fn(async (scripts: Array<Record<string, unknown>>) => {
+    if (registeredScripts.some((registered) => scripts.some((script) => registered.id === script.id))) {
+      throw new Error("Duplicate script ID 'chathelp-linkedin-auto-sync-v1'");
+    }
     registeredScripts.splice(0, registeredScripts.length, ...scripts);
   });
   const unregisterContentScripts = vi.fn(async () => {
@@ -68,7 +73,7 @@ function loadBackground(options: { granted?: boolean; extraction?: unknown } = {
     windows: { update: vi.fn(async () => undefined) },
     scripting: {
       executeScript,
-      getRegisteredContentScripts: vi.fn(async () => registeredScripts),
+      getRegisteredContentScripts: vi.fn(async () => [...registeredScripts]),
       registerContentScripts,
       unregisterContentScripts,
     },
@@ -81,7 +86,7 @@ function loadBackground(options: { granted?: boolean; extraction?: unknown } = {
     },
     runtime: {
       onMessage: { addListener: (listener: typeof runtimeListener) => { runtimeListener = listener; } },
-      onInstalled: { addListener: vi.fn() },
+      onInstalled: { addListener: (listener: () => void) => { installedListener = listener; } },
       onStartup: { addListener: vi.fn() },
     },
   };
@@ -94,6 +99,7 @@ function loadBackground(options: { granted?: boolean; extraction?: unknown } = {
   });
   return {
     clickHandler: () => clickHandler,
+    fireInstalled: () => installedListener?.(),
     dispatch,
     executeScript,
     localData,
@@ -108,6 +114,13 @@ function loadBackground(options: { granted?: boolean; extraction?: unknown } = {
 }
 
 describe("ChatHelp extension automatic sync coordinator", () => {
+  it("serializes reload restoration so a dynamic script ID is registered only once", async () => {
+    const harness = loadBackground({ granted: true, enabled: true });
+    harness.fireInstalled();
+    await vi.waitFor(() => expect(harness.registerContentScripts).toHaveBeenCalledTimes(1));
+    expect(harness.registeredScripts).toHaveLength(1);
+  });
+
   it("requests only the optional LinkedIn origin and registers an isolated messaging script", async () => {
     const harness = loadBackground();
     const response = await harness.dispatch(

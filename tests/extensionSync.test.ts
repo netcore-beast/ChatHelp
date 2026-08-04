@@ -110,4 +110,13 @@ describe("LinkedIn isolated automatic-sync observer", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     expect(extractionCount).toBe(0);
   });
+
+  it("does not create an unhandled rejection when a reload invalidates the old extension context", async () => {
+    sendMessage.mockImplementation(() => {
+      throw new Error("Extension context invalidated.");
+    });
+    runInThisContext(readFileSync("extension/linkedin-sync.js", "utf8"), { filename: "extension/linkedin-sync.js" });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(extractionCount).toBe(0);
+  });
 });
