@@ -67,6 +67,8 @@ describe("Cloudflare private inference Worker", () => {
     const [, input] = env.AI.run.mock.calls[0];
     expect(input.messages[0].content).toContain("conversation-list previews");
     expect(input.messages[0].content).toContain("job cards");
+    expect(input.messages[0].content).toContain("HIGHEST PRIORITY REPLY TARGET");
+    expect(input.messages[0].content).toContain("previous local draft suggestions");
     expect(input.messages[1].content).toContain("Relevant conversation text only");
     expect(input.messages[1].content).not.toContain(ACCESS_CODE);
   });

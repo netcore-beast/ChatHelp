@@ -1,5 +1,6 @@
 import { createEmptyWorkspace, normalizeWorkspaceModelId, type Contact, type ConversationAttachment, type Message, type PipelineStage, type WorkspaceData } from "./workspaceTypes";
 import { PIPELINE_STAGES } from "./linkedinExtension";
+import { repairLegacyLinkedInMessages } from "./messageDedup";
 
 const DB_NAME = "chathelp-secure";
 const DB_VERSION = 1;
@@ -274,7 +275,7 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
         profileNotes: typeof contact.profileNotes === "string" ? contact.profileNotes.slice(0, 20_000) : "",
         platform: contact.platform === "gmail" || contact.platform === "outlook" || contact.platform === "other" ? contact.platform : "linkedin",
         platformUrl: typeof contact.platformUrl === "string" ? contact.platformUrl.slice(0, 2000) : "",
-        chat: Array.isArray(contact.chat) ? contact.chat.slice(-1000).map((message, messageIndex) => normalizeMessage(message as Partial<Message>, messageIndex)) : [],
+        chat: Array.isArray(contact.chat) ? repairLegacyLinkedInMessages(contact.chat.slice(-1000).map((message, messageIndex) => normalizeMessage(message as Partial<Message>, messageIndex))) : [],
         documents: Array.isArray(contact.documents) ? contact.documents.slice(0, 50).map((document, documentIndex) => {
           const item = document as Record<string, unknown>;
           return { id: typeof item.id === "string" ? item.id : "document-" + documentIndex, name: typeof item.name === "string" ? item.name.slice(0, 200) : "Imported context", text: typeof item.text === "string" ? item.text.slice(0, 100_000) : "", createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString() };

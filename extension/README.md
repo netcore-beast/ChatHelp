@@ -23,7 +23,7 @@ When automatic sync is enabled, ChatHelp reads the visible LinkedIn conversation
 ## Local testing
 
 1. Open 'chrome://extensions', enable Developer mode, and choose **Load unpacked**.
-2. Select this 'extension' directory. When updating, click **Reload** and confirm version '0.4.0', then reload the ChatHelp tab.
+2. Select this 'extension' directory. When updating, click **Reload** and confirm version '0.4.1', then reload the ChatHelp tab.
 3. In desktop ChatHelp, click **Enable automatic LinkedIn conversation sync** and approve Chrome's LinkedIn host prompt.
 4. Manually open conversations at LinkedIn Messaging. ChatHelp's local inbox grows only from conversations you open.
 5. Test Pause, Resume, and Disable. Disable must revoke the optional host permission.

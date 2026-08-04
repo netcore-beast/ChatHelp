@@ -399,7 +399,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       return;
     }
     if (!extensionConnected) {
-      setExtensionStatus("The current ChatHelp Chrome extension is not connected. Reload version 0.4.0 in chrome://extensions, then reload this tab.");
+      setExtensionStatus("The current ChatHelp Chrome extension is not connected. Reload version 0.4.1 in chrome://extensions, then reload this tab.");
       return;
     }
     if (command === "enable") setExtensionStatus("Waiting for Chrome's LinkedIn permission decision…");

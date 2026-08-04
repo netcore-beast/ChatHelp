@@ -31,6 +31,23 @@ describe("encrypted device vault", () => {
     });
   });
 
+  it("repairs legacy LinkedIn capture duplicates while normalizing the encrypted vault", () => {
+    const workspace = normalizeWorkspace({
+      contacts: [{
+        id: "amit",
+        name: "Amit Dabral",
+        platform: "linkedin",
+        chat: [
+          { id: "linkedin-old1", role: "them", speaker: "Amit Dabral", body: "That would be great", createdAt: "2026-08-02T11:55:00.000Z" },
+          { id: "linkedin-old2", role: "them", speaker: "Amit Dabral", body: "That would be great", createdAt: "2026-08-02T11:57:00.000Z" },
+        ],
+      }],
+    });
+
+    expect(workspace.contacts[0].chat).toHaveLength(1);
+    expect(workspace.contacts[0].chat[0].body).toBe("That would be great");
+  });
+
   it("stores no readable workspace content and opens without a passphrase", async () => {
     const workspace = createEmptyWorkspace();
     workspace.guidance.objective = "CONFIDENTIAL-ACQUISITION-PLAN";

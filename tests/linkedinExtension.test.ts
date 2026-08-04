@@ -86,7 +86,8 @@ describe("automatic LinkedIn extension import", () => {
   });
 
   it("validates extension versions, status, and visible sync state", () => {
-    expect(isCurrentLinkedInExtensionVersion("0.4.0")).toBe(true);
+    expect(isCurrentLinkedInExtensionVersion("0.4.1")).toBe(true);
+    expect(isCurrentLinkedInExtensionVersion("0.4.0")).toBe(false);
     expect(isCurrentLinkedInExtensionVersion("0.3.9")).toBe(false);
     expect(parseLinkedInExtensionStatus({
       source: LINKEDIN_EXTENSION_SOURCE,
@@ -209,6 +210,49 @@ describe("automatic LinkedIn extension import", () => {
     expect(second.contacts[0].chat).toHaveLength(1);
   });
 
+  it("repairs 0.4.0 transient-ID duplicates and adopts the new stable fallback IDs", () => {
+    const snapshot = parseLinkedInExtensionSnapshot(rawSnapshot) as LinkedInExtensionSnapshot;
+    const legacy = contact({
+      chat: [
+        { id: "linkedin-old1", role: "them", speaker: "Alex Morgan", body: "That would be great", createdAt: "2026-08-02T11:55:00.000Z", attachments: [] },
+        { id: "linkedin-old2", role: "them", speaker: "Alex Morgan", body: "That would be great", createdAt: "2026-08-02T11:57:00.000Z", attachments: [] },
+        { id: "linkedin-old3", role: "them", speaker: "Alex Morgan", body: "What inspired you to focus on zero trust?", createdAt: "2026-08-02T11:58:00.000Z", attachments: [] },
+        { id: "linkedin-old4", role: "them", speaker: "Alex Morgan", body: "What inspired you to focus on zero trust?", createdAt: "2026-08-02T11:59:00.000Z", attachments: [] },
+      ],
+    });
+    const currentSnapshot = {
+      ...snapshot,
+      captureId: "capture-repair",
+      capturedAt: "2026-08-02T12:00:00.000Z",
+      messages: [
+        { id: "visible-message-great1", sourceId: "", role: "them" as const, speaker: "Alex Morgan", body: "That would be great", createdAt: "", attachments: [] },
+        { id: "visible-message-question1", sourceId: "", role: "them" as const, speaker: "Alex Morgan", body: "What inspired you to focus on zero trust?", createdAt: "", attachments: [] },
+      ],
+    };
+
+    const result = upsertLinkedInSnapshot([legacy], currentSnapshot);
+    expect(result.importedMessages).toBe(0);
+    expect(result.contacts[0].chat.map((message) => message.body)).toEqual([
+      "That would be great",
+      "What inspired you to focus on zero trust?",
+    ]);
+    expect(result.contacts[0].chat.every((message) => message.id.startsWith("linkedin-fallback-"))).toBe(true);
+  });
+
+  it("preserves genuinely repeated undated messages with distinct fallback occurrences", () => {
+    const snapshot = parseLinkedInExtensionSnapshot(rawSnapshot) as LinkedInExtensionSnapshot;
+    const repeated = {
+      ...snapshot,
+      messages: [
+        { id: "visible-message-thanks1", sourceId: "", role: "them" as const, speaker: "Alex Morgan", body: "Thanks", createdAt: "", attachments: [] },
+        { id: "visible-message-thanks2", sourceId: "", role: "them" as const, speaker: "Alex Morgan", body: "Thanks", createdAt: "", attachments: [] },
+      ],
+    };
+    const result = upsertLinkedInSnapshot([], repeated);
+    expect(result.contacts[0].chat).toHaveLength(2);
+    expect(new Set(result.contacts[0].chat.map((message) => message.id)).size).toBe(2);
+  });
+
   it("surfaces snoozed and due conversations locally", () => {
     const now = new Date("2026-08-02T12:00:00.000Z").getTime();
     const base = contact();
@@ -226,7 +270,7 @@ describe("automatic LinkedIn extension import", () => {
     ]);
     expect(manifest.optional_host_permissions).toEqual(["https://www.linkedin.com/*"]);
     expect(manifest.host_permissions.some((permission) => permission.includes("linkedin.com"))).toBe(false);
-    expect(manifest.version).toBe("0.4.0");
+    expect(manifest.version).toBe("0.4.1");
     expect(manifest.permissions).not.toContain("cookies");
     expect(manifest.permissions).not.toContain("webRequest");
     expect(sources).not.toMatch(/chrome\.cookies|chrome\.webRequest|chrome\.debugger|fetch\s*\(|XMLHttpRequest|\.click\s*\(/);

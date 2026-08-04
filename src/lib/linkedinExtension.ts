@@ -1,4 +1,5 @@
 import type { Contact, ConversationAttachment, Message, PipelineStage } from "./workspaceTypes";
+import { isLegacyLinkedInMessageId, linkedInMessageContentKey, repairLegacyLinkedInMessages } from "./messageDedup";
 
 export const LINKEDIN_SNAPSHOT_EVENT = "CHATHELP_LINKEDIN_SNAPSHOT";
 export const LINKEDIN_SNAPSHOT_REQUEST_EVENT = "CHATHELP_REQUEST_LINKEDIN_SNAPSHOT";
@@ -8,7 +9,7 @@ export const LINKEDIN_EXTENSION_STATUS_ACK_EVENT = "CHATHELP_ACK_LINKEDIN_EXTENS
 export const LINKEDIN_SYNC_COMMAND_EVENT = "CHATHELP_LINKEDIN_SYNC_COMMAND";
 export const LINKEDIN_SYNC_STATE_EVENT = "CHATHELP_LINKEDIN_SYNC_STATE";
 export const LINKEDIN_EXTENSION_SOURCE = "chathelp-linkedin-extension";
-export const REQUIRED_LINKEDIN_EXTENSION_VERSION = "0.4.0";
+export const REQUIRED_LINKEDIN_EXTENSION_VERSION = "0.4.1";
 
 export type LinkedInCaptureMethod = "detecting" | "extension" | "screen" | "manual";
 export type LinkedInSyncCommand = "enable" | "pause" | "resume" | "disable" | "refresh";
@@ -333,14 +334,19 @@ function emptyLinkedInContact(snapshot: LinkedInExtensionSnapshot): Contact {
 
 function mergeMessages(contact: Contact, snapshot: LinkedInExtensionSnapshot): { contact: Contact; importedMessages: number } {
   const identity = snapshotIdentity(snapshot);
-  const knownIds = new Set(contact.chat.map((message) => message.id));
-  const knownFingerprints = new Set(contact.chat.map((message) => messageFingerprint(identity, message)));
+  const repairedChat = repairLegacyLinkedInMessages(contact.chat);
+  const knownIds = new Set(repairedChat.map((message) => message.id));
+  const knownFingerprints = new Set(repairedChat.map((message) => messageFingerprint(identity, message)));
   const imported: Message[] = [];
   for (const message of snapshot.messages) {
     const createdAt = message.createdAt || snapshot.capturedAt;
     const visibleTimestamp = message.createdAt || "undated";
+    const extractorFingerprintId = /^visible-message-[a-z0-9]+$/i.test(message.id) ? message.id : "";
+    const fallbackIdentity = extractorFingerprintId || `${message.role}|${message.speaker}|${message.body}|${visibleTimestamp}|${message.attachments.map((item) => item.label).join("|")}`;
     const next: Message = {
-      id: `linkedin-${hashText(message.sourceId ? `${identity}|source|${message.sourceId}` : `${identity}|fallback|${message.role}|${message.speaker}|${message.body}|${visibleTimestamp}|${message.attachments.map((item) => item.label).join("|")}`)}`,
+      id: message.sourceId
+        ? `linkedin-source-${hashText(`${identity}|source|${message.sourceId}`)}`
+        : `linkedin-fallback-${hashText(`${identity}|fallback|${fallbackIdentity}`)}`,
       role: message.role,
       body: message.body,
       createdAt,
@@ -348,7 +354,13 @@ function mergeMessages(contact: Contact, snapshot: LinkedInExtensionSnapshot): {
       attachments: message.attachments,
     };
     const fingerprint = messageFingerprint(identity, next);
-    if (knownIds.has(next.id) || knownFingerprints.has(fingerprint)) continue;
+    if (knownIds.has(next.id) || (!extractorFingerprintId && knownFingerprints.has(fingerprint))) continue;
+    const legacyMatchIndex = repairedChat.findIndex((existingMessage) => isLegacyLinkedInMessageId(existingMessage.id) && linkedInMessageContentKey(existingMessage) === linkedInMessageContentKey(next));
+    if (legacyMatchIndex >= 0) {
+      repairedChat[legacyMatchIndex] = { ...repairedChat[legacyMatchIndex], id: next.id };
+      knownIds.add(next.id);
+      continue;
+    }
     knownIds.add(next.id);
     knownFingerprints.add(fingerprint);
     imported.push(next);
@@ -361,7 +373,7 @@ function mergeMessages(contact: Contact, snapshot: LinkedInExtensionSnapshot): {
       headline: snapshot.contact.headline || contact.headline,
       company: snapshot.contact.company || contact.company || "",
       platform: "linkedin",
-      chat: [...contact.chat, ...imported].slice(-1000),
+      chat: [...repairedChat, ...imported].slice(-1000),
       profileUrl: snapshot.contact.profileUrl || contact.profileUrl || "",
       avatarUrl: snapshot.contact.avatarUrl || contact.avatarUrl || "",
       conversationUrl: snapshot.pageUrl || contact.conversationUrl || "",

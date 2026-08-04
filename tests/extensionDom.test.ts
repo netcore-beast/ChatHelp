@@ -9,7 +9,7 @@ interface ExtractionResult {
   snapshot?: {
     captureMode: "automatic" | "manual";
     contact: { name: string; profileUrl: string; company: string };
-    messages: Array<{ sourceId: string; role: "me" | "them"; body: string }>;
+    messages: Array<{ id: string; sourceId: string; role: "me" | "them"; body: string }>;
   };
 }
 
@@ -64,6 +64,26 @@ describe("LinkedIn visible central conversation extraction", () => {
     ].join("");
     const result = extractor()();
     expect(result.snapshot?.messages.map((message) => message.body)).toEqual(["Visible central message."]);
+  });
+
+  it("does not treat regenerated ordinary DOM IDs as stable message identifiers", () => {
+    const renderConversation = (domId: string) => {
+      document.body.innerHTML = [
+        '<main>',
+        '<header data-view-name="message-thread-header"><a href="/in/amit-dabral/"><span data-anonymize="person-name">Amit Dabral</span></a></header>',
+        '<section data-view-name="message-thread-list">',
+        `<div id="${domId}" data-view-name="message-event"><span data-view-name="message-sender">Amit Dabral</span><div data-view-name="message-bubble">That would be great</div></div>`,
+        '</section>',
+        '</main>',
+      ].join("");
+      return extractor()().snapshot?.messages[0];
+    };
+
+    const first = renderConversation("ember-transient-101");
+    const second = renderConversation("ember-transient-947");
+    expect(first?.sourceId).toBe("");
+    expect(second?.sourceId).toBe("");
+    expect(second?.id).toBe(first?.id);
   });
 
   it("does not traverse message nodes when the visible header is unsupported", () => {

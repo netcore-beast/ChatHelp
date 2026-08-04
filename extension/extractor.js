@@ -133,6 +133,7 @@ globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConvers
   ].join(","))).filter(visible);
   const seenNodes = new Set();
   const seenMessages = new Set();
+  const fallbackOccurrences = new Map();
   const messages = [];
   let lastSpeaker = "";
 
@@ -177,8 +178,14 @@ globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConvers
     const timeElement = eventNode.querySelector("time, [datetime], .msg-s-message-group__timestamp, .msg-s-event-listitem__time-stamp");
     const rawDate = timeElement?.getAttribute("datetime") || "";
     const parsedDate = rawDate && !Number.isNaN(new Date(rawDate).getTime()) ? new Date(rawDate).toISOString() : "";
-    const sourceId = cleanText(eventNode.getAttribute("data-event-urn") || eventNode.id, 200);
-    const fingerprint = [contactIdentity, role, normalized(speaker), normalized(body), parsedDate, attachments.map((item) => normalized(item.label)).join("|")].join("|");
+    // LinkedIn can regenerate ordinary DOM element IDs during SPA rerenders.
+    // Trust only message-specific data identifiers; otherwise use a stable
+    // content fingerprint with an occurrence number for repeated short texts.
+    const sourceId = cleanText(eventNode.getAttribute("data-event-urn") || eventNode.getAttribute("data-message-id") || eventNode.getAttribute("data-urn"), 200);
+    const fingerprintBase = [contactIdentity, role, normalized(speaker), normalized(body), parsedDate || "undated", attachments.map((item) => normalized(item.label)).join("|")].join("|");
+    const occurrence = (fallbackOccurrences.get(fingerprintBase) || 0) + 1;
+    fallbackOccurrences.set(fingerprintBase, occurrence);
+    const fingerprint = `${fingerprintBase}|occurrence:${occurrence}`;
     if (seenMessages.has(sourceId || fingerprint)) return;
     seenMessages.add(sourceId || fingerprint);
     messages.push({

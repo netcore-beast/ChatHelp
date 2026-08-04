@@ -142,6 +142,38 @@ Hi Amit, hope you're doing well. I noticed your profile and thought it would be 
     expect(prompt.length).toBeLessThanOrEqual(24_000);
   });
 
+  it("makes the newest unanswered incoming message authoritative and rejects prior draft suggestions", () => {
+    const groundedInput: PrivateAiInput = {
+      ...input(),
+      contact: {
+        ...input().contact,
+        name: "Amit Dabral",
+        chat: [
+          { id: "m1", role: "them", speaker: "Amit Dabral", body: "Zero trust networks are interesting.", createdAt: "2026-08-02T11:50:00.000Z" },
+          { id: "m2", role: "me", speaker: "You", body: "I would be happy to discuss some considerations.", createdAt: "2026-08-02T11:52:00.000Z" },
+          { id: "linkedin-old1", role: "them", speaker: "Amit Dabral", body: "That would be great", createdAt: "2026-08-02T11:55:00.000Z" },
+          { id: "linkedin-old2", role: "them", speaker: "Amit Dabral", body: "That would be great", createdAt: "2026-08-02T11:57:00.000Z" },
+          { id: "linkedin-old3", role: "them", speaker: "Amit Dabral", body: "But can you tell me what inspired you to go for zero trust networks?", createdAt: "2026-08-02T11:59:00.000Z" },
+        ],
+        draftHistory: [{
+          id: "draft-set-1",
+          agenda: "Keep the conversation moving",
+          drafts: ["Hi Amit, what zero trust challenges are you trying to address?", "I can share a few case studies."],
+          createdAt: "2026-08-02T11:58:00.000Z",
+        }],
+      },
+      latestQuestion: "Keep the conversation moving.",
+    };
+
+    const prompt = buildPrompt(groundedInput);
+    expect(prompt).toContain("HIGHEST PRIORITY REPLY TARGET");
+    expect(prompt).toContain("The latest actual message is an unanswered incoming message from CONTACT");
+    expect(prompt).toContain("Amit Dabral: But can you tell me what inspired you to go for zero trust networks?");
+    expect(prompt.match(/Amit Dabral: That would be great/g)).toHaveLength(1);
+    expect(prompt).toContain("PREVIOUS LOCAL DRAFT SUGGESTIONS (rejected for regeneration)");
+    expect(prompt).toContain("Previous suggestion 1: Hi Amit, what zero trust challenges are you trying to address?");
+  });
+
   it("removes leaked style headings and formal Dear greetings from cloud drafts", () => {
     const drafts = parseDrafts(JSON.stringify([
       "Warm and Concise, Acknowledging Contact and Suggesting Low-Pressure Next Step Dear Ankush, thanks for reaching out.",
