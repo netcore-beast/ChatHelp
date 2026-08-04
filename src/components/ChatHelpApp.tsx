@@ -5,8 +5,8 @@ import { applyRetention } from "@/lib/retention";
 import { buildOutcomeSummary, containsLinkedInPageNoise, isConversationCapture, isLikelyFullLinkedInPageCapture, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
 import { captureVisibleScreen, cropImageToRegion, extractTextFromImage, type NormalizedCropRegion } from "@/lib/localOcr";
 import { CLOUDFLARE_MODEL_NAME, generatePrivateDrafts } from "@/lib/privateAi";
-import { PLAYBOOK_BACKUP_MAX_BYTES, parsePlaybookBackup, serializePlaybookBackup } from "@/lib/playbookTransfer";
 import { PLATFORM_OPTIONS, safePlatformUrl } from "@/lib/platforms";
+import { createRulesDocumentDownload, mergeRulesDocument } from "@/lib/rulesDocument";
 import {
   LINKEDIN_EXTENSION_SOURCE,
   LINKEDIN_EXTENSION_STATUS_ACK_EVENT,
@@ -275,7 +275,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     resolve: (region: NormalizedCropRegion | null) => void;
   } | null>(null);
   const documentRef = useRef<HTMLInputElement>(null);
-  const playbookFileRef = useRef<HTMLInputElement>(null);
+  const rulesFileRef = useRef<HTMLInputElement>(null);
   const chatPasteRef = useRef<HTMLTextAreaElement>(null);
   const agendaRef = useRef<HTMLTextAreaElement>(null);
   const snoozeRef = useRef<HTMLInputElement>(null);
@@ -504,35 +504,50 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     if (await persistWorkspaceNow()) setPlaybookStatus("All four messaging playbooks were saved in the encrypted local vault.");
   }
 
-  function downloadMessagingPlaybooks() {
-    const json = serializePlaybookBackup(workspace.guidance, workspace.inboxRole);
-    const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `chathelp-messaging-playbooks-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
-    setPlaybookStatus("Downloaded playbook settings only. Contacts, conversations, credentials, and the vault were excluded.");
-  }
-
-  async function uploadMessagingPlaybooks(file: File) {
+  function downloadCurrentRules() {
     setPlaybookStatus("");
     try {
-      if (file.size > PLAYBOOK_BACKUP_MAX_BYTES) throw new Error("Playbook settings files must be 512 KB or smaller.");
-      const imported = parsePlaybookBackup(await file.text());
-      const nextWorkspace = { ...workspaceRef.current, guidance: imported.guidance, inboxRole: imported.inboxRole };
+      const download = createRulesDocumentDownload(workspace.guidance.selectedRole, selectedSettingsPlaybook.boundaries);
+      const url = URL.createObjectURL(new Blob([download.text], { type: "text/plain;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = download.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      setPlaybookStatus(`Downloaded the current ${workspace.guidance.selectedRole} reply rules as text.`);
+    } catch (error) {
+      setAppError(formatError(error));
+    }
+  }
+
+  async function uploadRulesDocument(file: File) {
+    setPlaybookStatus("");
+    try {
+      const currentWorkspace = workspaceRef.current;
+      const role = currentWorkspace.guidance.selectedRole;
+      const mergedRules = await mergeRulesDocument(currentWorkspace.guidance.playbooks[role].boundaries, file);
+      const nextWorkspace = {
+        ...currentWorkspace,
+        guidance: {
+          ...currentWorkspace.guidance,
+          playbooks: {
+            ...currentWorkspace.guidance.playbooks,
+            [role]: { ...currentWorkspace.guidance.playbooks[role], boundaries: mergedRules },
+          },
+        },
+      };
       workspaceRef.current = nextWorkspace;
       setWorkspace(nextWorkspace);
       setDrafts([]);
       setDraftError("");
       setAiStatus("");
-      if (await persistWorkspaceNow(nextWorkspace)) setPlaybookStatus("Uploaded and encrypted all four messaging playbooks on this device.");
+      if (await persistWorkspaceNow(nextWorkspace)) setPlaybookStatus(`Loaded ${file.name} into the ${role} reply rules and encrypted the combined text in the local vault.`);
     } catch (error) {
       setAppError(formatError(error));
     } finally {
-      if (playbookFileRef.current) playbookFileRef.current.value = "";
+      if (rulesFileRef.current) rulesFileRef.current.value = "";
     }
   }
 
@@ -899,7 +914,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
             <label className="search-field"><span className="sr-only">Search conversations</span><input aria-label="Search conversations" value={contactSearch} onChange={(event) => setContactSearch(event.target.value)} placeholder="Search conversations" /></label>
             {inboxView === "inbox" && <label className="inbox-role-select"><span>Your role or team</span><select aria-label="Your role or team" value={workspace.inboxRole} onChange={(event) => changeInboxRole(event.target.value as MessagingRole)}>{MESSAGING_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>}
 
-            <section className={"sync-card sync-" + (syncState?.enabled ? syncState.paused ? "paused" : "on" : "off")} aria-labelledby="sync-card-title">
+            {inboxView !== "settings" && <section className={"sync-card sync-" + (syncState?.enabled ? syncState.paused ? "paused" : "on" : "off")} aria-labelledby="sync-card-title">
               <div className="sync-card-heading"><span className="sync-dot" /><div><strong id="sync-card-title">{automaticSyncLabel}</strong><small role="status" aria-live="polite">{extensionStatus}</small></div></div>
               {captureEnvironment.isMobile ? <p>Automatic LinkedIn sync is desktop-only. Manual paste and import remain available.</p> : <>
                 {!syncState?.enabled && <button className="primary" disabled={!extensionConnected} onClick={() => controlAutomaticSync("enable")}>Enable automatic LinkedIn conversation sync</button>}
@@ -909,7 +924,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 {manualCaptureHelp && <p className="manual-capture-help">Open the conversation in LinkedIn and click the ChatHelp extension icon once. This fallback works without enabling automatic sync and never sends a message.</p>}
               </>}
               <p className="sync-disclosure">When automatic sync is enabled, ChatHelp reads the visible LinkedIn conversation you manually open. It does not scan the inbox, access LinkedIn cookies, open conversations, or send messages.</p>
-            </section>
+            </section>}
 
             <div className="inbox-filter-row">
               <select aria-label="Inbox filter" value={inboxFilter} onChange={(event) => setInboxFilter(event.target.value as InboxFilter)}>{INBOX_FILTERS.map((filter) => <option key={filter.value} value={filter.value}>{filter.label}</option>)}</select>
@@ -962,12 +977,12 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 <label>Your relationship goal<textarea aria-label="Your relationship goal" maxLength={PLAYBOOK_GOAL_MAX_CHARS} value={selectedSettingsPlaybook.objective} onChange={(event) => updateSelectedPlaybook("objective", event.target.value)} /><small>{selectedSettingsPlaybook.objective.length.toLocaleString()} / {PLAYBOOK_GOAL_MAX_CHARS.toLocaleString()} characters</small></label>
                 <label>How your messages should sound<input maxLength={PLAYBOOK_VOICE_MAX_CHARS} value={workspace.guidance.voice} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: event.target.value.slice(0, PLAYBOOK_VOICE_MAX_CHARS) } }))} /></label>
                 <label>Rules every reply must follow<textarea aria-label="Rules every reply must follow" maxLength={PLAYBOOK_RULES_MAX_CHARS} value={selectedSettingsPlaybook.boundaries} onChange={(event) => updateSelectedPlaybook("boundaries", event.target.value)} /><small>{selectedSettingsPlaybook.boundaries.length.toLocaleString()} / {PLAYBOOK_RULES_MAX_CHARS.toLocaleString()} characters</small></label>
-                <input ref={playbookFileRef} hidden type="file" accept=".json,application/json" onChange={(event) => event.target.files?.[0] && void uploadMessagingPlaybooks(event.target.files[0])} />
-                <div className="playbook-actions"><button type="button" className="primary" onClick={() => void saveMessagingPlaybooks()}>Save playbook settings</button><button type="button" onClick={() => playbookFileRef.current?.click()}>Upload settings</button><button type="button" onClick={downloadMessagingPlaybooks}>Download settings</button></div>
-                <p className="section-explainer">Uploads and downloads contain only these four role playbooks and the shared message voice—never contacts, conversations, credentials, or access codes.</p>
+                <input ref={rulesFileRef} hidden type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" onChange={(event) => event.target.files?.[0] && void uploadRulesDocument(event.target.files[0])} />
+                <div className="playbook-actions"><button type="button" className="primary" onClick={() => void saveMessagingPlaybooks()}>Save playbook settings</button><button type="button" onClick={() => rulesFileRef.current?.click()}>Upload rules document</button><button type="button" onClick={downloadCurrentRules}>Download rules</button></div>
+                <p className="section-explainer">Type rules above, upload a plain-text or Markdown document, or use both. Uploaded text is appended to existing rules for the selected role and saved in the encrypted local vault. Download exports the current combined rules field as a text file.</p>
                 {playbookStatus && <p className="status" role="status" aria-live="polite">{playbookStatus}</p>}
               </section>
-              <section className="panel-card"><p className="eyebrow">CLOUDFLARE PRIVATE AI</p><h3>Draft-generation consent</h3><div className="provider-summary"><span>Same-origin endpoint</span><strong>{CLOUDFLARE_MODEL_NAME}</strong><small>Conversation text is sent only when you click Generate.</small></div><label>Cloud access code · session-only by default<input type="password" autoComplete="off" value={cloudAccessCode} onChange={(event) => { const nextCode = event.target.value.slice(0, 200); setCloudAccessCode(nextCode); if (workspace.cloudInference.rememberAccessToken) updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, accessToken: nextCode } })); }} placeholder="Enter the code yourself" /></label><label className="consent-check"><input type="checkbox" checked={workspace.cloudInference.rememberAccessToken} onChange={(event) => { const rememberAccessToken = event.target.checked; updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, rememberAccessToken, accessToken: rememberAccessToken ? cloudAccessCode : "" } })); }} /><span>Remember this access code in the encrypted vault.</span></label><label className="consent-check"><input type="checkbox" checked={Boolean(workspace.cloudInference.consentedAt)} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, consentedAt: event.target.checked ? new Date().toISOString() : "" } }))} /><span>I understand that relevant visible conversation text, my guidance, and my objective will be sent to ChatHelp&apos;s authenticated Cloudflare Worker only when I request drafts. Screenshots, cookies, the full vault, and access credentials are not included in the AI request.</span></label></section>
+              <section className="panel-card"><p className="eyebrow">CLOUDFLARE PRIVATE AI</p><h3>Draft-generation consent</h3><div className="provider-summary"><span>Automatic two-model review</span><strong>{CLOUDFLARE_MODEL_NAME}</strong><small>Llama prepares candidates and GPT-OSS checks them against the conversation and playbook before returning the final three. Conversation text is sent to both models only when you click Generate.</small></div><label>Cloud access code · session-only by default<input type="password" autoComplete="off" value={cloudAccessCode} onChange={(event) => { const nextCode = event.target.value.slice(0, 200); setCloudAccessCode(nextCode); if (workspace.cloudInference.rememberAccessToken) updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, accessToken: nextCode } })); }} placeholder="Enter the code yourself" /></label><label className="consent-check"><input type="checkbox" checked={workspace.cloudInference.rememberAccessToken} onChange={(event) => { const rememberAccessToken = event.target.checked; updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, rememberAccessToken, accessToken: rememberAccessToken ? cloudAccessCode : "" } })); }} /><span>Remember this access code in the encrypted vault.</span></label><label className="consent-check"><input type="checkbox" checked={Boolean(workspace.cloudInference.consentedAt)} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, consentedAt: event.target.checked ? new Date().toISOString() : "" } }))} /><span>I understand that relevant visible conversation text, my guidance, and my objective will be sent to ChatHelp&apos;s authenticated Cloudflare Worker and processed by both configured Cloudflare-hosted models only when I request drafts. Screenshots, cookies, the full vault, and access credentials are not included in the AI request.</span></label></section>
             </div>
           </section> : <section className={"conversation-column" + (!mobileConversationOpen ? " mobile-conversation-hidden" : "")}>
             {contact ? <>

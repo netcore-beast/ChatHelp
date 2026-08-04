@@ -130,7 +130,7 @@ export interface WorkspaceData {
   aiUsage: AiUsageEntry[];
 }
 
-export const CLOUDFLARE_MODEL_ID = "cloud:cloudflare:gpt-oss-120b";
+export const CLOUDFLARE_MODEL_ID = "cloud:cloudflare:auto-llama-3.1-8b-gpt-oss-120b";
 export const DEFAULT_MODEL_ID = CLOUDFLARE_MODEL_ID;
 
 export function normalizeWorkspaceModelId(): string {

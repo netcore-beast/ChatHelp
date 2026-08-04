@@ -28,7 +28,7 @@ export interface CloudDraftRequest {
 
 export const CPU_FALLBACK_MODEL_ID = "cpu:qwen2.5-0.5b-instruct-q4";
 export const CPU_FALLBACK_MODEL_NAME = "Qwen 2.5 0.5B · private CPU/WASM";
-export const CLOUDFLARE_MODEL_NAME = "GPT-OSS 120B · Cloudflare Workers AI";
+export const CLOUDFLARE_MODEL_NAME = "Auto · Llama 3.1 8B + GPT-OSS 120B";
 export const MAX_CLOUD_PROMPT_CHARS = 180_000;
 export const REPLY_OBJECTIVE_MAX_CHARS = 5_000;
 
@@ -198,7 +198,7 @@ export async function generateWithCloud(
     throw new Error("Enter the ChatHelp cloud access code. It is encrypted inside your vault.");
   }
 
-  onProgress?.("Sending the minimized prompt to Cloudflare Workers AI...");
+  onProgress?.("Running automatic Llama candidate generation and GPT-OSS final review...");
   const response = await request(cloudDraftEndpoint(), {
     method: "POST",
     cache: "no-store",
