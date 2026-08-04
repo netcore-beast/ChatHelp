@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { safeLinkedInProfileUrl } from "@/lib/platforms";
-import { MESSAGING_ROLES, type Contact, type Guidance } from "@/lib/workspaceTypes";
+import { MESSAGING_ROLES, PLAYBOOK_GOAL_MAX_CHARS, PLAYBOOK_RULES_MAX_CHARS, PLAYBOOK_VOICE_MAX_CHARS, type Contact, type Guidance } from "@/lib/workspaceTypes";
 
 interface ProfileDraft {
   name: string;
@@ -113,16 +113,16 @@ export function LinkedInTestWizard({ initialContact, guidance, drafts, aiStatus,
             <p className="eyebrow">STEP 5 OF 6</p><h3>Describe you—the person sending the reply</h3>
             <p>These settings are about you and your communication style. They are not profile details about {name || "the selected contact"}.</p>
             <label>Your role or team<select value={guidance.role} onChange={(event) => onGuidanceChange("role", event.target.value)}>{MESSAGING_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
-            <label>Your relationship goal with {name || "this contact"}<textarea value={guidance.objective} onChange={(event) => onGuidanceChange("objective", event.target.value)} /></label>
-            <label>How your messages should sound<input value={guidance.voice} onChange={(event) => onGuidanceChange("voice", event.target.value)} /></label>
-            <label>Rules every reply must follow<textarea value={guidance.boundaries} onChange={(event) => onGuidanceChange("boundaries", event.target.value)} /></label>
-            <label>What should the next message accomplish?<textarea value={agenda} onChange={(event) => setAgenda(event.target.value.slice(0, 20_000))} placeholder="Answer their question, suggest a short call, and stay warm without sounding sales-driven." /></label>
+            <label>Your relationship goal with {name || "this contact"}<textarea maxLength={PLAYBOOK_GOAL_MAX_CHARS} value={guidance.objective} onChange={(event) => onGuidanceChange("objective", event.target.value)} /></label>
+            <label>How your messages should sound<input maxLength={PLAYBOOK_VOICE_MAX_CHARS} value={guidance.voice} onChange={(event) => onGuidanceChange("voice", event.target.value)} /></label>
+            <label>Rules every reply must follow<textarea maxLength={PLAYBOOK_RULES_MAX_CHARS} value={guidance.boundaries} onChange={(event) => onGuidanceChange("boundaries", event.target.value)} /></label>
+            <label>What should the next message accomplish? (optional)<textarea aria-label="What should the next message accomplish?" maxLength={5_000} value={agenda} onChange={(event) => setAgenda(event.target.value.slice(0, 5_000))} placeholder="Leave blank to use only the conversation, latest message, and playbook rules." /></label>
           </div>}
 
           {step === 5 && <div className="wizard-step">
             <p className="eyebrow">STEP 6 OF 6</p><h3>Generate, review, and hand off manually</h3>
-            <div className="wizard-review"><span><strong>Person</strong>{name || "Not provided"}</span><span><strong>Profile context</strong>{headline || notes ? "Added" : "Optional"}</span><span><strong>Chat</strong>{chatText ? "Ready to import" : "Imported or optional"}</span><span><strong>Goal</strong>{agenda || "Add an agenda before generating"}</span></div>
-            {!generated && <button type="button" className="primary" disabled={!agenda.trim() || !contactId} onClick={async () => { setGenerated(true); await onGenerate(contactId, agenda); }}>Generate 3 private drafts</button>}
+            <div className="wizard-review"><span><strong>Person</strong>{name || "Not provided"}</span><span><strong>Profile context</strong>{headline || notes ? "Added" : "Optional"}</span><span><strong>Chat</strong>{chatText ? "Ready to import" : "Imported or optional"}</span><span><strong>Goal</strong>{agenda || "Use conversation and playbook only"}</span></div>
+            {!generated && <button type="button" className="primary" disabled={!contactId} onClick={async () => { setGenerated(true); await onGenerate(contactId, agenda); }}>Generate 3 private drafts</button>}
             {aiStatus && <p className="status" aria-live="polite">{aiStatus}</p>}
             {generated && !drafts.length && !aiStatus && <p className="status">Cloudflare draft generation is starting…</p>}
             <div className="wizard-drafts">{drafts.map((draft, index) => <article className="draft-card" key={draft + index}><div><span>OPTION {index + 1}</span><button type="button" onClick={() => void navigator.clipboard.writeText(draft)}>Copy</button></div><p>{draft}</p></article>)}</div>

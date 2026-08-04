@@ -42,8 +42,8 @@ describe("role-based messaging playbooks", () => {
     });
 
     expect(prompt).toContain("Role: Network Marketing");
-    expect(prompt).toContain("Objective: NETWORK-ONLY-GOAL");
-    expect(prompt).toContain("Boundaries: NETWORK-ONLY-RULES");
+    expect(prompt).toContain("Relationship goal: NETWORK-ONLY-GOAL");
+    expect(prompt).toContain("Rules every reply must follow:\nNETWORK-ONLY-RULES");
     expect(prompt).not.toContain("HR-ONLY-GOAL");
     expect(prompt).not.toContain("HR-ONLY-RULES");
   });

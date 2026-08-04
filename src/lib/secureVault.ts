@@ -1,4 +1,4 @@
-import { MESSAGING_ROLES, createDefaultMessagingGuidance, createEmptyWorkspace, isMessagingRole, normalizeMessagingRole, normalizeWorkspaceModelId, type Contact, type ConversationAttachment, type Message, type PipelineStage, type RolePlaybooks, type WorkspaceData } from "./workspaceTypes";
+import { MESSAGING_ROLES, PLAYBOOK_GOAL_MAX_CHARS, PLAYBOOK_RULES_MAX_CHARS, PLAYBOOK_VOICE_MAX_CHARS, createDefaultMessagingGuidance, createEmptyWorkspace, isMessagingRole, normalizeMessagingRole, normalizeWorkspaceModelId, type Contact, type ConversationAttachment, type Message, type PipelineStage, type RolePlaybooks, type WorkspaceData } from "./workspaceTypes";
 import { PIPELINE_STAGES } from "./linkedinExtension";
 import { repairLegacyLinkedInMessages } from "./messageDedup";
 
@@ -264,19 +264,19 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
     for (const role of MESSAGING_ROLES) {
       const rawPlaybook = rawPlaybooks[role] && typeof rawPlaybooks[role] === "object" ? rawPlaybooks[role] as Record<string, unknown> : {};
       playbooks[role] = {
-        objective: typeof rawPlaybook.objective === "string" ? rawPlaybook.objective.slice(0, 20_000) : playbooks[role].objective,
-        boundaries: typeof rawPlaybook.boundaries === "string" ? rawPlaybook.boundaries.slice(0, 20_000) : playbooks[role].boundaries,
+        objective: typeof rawPlaybook.objective === "string" ? rawPlaybook.objective.slice(0, PLAYBOOK_GOAL_MAX_CHARS) : playbooks[role].objective,
+        boundaries: typeof rawPlaybook.boundaries === "string" ? rawPlaybook.boundaries.slice(0, PLAYBOOK_RULES_MAX_CHARS) : playbooks[role].boundaries,
       };
     }
   } else {
     playbooks[selectedRole] = {
-      objective: typeof rawGuidance.objective === "string" ? rawGuidance.objective.slice(0, 20_000) : playbooks[selectedRole].objective,
-      boundaries: typeof rawGuidance.boundaries === "string" ? rawGuidance.boundaries.slice(0, 20_000) : playbooks[selectedRole].boundaries,
+      objective: typeof rawGuidance.objective === "string" ? rawGuidance.objective.slice(0, PLAYBOOK_GOAL_MAX_CHARS) : playbooks[selectedRole].objective,
+      boundaries: typeof rawGuidance.boundaries === "string" ? rawGuidance.boundaries.slice(0, PLAYBOOK_RULES_MAX_CHARS) : playbooks[selectedRole].boundaries,
     };
   }
   const guidance = {
     selectedRole,
-    voice: typeof rawGuidance.voice === "string" ? rawGuidance.voice.slice(0, 2_000) : defaults.voice,
+    voice: typeof rawGuidance.voice === "string" ? rawGuidance.voice.slice(0, PLAYBOOK_VOICE_MAX_CHARS) : defaults.voice,
     playbooks,
   };
   const inboxRole = isMessagingRole(source.inboxRole) ? source.inboxRole : selectedRole;

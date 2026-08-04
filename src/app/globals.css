@@ -160,6 +160,9 @@ p.error { margin: 0; padding: .7rem; border-radius: 8px; }
 .attachment-row { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .5rem; }
 .attachment-chip { padding: .25rem .4rem; border: 1px solid #cbd8cf; border-radius: 7px; background: white; }
 .guidance-card { border-top: 4px solid #b78b35; }
+.guidance-card label small, .composer-card label small { display: block; margin-top: .35rem; color: var(--muted); font-size: .68rem; font-weight: 600; line-height: 1.45; }
+.playbook-actions { display: flex; flex-wrap: wrap; gap: .55rem; }
+.playbook-actions button { flex: 1 1 150px; }
 .compose-card { border-top: 4px solid var(--green); }
 .status { margin: 0; padding: .65rem; border-radius: 8px; background: var(--mint); color: var(--green-2); font-size: .78rem; }
 .draft-stack { display: grid; gap: .8rem; margin-bottom: 1rem; }
@@ -589,6 +592,7 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 .composer-heading h3 { margin: 0; }
 .composer-heading > span { color: var(--green); font-size: .66rem; font-weight: 800; }
 .composer-card textarea { min-height: 82px; }
+.field-optional { display: inline-block; margin-left: .35rem; padding: .15rem .38rem; border-radius: 999px; background: #eef3ef; color: var(--muted); font-size: .6rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; vertical-align: middle; }
 .generate-row { display: flex; align-items: center; gap: .65rem; }
 .generate-row .primary { flex: 0 0 auto; }
 .generate-row .status { flex: 1; padding: .5rem .65rem; }

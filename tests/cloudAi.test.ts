@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildPrompt, generateWithCloud, parseDrafts, type PrivateAiInput } from "../src/lib/privateAi";
+import { MAX_CLOUD_PROMPT_CHARS, buildCloudDraftRequest, buildPrompt, generateWithCloud, parseDrafts, type PrivateAiInput } from "../src/lib/privateAi";
 import { selectRelevantContext } from "../src/lib/retrieval";
 
 function input(): PrivateAiInput {
@@ -42,7 +42,7 @@ describe("cloud AI client boundary", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  it("sends one minimized prompt to the same-origin Worker", async () => {
+  it("sends the grounded prompt and structured playbook to the same-origin Worker", async () => {
     const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       drafts: ["Draft one", "Draft two", "Draft three"],
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
@@ -61,11 +61,18 @@ describe("cloud AI client boundary", () => {
     expect(init.cache).toBe("no-store");
     expect(init.headers.Authorization).toBe("Bearer " + accessToken);
     const body = JSON.parse(init.body);
-    expect(Object.keys(body)).toEqual(["prompt"]);
+    expect(Object.keys(body)).toEqual(["prompt", "playbook", "replyObjective"]);
     expect(body.prompt).toContain("Alex: Could you share the role details?");
     expect(body.prompt).toContain("Voice: Warm and concise");
+    expect(body.playbook).toEqual({
+      role: "Human Resource",
+      relationshipGoal: "Arrange a short call",
+      voice: "Warm and concise",
+      replyRules: "No pressure",
+    });
+    expect(body.replyObjective).toBe("Answer Alex and suggest two times.");
     expect(body.prompt).not.toContain(accessToken);
-    expect(body.prompt.length).toBeLessThanOrEqual(24_000);
+    expect(body.prompt.length).toBeLessThanOrEqual(MAX_CLOUD_PROMPT_CHARS);
   });
 
   it("surfaces the Worker's safe error message", async () => {
@@ -138,8 +145,33 @@ Hi Amit, hope you're doing well. I noticed your profile and thought it would be 
     expect(prompt).toContain(capturedText);
     expect(prompt).toContain("identify the latest meaningful message and its sender");
     expect(prompt).toContain("Never repeat or closely paraphrase a message the USER already sent");
-    expect(prompt).toContain("CURRENT TASK OR AGENDA (intent only; not conversation evidence)");
-    expect(prompt.length).toBeLessThanOrEqual(24_000);
+    expect(prompt).toContain("OPTIONAL REPLY OBJECTIVE");
+    expect(prompt.length).toBeLessThanOrEqual(MAX_CLOUD_PROMPT_CHARS);
+  });
+
+  it("preserves long role rules and treats a blank objective as intentionally absent", () => {
+    const tailRule = "FINAL-MANDATORY-RULE: End with one concrete question.";
+    const request = buildCloudDraftRequest({
+      ...input(),
+      guidance: {
+        ...input().guidance,
+        boundaries: "Keep the message factual. ".repeat(900) + tailRule,
+      },
+      latestQuestion: "   ",
+    });
+
+    expect(request.replyObjective).toBe("");
+    expect(request.playbook.replyRules).toContain(tailRule);
+    expect(request.prompt).toContain(tailRule);
+    expect(request.prompt).toContain("The USER supplied no additional reply objective");
+    expect(request.prompt).toContain("Could you share the role details?");
+  });
+
+  it("requires a provided objective together with—not instead of—the conversation and rules", () => {
+    const request = buildCloudDraftRequest(input());
+    expect(request.prompt).toContain("Every draft must satisfy it together with the actual conversation and every mandatory playbook rule");
+    expect(request.prompt).toContain("Answer Alex and suggest two times.");
+    expect(request.prompt).toContain("No pressure");
   });
 
   it("makes the newest unanswered incoming message authoritative and rejects prior draft suggestions", () => {

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "fake-indexeddb/auto";
 import { webcrypto } from "node:crypto";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ChatHelpApp from "../src/components/ChatHelpApp";
@@ -11,6 +11,8 @@ import {
   LINKEDIN_SYNC_STATE_EVENT,
 } from "../src/lib/linkedinExtension";
 import { resetVaultForTests } from "../src/lib/secureVault";
+import { serializePlaybookBackup } from "../src/lib/playbookTransfer";
+import { createEmptyWorkspace } from "../src/lib/workspaceTypes";
 
 vi.mock("@/lib/localOcr", () => ({
   captureVisibleScreen: vi.fn().mockResolvedValue(new Blob(["screen"])),
@@ -182,7 +184,7 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: /Taylor Lee/ }));
-    await user.type(screen.getByLabelText("What should your reply accomplish?"), "Answer Taylor and keep the exchange moving.");
+    expect((screen.getByLabelText("What should your reply accomplish?") as HTMLTextAreaElement).value).toBe("");
     await user.click(screen.getByRole("button", { name: "Generate 3 drafts for Taylor Lee" }));
 
     expect(await screen.findByLabelText("Edit draft 1")).toBeTruthy();
@@ -190,8 +192,49 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.getByLabelText("Edit draft 3")).toBeTruthy();
     expect(request).toHaveBeenCalledTimes(1);
     expect(request.mock.calls[0][1]?.credentials).toBe("same-origin");
+    const requestBody = JSON.parse(request.mock.calls[0][1]?.body as string);
+    expect(requestBody.replyObjective).toBe("");
+    expect(requestBody.prompt).toContain("The USER supplied no additional reply objective");
+    expect(requestBody.prompt).toContain("Taylor Lee: Could you share the role brief?");
+    expect(requestBody.playbook.replyRules).toBeTruthy();
     expect(screen.getByRole("link", { name: /Open LinkedIn to review and paste/ })).toBeTruthy();
   }, 20_000);
+
+  it("saves, downloads, and uploads all four playbooks while preserving long rules", async () => {
+    const user = userEvent.setup();
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const rendered = render(<ChatHelpApp />);
+    expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    const tailMarker = "FINAL-LONG-UI-RULE";
+    const longRules = "Be factual and grounded. ".repeat(1_000) + tailMarker;
+    fireEvent.change(screen.getByLabelText("Rules every reply must follow"), { target: { value: longRules } });
+    expect((screen.getByLabelText("Rules every reply must follow") as HTMLTextAreaElement).value).toContain(tailMarker);
+    expect(screen.getByText(`${longRules.length.toLocaleString()} / 50,000 characters`)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Save playbook settings" }));
+    expect(await screen.findByText(/All four messaging playbooks were saved/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Download settings" }));
+    expect(anchorClick).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/Downloaded playbook settings only/)).toBeTruthy();
+
+    const importedWorkspace = createEmptyWorkspace();
+    importedWorkspace.guidance.selectedRole = "Network Marketing";
+    importedWorkspace.inboxRole = "Network Marketing";
+    importedWorkspace.guidance.playbooks["Network Marketing"] = {
+      objective: "Imported relationship goal",
+      boundaries: "IMPORTED-NETWORK-RULE",
+    };
+    const file = new File([serializePlaybookBackup(importedWorkspace.guidance, importedWorkspace.inboxRole)], "chathelp-playbooks.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: async () => serializePlaybookBackup(importedWorkspace.guidance, importedWorkspace.inboxRole) });
+    const fileInput = rendered.container.querySelector('input[accept=".json,application/json"]') as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    expect(await screen.findByText(/Uploaded and encrypted all four messaging playbooks/)).toBeTruthy();
+    expect((screen.getByLabelText("Your role or team") as HTMLSelectElement).value).toBe("Network Marketing");
+    expect((screen.getByLabelText("Your relationship goal") as HTMLTextAreaElement).value).toBe("Imported relationship goal");
+    expect((screen.getByLabelText("Rules every reply must follow") as HTMLTextAreaElement).value).toBe("IMPORTED-NETWORK-RULE");
+  }, 30_000);
 
   it("keeps role playbooks isolated and applies the persisted Inbox role to every draft request", async () => {
     const request = vi.fn()

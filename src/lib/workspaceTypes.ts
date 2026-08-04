@@ -5,6 +5,9 @@ export type ContactSource = "manual" | "linkedin-extension";
 export const MESSAGING_ROLES = ["Human Resource", "Network Marketing", "Job Seeker", "Socializing/Networking"] as const;
 export type MessagingRole = (typeof MESSAGING_ROLES)[number];
 export const DEFAULT_MESSAGING_ROLE: MessagingRole = "Socializing/Networking";
+export const PLAYBOOK_GOAL_MAX_CHARS = 20_000;
+export const PLAYBOOK_RULES_MAX_CHARS = 50_000;
+export const PLAYBOOK_VOICE_MAX_CHARS = 4_000;
 
 export interface ConversationAttachment {
   id: string;
@@ -127,7 +130,7 @@ export interface WorkspaceData {
   aiUsage: AiUsageEntry[];
 }
 
-export const CLOUDFLARE_MODEL_ID = "cloud:cloudflare:llama-3.1-8b-instruct-fast";
+export const CLOUDFLARE_MODEL_ID = "cloud:cloudflare:gpt-oss-120b";
 export const DEFAULT_MODEL_ID = CLOUDFLARE_MODEL_ID;
 
 export function normalizeWorkspaceModelId(): string {

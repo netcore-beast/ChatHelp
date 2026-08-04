@@ -20,6 +20,10 @@ async function workerEnv() {
 }
 
 describe("Cloudflare private inference Worker", () => {
+  it("uses the stronger hosted reasoning model", () => {
+    expect(WORKERS_AI_MODEL).toBe("@cf/openai/gpt-oss-120b");
+  });
+
   it("reports a storage-free health boundary without authentication", async () => {
     const response = await handleRequest(new Request("https://chathelp.example/health"), await workerEnv());
     expect(response.status).toBe(200);
@@ -71,6 +75,59 @@ describe("Cloudflare private inference Worker", () => {
     expect(input.messages[0].content).toContain("previous local draft suggestions");
     expect(input.messages[1].content).toContain("Relevant conversation text only");
     expect(input.messages[1].content).not.toContain(ACCESS_CODE);
+  });
+
+  it("places the selected role, full reply rules, and optional-objective policy in the model instructions", async () => {
+    const env = await workerEnv();
+    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + ACCESS_CODE,
+        "Content-Type": "application/json",
+        Origin: "https://chathelp.example",
+      },
+      body: JSON.stringify({
+        prompt: "HIGHEST PRIORITY REPLY TARGET\nAlex: What role did you have in mind?",
+        playbook: {
+          role: "Human Resource",
+          relationshipGoal: "Clarify the opportunity",
+          voice: "Direct and considerate",
+          replyRules: "Do not mention compensation unless Alex asks. FINAL-RULE-MARKER",
+        },
+        replyObjective: "",
+      }),
+    }), env);
+
+    expect(response.status).toBe(200);
+    const [model, input] = env.AI.run.mock.calls[0];
+    expect(model).toBe("@cf/openai/gpt-oss-120b");
+    expect(input.messages[0].content).toContain("Selected role: Human Resource");
+    expect(input.messages[0].content).toContain("FINAL-RULE-MARKER");
+    expect(input.messages[0].content).toContain("The USER added no reply objective");
+    expect(input.messages[1].content).toContain("Alex: What role did you have in mind?");
+    expect(input.response_format.type).toBe("json_schema");
+  });
+
+  it("makes a provided objective additive to the conversation and playbook", async () => {
+    const env = await workerEnv();
+    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + ACCESS_CODE,
+        "Content-Type": "application/json",
+        Origin: "https://chathelp.example",
+      },
+      body: JSON.stringify({
+        prompt: "Taylor: Could you send the details?",
+        playbook: { role: "Job Seeker", relationshipGoal: "Learn about the role", voice: "Concise", replyRules: "No invented experience" },
+        replyObjective: "Ask when applications close",
+      }),
+    }), env);
+
+    expect(response.status).toBe(200);
+    const [, input] = env.AI.run.mock.calls[0];
+    expect(input.messages[0].content).toContain("Ask when applications close");
+    expect(input.messages[0].content).toContain("together with the actual conversation and every playbook rule");
   });
 
   it("automatically retries when the model copies a message from captured history", async () => {

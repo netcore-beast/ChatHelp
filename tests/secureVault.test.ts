@@ -64,6 +64,17 @@ describe("encrypted device vault", () => {
     expect(reopened.inboxRole).toBe("Network Marketing");
   });
 
+  it("encrypts and restores reply rules beyond the former 20,000-character limit", async () => {
+    const workspace = createEmptyWorkspace();
+    const tailMarker = "FINAL-PERSISTED-RULE";
+    workspace.guidance.playbooks["Human Resource"].boundaries = "Detailed rule. ".repeat(2_000) + tailMarker;
+    await createDeviceVault(workspace);
+
+    const reopened = (await openDeviceVault()).workspace;
+    expect(reopened.guidance.playbooks["Human Resource"].boundaries).toContain(tailMarker);
+    expect(reopened.guidance.playbooks["Human Resource"].boundaries.length).toBeGreaterThan(20_000);
+  });
+
   it("repairs legacy LinkedIn capture duplicates while normalizing the encrypted vault", () => {
     const workspace = normalizeWorkspace({
       contacts: [{
