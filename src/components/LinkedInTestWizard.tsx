@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { safeLinkedInProfileUrl } from "@/lib/platforms";
-import type { Contact, Guidance } from "@/lib/workspaceTypes";
+import { MESSAGING_ROLES, type Contact, type Guidance } from "@/lib/workspaceTypes";
 
 interface ProfileDraft {
   name: string;
@@ -112,7 +112,7 @@ export function LinkedInTestWizard({ initialContact, guidance, drafts, aiStatus,
           {step === 4 && <div className="wizard-step">
             <p className="eyebrow">STEP 5 OF 6</p><h3>Describe you—the person sending the reply</h3>
             <p>These settings are about you and your communication style. They are not profile details about {name || "the selected contact"}.</p>
-            <label>Your role or team<input value={guidance.role} onChange={(event) => onGuidanceChange("role", event.target.value)} /></label>
+            <label>Your role or team<select value={guidance.role} onChange={(event) => onGuidanceChange("role", event.target.value)}>{MESSAGING_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
             <label>Your relationship goal with {name || "this contact"}<textarea value={guidance.objective} onChange={(event) => onGuidanceChange("objective", event.target.value)} /></label>
             <label>How your messages should sound<input value={guidance.voice} onChange={(event) => onGuidanceChange("voice", event.target.value)} /></label>
             <label>Rules every reply must follow<textarea value={guidance.boundaries} onChange={(event) => onGuidanceChange("boundaries", event.target.value)} /></label>

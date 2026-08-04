@@ -184,6 +184,65 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.getByRole("link", { name: /Open LinkedIn to review and paste/ })).toBeTruthy();
   }, 20_000);
 
+  it("keeps role playbooks isolated and applies the persisted Inbox role to every draft request", async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ drafts: ["Network draft one", "Network draft two", "Network draft three"] }), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ drafts: ["HR draft one", "HR draft two", "HR draft three"] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", request);
+    const user = userEvent.setup();
+    const firstRender = render(<ChatHelpApp />);
+    expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
+    announceExtension();
+    deliverSnapshot();
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settingsRole = screen.getByLabelText("Your role or team");
+    await user.selectOptions(settingsRole, "Network Marketing");
+    await user.clear(screen.getByLabelText("Your relationship goal"));
+    await user.type(screen.getByLabelText("Your relationship goal"), "NETWORK-ONLY-GOAL");
+    await user.clear(screen.getByLabelText("Rules every reply must follow"));
+    await user.type(screen.getByLabelText("Rules every reply must follow"), "NETWORK-ONLY-RULES");
+    await user.selectOptions(settingsRole, "Human Resource");
+    await user.clear(screen.getByLabelText("Your relationship goal"));
+    await user.type(screen.getByLabelText("Your relationship goal"), "HR-ONLY-GOAL");
+    await user.clear(screen.getByLabelText("Rules every reply must follow"));
+    await user.type(screen.getByLabelText("Rules every reply must follow"), "HR-ONLY-RULES");
+    await user.selectOptions(settingsRole, "Network Marketing");
+    expect((screen.getByLabelText("Your relationship goal") as HTMLTextAreaElement).value).toBe("NETWORK-ONLY-GOAL");
+    expect((screen.getByLabelText("Rules every reply must follow") as HTMLTextAreaElement).value).toBe("NETWORK-ONLY-RULES");
+    await user.type(screen.getByLabelText(/Cloud access code/), "not-a-secret-test-placeholder");
+    await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
+
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
+    const inboxRole = screen.getByLabelText("Your role or team");
+    await user.selectOptions(inboxRole, "Network Marketing");
+    await user.type(screen.getByLabelText("What should your reply accomplish?"), "Reply naturally using the selected playbook.");
+    await user.click(screen.getByRole("button", { name: "Generate 3 drafts for Taylor Lee" }));
+    expect(await screen.findByDisplayValue("Network draft one")).toBeTruthy();
+    const networkPrompt = JSON.parse(request.mock.calls[0][1]?.body as string).prompt as string;
+    expect(networkPrompt).toContain("Role: Network Marketing");
+    expect(networkPrompt).toContain("NETWORK-ONLY-GOAL");
+    expect(networkPrompt).toContain("NETWORK-ONLY-RULES");
+    expect(networkPrompt).not.toContain("HR-ONLY-GOAL");
+
+    await user.selectOptions(inboxRole, "Human Resource");
+    expect(screen.queryByLabelText("Edit draft 1")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Generate 3 drafts for Taylor Lee" }));
+    expect(await screen.findByDisplayValue("HR draft one")).toBeTruthy();
+    const hrPrompt = JSON.parse(request.mock.calls[1][1]?.body as string).prompt as string;
+    expect(hrPrompt).toContain("Role: Human Resource");
+    expect(hrPrompt).toContain("HR-ONLY-GOAL");
+    expect(hrPrompt).toContain("HR-ONLY-RULES");
+    expect(hrPrompt).not.toContain("NETWORK-ONLY-GOAL");
+    expect(request).toHaveBeenCalledTimes(2);
+
+    await waitFor(() => expect(document.querySelector(".save-state")?.textContent).toContain("Encrypted"), { timeout: 3_000 });
+    firstRender.unmount();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    expect((screen.getByLabelText("Your role or team") as HTMLSelectElement).value).toBe("Human Resource");
+  }, 30_000);
+
   it("keeps the Cloudflare Access session and shows its safe inline HTML-response error", async () => {
     const request = vi.fn().mockResolvedValue(new Response("<!doctype html><title>Sign in</title>", {
       status: 200,

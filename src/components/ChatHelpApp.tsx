@@ -44,10 +44,13 @@ import {
 } from "@/lib/secureVault";
 import {
   CLOUDFLARE_MODEL_ID,
+  MESSAGING_ROLES,
   createEmptyWorkspace,
   newId,
+  resolveRoleGuidance,
   type Contact,
   type ConversationPlatform,
+  type MessagingRole,
   type MessageRole,
   type PipelineStage,
   type WorkspaceData,
@@ -125,6 +128,13 @@ function formatError(error: unknown): string {
 
 function hasConversationContext(contact: Contact): boolean {
   return contact.chat.length > 0 || contact.documents.some((document) => isConversationCapture(document) && !isLikelyFullLinkedInPageCapture(document));
+}
+
+function latestDraftsForRole(contact: Contact | null | undefined, role: MessagingRole): string[] {
+  const history = contact?.draftHistory ?? [];
+  return history.findLast((entry) => entry.role === role)?.drafts
+    ?? history.findLast((entry) => !entry.role)?.drafts
+    ?? [];
 }
 
 export default function ChatHelpApp() {
@@ -243,7 +253,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [newPlatform, setNewPlatform] = useState<ConversationPlatform>("linkedin");
   const [wizardOpen, setWizardOpen] = useState(false);
   const [agenda, setAgenda] = useState("");
-  const [drafts, setDrafts] = useState<string[]>(() => initial.contacts[0]?.draftHistory?.at(-1)?.drafts ?? []);
+  const [drafts, setDrafts] = useState<string[]>(() => latestDraftsForRole(initial.contacts[0], initial.inboxRole));
   const [aiStatus, setAiStatus] = useState("");
   const [draftError, setDraftError] = useState("");
   const [appError, setAppError] = useState("");
@@ -338,7 +348,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       const syncedContact = preview.contacts.find((item) => item.id === preview.contactId);
       setSelectedId(preview.contactId);
       setMobileConversationOpen(true);
-      setDrafts(syncedContact?.draftHistory?.at(-1)?.drafts ?? []);
+      setDrafts(latestDraftsForRole(syncedContact, workspaceRef.current.inboxRole));
       setInboxView("inbox");
       setInboxFilter("main");
       setExtensionStatus(preview.action === "created"
@@ -374,7 +384,11 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
 
   function updateWorkspace(updater: (current: WorkspaceData) => WorkspaceData) {
     setSaveStatus("Unsaved changes");
-    setWorkspace((current) => updater(current));
+    setWorkspace((current) => {
+      const next = updater(current);
+      workspaceRef.current = next;
+      return next;
+    });
   }
 
   function setActiveContactId(contactId: string) {
@@ -424,10 +438,45 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
 
   function persistDrafts(nextDrafts = drafts) {
     if (!contact?.draftHistory?.length) return;
-    updateContact((current) => ({
-      ...current,
-      draftHistory: (current.draftHistory ?? []).map((entry, index, entries) => index === entries.length - 1 ? { ...entry, drafts: nextDrafts } : entry),
-    }));
+    const activeRole = workspace.inboxRole;
+    updateContact((current) => {
+      const history = current.draftHistory ?? [];
+      let targetIndex = -1;
+      for (let index = history.length - 1; index >= 0; index -= 1) {
+        if (history[index].role === activeRole || (!history[index].role && targetIndex < 0)) {
+          targetIndex = index;
+          if (history[index].role === activeRole) break;
+        }
+      }
+      return targetIndex < 0 ? current : { ...current, draftHistory: history.map((entry, index) => index === targetIndex ? { ...entry, drafts: nextDrafts } : entry) };
+    });
+  }
+
+  function changeInboxRole(role: MessagingRole) {
+    if (role === workspace.inboxRole) return;
+    updateWorkspace((current) => ({ ...current, inboxRole: role }));
+    setDrafts([]);
+    setDraftError("");
+    setAiStatus("");
+  }
+
+  function updateRolePlaybook(role: MessagingRole, field: "objective" | "boundaries", value: string) {
+    updateWorkspace((current) => {
+      return {
+        ...current,
+        guidance: {
+          ...current.guidance,
+          playbooks: {
+            ...current.guidance.playbooks,
+            [role]: { ...current.guidance.playbooks[role], [field]: value.slice(0, 20_000) },
+          },
+        },
+      };
+    });
+  }
+
+  function updateSelectedPlaybook(field: "objective" | "boundaries", value: string) {
+    updateRolePlaybook(workspace.guidance.selectedRole, field, value);
   }
 
   function markDraftManuallySent(draft: string) {
@@ -585,6 +634,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
 
   async function generate(agendaOverride?: string, contactIdOverride?: string) {
     const activeContact = workspace.contacts.find((item) => item.id === contactIdOverride) ?? contact;
+    const draftingRole = workspace.inboxRole;
     const requestAgenda = (agendaOverride ?? agenda).trim();
     if (!activeContact || !requestAgenda) return;
     if (!hasConversationContext(activeContact)) {
@@ -603,19 +653,23 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       const feedbackSummary = workspace.feedback.filter((item) => item.contactId === activeContact.id).slice(-20).map((item) => item.rating + ": " + item.note).join("\n");
       const nextDrafts = await generatePrivateDrafts(CLOUDFLARE_MODEL_ID, {
         contact: activeContact,
-        guidance: workspace.guidance,
+        guidance: resolveRoleGuidance(workspace.guidance, draftingRole),
         latestQuestion: requestAgenda,
         retrievedContext: relevant,
         feedbackSummary,
         outcomeSummary: buildOutcomeSummary(activeContact),
       }, setAiStatus, { ...workspace.cloudInference, accessToken: cloudAccessCode });
+      if (workspaceRef.current.inboxRole !== draftingRole) {
+        setAiStatus("");
+        return;
+      }
       setDrafts(nextDrafts);
       const generatedAt = new Date().toISOString();
       updateWorkspace((current) => ({
         ...current,
         contacts: current.contacts.map((item) => item.id === activeContact.id ? {
           ...item,
-          draftHistory: [...(item.draftHistory ?? []), { id: newId("draft-set"), agenda: requestAgenda.slice(0, 5_000), drafts: nextDrafts, createdAt: generatedAt }].slice(-20),
+          draftHistory: [...(item.draftHistory ?? []), { id: newId("draft-set"), agenda: requestAgenda.slice(0, 5_000), drafts: nextDrafts, createdAt: generatedAt, role: draftingRole }].slice(-20),
         } : item),
         aiUsage: [...(current.aiUsage ?? []), {
           id: newId("ai-usage"),
@@ -707,7 +761,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         const nextIndex = key === "j" ? Math.min(visibleContacts.length - 1, currentIndex + 1) : Math.max(0, currentIndex - 1);
         const nextContact = visibleContacts[nextIndex];
         setActiveContactId(nextContact.id);
-        setDrafts(nextContact.draftHistory?.at(-1)?.drafts ?? []);
+        setDrafts(latestDraftsForRole(nextContact, workspace.inboxRole));
       } else if (key === "e" && contact) {
         event.preventDefault();
         setWorkspace((current) => ({ ...current, contacts: current.contacts.map((item) => item.id === contact.id ? { ...item, archivedAt: item.archivedAt ? "" : new Date().toISOString(), pipelineStage: item.archivedAt ? "inbox" : "done" } : item) }));
@@ -724,10 +778,11 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     };
     window.addEventListener("keydown", handleKeyboard);
     return () => window.removeEventListener("keydown", handleKeyboard);
-  }, [contact, visibleContacts]);
+  }, [contact, visibleContacts, workspace.inboxRole]);
 
   const storageSummary = useMemo(() => contact ? contact.chat.length + " messages · " + contact.documents.length + " context files · " + contact.outcomes.length + " outcomes · " + (contact.draftHistory?.length ?? 0) + " draft sets" : "No contact selected", [contact]);
   const latestMeaningfulIncomingId = useMemo(() => contact?.chat.findLast((message) => message.role === "them" && (message.body.trim() || message.attachments?.length))?.id ?? "", [contact]);
+  const selectedSettingsPlaybook = workspace.guidance.playbooks[workspace.guidance.selectedRole];
   const handoffUrl = contact ? safePlatformUrl(contact) : null;
   const cloudReady = Boolean(workspace.cloudInference.consentedAt && cloudAccessCode.trim().length >= 20);
   const conversationReady = Boolean(contact && hasConversationContext(contact));
@@ -785,6 +840,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
               <span>{visibleContacts.length}</span>
             </header>
             <label className="search-field"><span className="sr-only">Search conversations</span><input aria-label="Search conversations" value={contactSearch} onChange={(event) => setContactSearch(event.target.value)} placeholder="Search conversations" /></label>
+            {inboxView === "inbox" && <label className="inbox-role-select"><span>Your role or team</span><select aria-label="Your role or team" value={workspace.inboxRole} onChange={(event) => changeInboxRole(event.target.value as MessagingRole)}>{MESSAGING_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>}
 
             <section className={"sync-card sync-" + (syncState?.enabled ? syncState.paused ? "paused" : "on" : "off")} aria-labelledby="sync-card-title">
               <div className="sync-card-heading"><span className="sync-dot" /><div><strong id="sync-card-title">{automaticSyncLabel}</strong><small role="status" aria-live="polite">{extensionStatus}</small></div></div>
@@ -809,7 +865,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 const reminderAt = item.followUpAt || item.snoozedUntil;
                 return <button className={item.id === contact?.id ? "conversation-row active" : "conversation-row"} key={item.id} onClick={() => {
                   setSelectedId(item.id);
-                  setDrafts(item.draftHistory?.at(-1)?.drafts ?? []);
+                  setDrafts(latestDraftsForRole(item, workspace.inboxRole));
                   setDraftError("");
                   setMobileConversationOpen(true);
                 }}>
@@ -833,7 +889,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
               <header><strong>{stage.label}</strong><span>{stageCounts[stage.value]}</span></header>
               <div>{workspace.contacts.filter((item) => !item.archivedAt && contactStage(item) === stage.value).map((item) => <article className={item.id === contact?.id ? "pipeline-card selected" : "pipeline-card"} draggable key={item.id} onDragStart={(event) => event.dataTransfer.setData("text/contact-id", item.id)} onClick={() => {
                 setSelectedId(item.id);
-                setDrafts(item.draftHistory?.at(-1)?.drafts ?? []);
+                setDrafts(latestDraftsForRole(item, workspace.inboxRole));
                 setDraftError("");
                 setMobileConversationOpen(true);
               }}><div><strong>{item.name}</strong><small>{formatRelativeTime(item.chat.at(-1)?.createdAt || item.lastSyncedAt, now)}</small></div><p>{item.chat.at(-1)?.body || item.headline || "No message preview"}</p><select aria-label={"Move " + item.name + " to pipeline stage"} value={contactStage(item)} onClick={(event) => event.stopPropagation()} onChange={(event) => moveContactToStage(item.id, event.target.value as PipelineStage)}>{PIPELINE_STAGES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></article>)}</div>
@@ -842,7 +898,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
             <header className="conversation-header"><div><p className="eyebrow">SETTINGS</p><h2>Workspace and drafting</h2><p>Preferences and guidance stay in this encrypted browser vault.</p></div></header>
             <div className="settings-scroll">
               <section className="panel-card"><h3>Add a contact manually</h3><p className="section-explainer">Automatic sync creates new LinkedIn contacts for you. Manual creation remains available for other services and fallback imports.</p><label>Conversation platform<select aria-label="Conversation platform" value={newPlatform} onChange={(event) => setNewPlatform(event.target.value as ConversationPlatform)}>{PLATFORM_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><div className="inline-form"><input aria-label="New contact name" value={newContactName} onChange={(event) => setNewContactName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addContact()} placeholder="New contact name" /><button onClick={addContact}>Add</button></div></section>
-              <section className="panel-card guidance-card"><p className="eyebrow">ABOUT YOU</p><h3>Your messaging playbook</h3><label>Your role or team<input value={workspace.guidance.role} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, role: event.target.value } }))} /></label><label>Your relationship goal<textarea value={workspace.guidance.objective} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, objective: event.target.value } }))} /></label><label>How your messages should sound<input value={workspace.guidance.voice} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: event.target.value } }))} /></label><label>Rules every reply must follow<textarea value={workspace.guidance.boundaries} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, boundaries: event.target.value } }))} /></label></section>
+              <section className="panel-card guidance-card"><p className="eyebrow">ABOUT YOU</p><h3>Your messaging playbook</h3><label>Your role or team<select value={workspace.guidance.selectedRole} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, selectedRole: event.target.value as MessagingRole } }))}>{MESSAGING_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}</select></label><label>Your relationship goal<textarea value={selectedSettingsPlaybook.objective} onChange={(event) => updateSelectedPlaybook("objective", event.target.value)} /></label><label>How your messages should sound<input value={workspace.guidance.voice} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: event.target.value.slice(0, 2_000) } }))} /></label><label>Rules every reply must follow<textarea value={selectedSettingsPlaybook.boundaries} onChange={(event) => updateSelectedPlaybook("boundaries", event.target.value)} /></label></section>
               <section className="panel-card"><p className="eyebrow">CLOUDFLARE PRIVATE AI</p><h3>Draft-generation consent</h3><div className="provider-summary"><span>Same-origin endpoint</span><strong>{CLOUDFLARE_MODEL_NAME}</strong><small>Conversation text is sent only when you click Generate.</small></div><label>Cloud access code · session-only by default<input type="password" autoComplete="off" value={cloudAccessCode} onChange={(event) => { const nextCode = event.target.value.slice(0, 200); setCloudAccessCode(nextCode); if (workspace.cloudInference.rememberAccessToken) updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, accessToken: nextCode } })); }} placeholder="Enter the code yourself" /></label><label className="consent-check"><input type="checkbox" checked={workspace.cloudInference.rememberAccessToken} onChange={(event) => { const rememberAccessToken = event.target.checked; updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, rememberAccessToken, accessToken: rememberAccessToken ? cloudAccessCode : "" } })); }} /><span>Remember this access code in the encrypted vault.</span></label><label className="consent-check"><input type="checkbox" checked={Boolean(workspace.cloudInference.consentedAt)} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, consentedAt: event.target.checked ? new Date().toISOString() : "" } }))} /><span>I understand that relevant visible conversation text, my guidance, and my objective will be sent to ChatHelp&apos;s authenticated Cloudflare Worker only when I request drafts. Screenshots, cookies, the full vault, and access credentials are not included in the AI request.</span></label></section>
             </div>
           </section> : <section className={"conversation-column" + (!mobileConversationOpen ? " mobile-conversation-hidden" : "")}>
@@ -899,7 +955,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         </div>
 
         <footer><span>ChatHelp never sends platform messages or email automatically.</span><button className="danger-link" onClick={() => void eraseEverything()}>Erase all local data</button></footer>
-        {wizardOpen && <LinkedInTestWizard initialContact={contact} guidance={workspace.guidance} drafts={drafts} aiStatus={draftError ? "Drafts were not generated. " + draftError : aiStatus} onClose={() => setWizardOpen(false)} onSaveProfile={saveWizardProfile} onCapture={captureContextFor} onImportChat={importChatFor} onGuidanceChange={(field, value) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, [field]: value } }))} onGenerate={async (contactId, nextAgenda) => { setActiveContactId(contactId); setAgenda(nextAgenda); await generate(nextAgenda, contactId); }} />}
+        {wizardOpen && <LinkedInTestWizard initialContact={contact} guidance={resolveRoleGuidance(workspace.guidance, workspace.inboxRole)} drafts={drafts} aiStatus={draftError ? "Drafts were not generated. " + draftError : aiStatus} onClose={() => setWizardOpen(false)} onSaveProfile={saveWizardProfile} onCapture={captureContextFor} onImportChat={importChatFor} onGuidanceChange={(field, value) => { if (field === "role") changeInboxRole(value as MessagingRole); else if (field === "voice") updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: value.slice(0, 2_000) } })); else updateRolePlaybook(workspace.inboxRole, field, value); }} onGenerate={async (contactId, nextAgenda) => { setActiveContactId(contactId); setAgenda(nextAgenda); await generate(nextAgenda, contactId); }} />}
         {cropRequest && <ScreenRegionSelector image={cropRequest.image} contactName={cropRequest.contactName} purpose={cropRequest.purpose} onCancel={() => { const request = cropRequest; setCropRequest(null); request.resolve(null); }} onConfirm={(region) => { const request = cropRequest; setCropRequest(null); request.resolve(region); }} />}
         <dialog ref={shortcutDialogRef} className="privacy-dialog shortcut-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">KEYBOARD-FIRST INBOX</p><h2>Shortcuts</h2><dl><div><dt>J / K</dt><dd>Next / previous conversation</dd></div><div><dt>E</dt><dd>Archive or restore</dd></div><div><dt>R</dt><dd>Focus reply objective</dd></div><div><dt>S</dt><dd>Focus snooze</dd></div><div><dt>L</dt><dd>Focus labels</dd></div><div><dt>Ctrl/⌘ + J</dt><dd>Focus draft composer</dd></div><div><dt>G then I</dt><dd>Go to inbox</dd></div><div><dt>?</dt><dd>Show help</dd></div></dl><button className="primary">Done</button></form></dialog>
         <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Automatic sync:</strong> after explicit optional host permission, an isolated content script reads only the visible central LinkedIn conversation you manually open. It never reads cookies, scans the inbox, opens chats, clicks, types, scrolls, or sends.</li><li><strong>Local handoff:</strong> synchronized snapshots pass through the existing extension bridge into this authenticated app and are encrypted in the local vault. Automatic snapshots are not retained in extension storage.</li><li><strong>One-time fallback:</strong> a manual toolbar capture may remain only in extension session storage until this app acknowledges it.</li><li><strong>Cloud AI:</strong> relevant recent conversation text, guidance, and your objective are sent to the authenticated same-origin /api/drafts endpoint only when you click Generate.</li><li><strong>Never uploaded:</strong> screenshots, cookies, session tokens, access credentials, the full vault, navigation, job cards, side panels, and unrelated conversations are excluded.</li><li><strong>Sending:</strong> every draft requires manual review, copy, paste, and sending.</li></ul><button className="primary">Understood</button></form></dialog>

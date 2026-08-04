@@ -19,7 +19,7 @@ function input(): PrivateAiInput {
       retentionDays: 90,
     },
     guidance: {
-      role: "Recruiter",
+      role: "Human Resource",
       objective: "Arrange a short call",
       voice: "Warm and concise",
       boundaries: "No pressure",

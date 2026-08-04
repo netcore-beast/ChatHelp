@@ -7,7 +7,7 @@ import type { Guidance } from "@/lib/workspaceTypes";
 afterEach(() => cleanup());
 
 const guidance: Guidance = {
-  role: "Partnership lead",
+  role: "Socializing/Networking",
   objective: "Explore a useful collaboration",
   voice: "Warm, concise, and specific",
   boundaries: "No pressure and no invented claims",
