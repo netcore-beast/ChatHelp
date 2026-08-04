@@ -3,7 +3,7 @@
   "main": "./cloudflare/worker/src/index.js",
   "compatibility_date": "2026-08-01",
   "workers_dev": true,
-  "preview_urls": false,
+  "preview_urls": true,
   "ai": {
     "binding": "AI"
   },

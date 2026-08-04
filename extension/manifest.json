@@ -16,7 +16,8 @@
     "storage"
   ],
   "host_permissions": [
-    "https://chathelp-private-cloud.project-mission-ai.workers.dev/*"
+    "https://chathelp-private-cloud.project-mission-ai.workers.dev/*",
+    "https://testing-chathelp-private-cloud.project-mission-ai.workers.dev/*"
   ],
   "optional_host_permissions": [
     "https://www.linkedin.com/*"
@@ -24,7 +25,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://chathelp-private-cloud.project-mission-ai.workers.dev/*"
+        "https://chathelp-private-cloud.project-mission-ai.workers.dev/*",
+        "https://testing-chathelp-private-cloud.project-mission-ai.workers.dev/*"
       ],
       "js": [
         "app-bridge.js"

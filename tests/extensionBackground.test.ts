@@ -4,6 +4,7 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 
 const APP_URL = "https://chathelp-private-cloud.project-mission-ai.workers.dev/";
+const TESTING_APP_URL = "https://testing-chathelp-private-cloud.project-mission-ai.workers.dev/";
 const LINKEDIN_URL = "https://www.linkedin.com/messaging/thread/amit/";
 
 function loadBackground(options: { granted?: boolean; extraction?: unknown } = {}) {
@@ -57,7 +58,7 @@ function loadBackground(options: { granted?: boolean; extraction?: unknown } = {
       setTitle: vi.fn(async () => undefined),
     },
     tabs: {
-      query: vi.fn(async ({ url }: { url: string }) => url.startsWith(APP_URL)
+      query: vi.fn(async ({ url }: { url: string | string[] }) => (Array.isArray(url) ? url : [url]).some((pattern) => pattern.startsWith(APP_URL) || pattern.startsWith(TESTING_APP_URL))
         ? [{ id: 9, windowId: 2, url: APP_URL }]
         : [{ id: 7, windowId: 1, url: LINKEDIN_URL }]),
       update: vi.fn(async () => undefined),
@@ -111,7 +112,7 @@ describe("ChatHelp extension automatic sync coordinator", () => {
     const harness = loadBackground();
     const response = await harness.dispatch(
       { type: "CHATHELP_LINKEDIN_SYNC_COMMAND", command: "enable" },
-      { url: APP_URL + "settings" },
+      { url: TESTING_APP_URL + "settings" },
     ) as { ok: boolean };
     expect(response.ok).toBe(true);
     expect(harness.requestPermission).toHaveBeenCalledWith({ origins: ["https://www.linkedin.com/*"] });

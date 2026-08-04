@@ -30,3 +30,5 @@ When automatic sync is enabled, ChatHelp reads the visible LinkedIn conversation
 6. For a one-time fallback, open one LinkedIn conversation and click the ChatHelp extension icon.
 
 LinkedIn may change its DOM. When the layout is unsupported, the extension reports a safe status and stops; it never broadens its scan.
+
+The bridge is restricted to ChatHelp's exact production and testing Worker hosts. The testing host is a Cloudflare aliased preview of the same Worker version stream; it is not a second Worker and receives no broader Chrome capability.

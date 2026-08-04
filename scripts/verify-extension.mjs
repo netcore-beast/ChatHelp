@@ -7,12 +7,19 @@ const syncScript = await readFile("extension/linkedin-sync.js", "utf8");
 const bridge = await readFile("extension/app-bridge.js", "utf8");
 const expectedPermissions = ["activeTab", "scripting", "storage"];
 const expectedOptionalHosts = ["https://www.linkedin.com/*"];
+const expectedAppHosts = [
+  "https://chathelp-private-cloud.project-mission-ai.workers.dev/*",
+  "https://testing-chathelp-private-cloud.project-mission-ai.workers.dev/*",
+];
 
 if (JSON.stringify(manifest.permissions) !== JSON.stringify(expectedPermissions)) {
   throw new Error("Chrome permissions must remain exactly activeTab, scripting, and storage.");
 }
 if (JSON.stringify(manifest.optional_host_permissions) !== JSON.stringify(expectedOptionalHosts)) {
   throw new Error("Automatic sync must request only the optional LinkedIn host permission.");
+}
+if (JSON.stringify(manifest.host_permissions) !== JSON.stringify(expectedAppHosts)) {
+  throw new Error("The local app bridge must be limited to the exact production and testing ChatHelp hosts.");
 }
 if ((manifest.host_permissions ?? []).some((permission) => /linkedin\.com/i.test(permission))) {
   throw new Error("LinkedIn must remain optional and cannot be a required host permission.");

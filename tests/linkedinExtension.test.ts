@@ -220,6 +220,10 @@ describe("automatic LinkedIn extension import", () => {
     const manifest = JSON.parse(readFileSync("extension/manifest.json", "utf8")) as { version: string; permissions: string[]; host_permissions: string[]; optional_host_permissions: string[] };
     const sources = ["background.js", "extractor.js", "linkedin-sync.js", "app-bridge.js"].map((name) => readFileSync("extension/" + name, "utf8")).join("\n");
     expect(manifest.permissions).toEqual(["activeTab", "scripting", "storage"]);
+    expect(manifest.host_permissions).toEqual([
+      "https://chathelp-private-cloud.project-mission-ai.workers.dev/*",
+      "https://testing-chathelp-private-cloud.project-mission-ai.workers.dev/*",
+    ]);
     expect(manifest.optional_host_permissions).toEqual(["https://www.linkedin.com/*"]);
     expect(manifest.host_permissions.some((permission) => permission.includes("linkedin.com"))).toBe(false);
     expect(manifest.version).toBe("0.4.0");

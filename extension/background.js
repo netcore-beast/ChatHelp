@@ -1,6 +1,8 @@
 importScripts("extractor.js");
 
-const APP_URL = "https://chathelp-private-cloud.project-mission-ai.workers.dev/";
+const PRODUCTION_APP_URL = "https://chathelp-private-cloud.project-mission-ai.workers.dev/";
+const TESTING_APP_URL = "https://testing-chathelp-private-cloud.project-mission-ai.workers.dev/";
+const APP_URLS = [PRODUCTION_APP_URL, TESTING_APP_URL];
 const LINKEDIN_ORIGIN = "https://www.linkedin.com/*";
 const LINKEDIN_MESSAGING = "https://www.linkedin.com/messaging/*";
 const SYNC_SCRIPT_ID = "chathelp-linkedin-auto-sync-v1";
@@ -59,7 +61,7 @@ function isLinkedInConversation(url) {
 }
 
 function isAppSender(sender) {
-  return typeof sender?.url === "string" && sender.url.startsWith(APP_URL);
+  return typeof sender?.url === "string" && APP_URLS.some((appUrl) => sender.url.startsWith(appUrl));
 }
 
 async function showBadge(text, color, title) {
@@ -70,7 +72,7 @@ async function showBadge(text, color, title) {
 }
 
 async function queryAppTabs() {
-  return chrome.tabs.query({ url: `${APP_URL}*` });
+  return chrome.tabs.query({ url: APP_URLS.map((appUrl) => `${appUrl}*`) });
 }
 
 async function sendStatusToApp(status) {
@@ -95,7 +97,7 @@ async function openOrFocusChatHelp(snapshot, status) {
     if (snapshot) chrome.tabs.sendMessage(existing.id, { type: SNAPSHOT_EVENT, snapshot }).catch(() => undefined);
     return;
   }
-  await chrome.tabs.create({ url: APP_URL });
+  await chrome.tabs.create({ url: PRODUCTION_APP_URL });
 }
 
 async function permissionGranted() {
