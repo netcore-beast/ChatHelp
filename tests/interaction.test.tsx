@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "fake-indexeddb/auto";
 import { webcrypto } from "node:crypto";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ChatHelpApp from "../src/components/ChatHelpApp";
@@ -56,41 +56,45 @@ const automaticSnapshot = (messages: SnapshotMessage[] = [{
   messages,
 });
 
-function announceExtension() {
-  window.dispatchEvent(new MessageEvent("message", {
-    source: window,
-    origin: window.location.origin,
-    data: { source: LINKEDIN_EXTENSION_SOURCE, type: "CHATHELP_EXTENSION_READY", version: "0.4.2" },
-  }));
-  window.dispatchEvent(new MessageEvent("message", {
-    source: window,
-    origin: window.location.origin,
-    data: {
-      source: LINKEDIN_EXTENSION_SOURCE,
-      type: LINKEDIN_SYNC_STATE_EVENT,
-      payload: {
+async function announceExtension() {
+  await act(async () => {
+    window.dispatchEvent(new MessageEvent("message", {
+      source: window,
+      origin: window.location.origin,
+      data: { source: LINKEDIN_EXTENSION_SOURCE, type: "CHATHELP_EXTENSION_READY", version: "0.4.2" },
+    }));
+    window.dispatchEvent(new MessageEvent("message", {
+      source: window,
+      origin: window.location.origin,
+      data: {
         source: LINKEDIN_EXTENSION_SOURCE,
-        version: 1,
-        stateId: "state-ui-1",
-        occurredAt: "2026-08-02T12:00:00.000Z",
-        enabled: true,
-        paused: false,
-        permissionGranted: true,
-        code: "waiting_for_conversation",
-        message: "Waiting for a LinkedIn conversation.",
-        lastContactName: "",
-        lastMessageCount: 0,
+        type: LINKEDIN_SYNC_STATE_EVENT,
+        payload: {
+          source: LINKEDIN_EXTENSION_SOURCE,
+          version: 1,
+          stateId: "state-ui-1",
+          occurredAt: "2026-08-02T12:00:00.000Z",
+          enabled: true,
+          paused: false,
+          permissionGranted: true,
+          code: "waiting_for_conversation",
+          message: "Waiting for a LinkedIn conversation.",
+          lastContactName: "",
+          lastMessageCount: 0,
+        },
       },
-    },
-  }));
+    }));
+  });
 }
 
-function deliverSnapshot(snapshot = automaticSnapshot()) {
-  window.dispatchEvent(new MessageEvent("message", {
-    source: window,
-    origin: window.location.origin,
-    data: { source: LINKEDIN_EXTENSION_SOURCE, type: LINKEDIN_SNAPSHOT_EVENT, payload: snapshot },
-  }));
+async function deliverSnapshot(snapshot = automaticSnapshot()) {
+  await act(async () => {
+    window.dispatchEvent(new MessageEvent("message", {
+      source: window,
+      origin: window.location.origin,
+      data: { source: LINKEDIN_EXTENSION_SOURCE, type: LINKEDIN_SNAPSHOT_EVENT, payload: snapshot },
+    }));
+  });
 }
 
 beforeEach(async () => {
@@ -101,8 +105,13 @@ beforeEach(async () => {
   URL.revokeObjectURL = vi.fn();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  const saveState = document.querySelector(".save-state");
+  if (saveState && !saveState.textContent?.includes("Encrypted")) {
+    await waitFor(() => expect(saveState.textContent).toContain("Encrypted"), { timeout: 3_000 });
+  }
   cleanup();
+  await resetVaultForTests();
   vi.unstubAllGlobals();
   Object.defineProperty(navigator, "userAgent", { value: desktopUserAgent, configurable: true });
 });
@@ -132,8 +141,8 @@ describe("secure conversation workspace interaction", () => {
   it("automatically creates an unknown contact and updates repeated snapshots without duplication", async () => {
     render(<ChatHelpApp />);
     expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
-    announceExtension();
-    deliverSnapshot();
+    await announceExtension();
+    await deliverSnapshot();
 
     const conversation = await screen.findByLabelText("Conversation with Taylor Lee");
     expect(within(conversation).getAllByText("Could you share the role brief?")).toHaveLength(1);
@@ -149,8 +158,8 @@ describe("secure conversation workspace interaction", () => {
       createdAt: "2026-08-02T12:01:00.000Z",
       attachments: [],
     };
-    deliverSnapshot({ ...automaticSnapshot([...automaticSnapshot().messages, secondMessage]), captureId: "capture-ui-2" });
-    deliverSnapshot({ ...automaticSnapshot([...automaticSnapshot().messages, secondMessage]), captureId: "capture-ui-3" });
+    await deliverSnapshot({ ...automaticSnapshot([...automaticSnapshot().messages, secondMessage]), captureId: "capture-ui-2" });
+    await deliverSnapshot({ ...automaticSnapshot([...automaticSnapshot().messages, secondMessage]), captureId: "capture-ui-3" });
     await waitFor(() => expect(within(screen.getByLabelText("Conversation with Taylor Lee")).getAllByText("Absolutely—I will send it here.")).toHaveLength(1));
     expect(within(screen.getByRole("navigation", { name: "Conversations" })).getAllByRole("button", { name: /Taylor Lee/ })).toHaveLength(1);
     expect(screen.getByText(/Existing contact updated|No new messages/i)).toBeTruthy();
@@ -164,8 +173,8 @@ describe("secure conversation workspace interaction", () => {
     const user = userEvent.setup();
     render(<ChatHelpApp />);
     expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
-    announceExtension();
-    deliverSnapshot();
+    await announceExtension();
+    await deliverSnapshot();
     expect(await screen.findByLabelText("Conversation with Taylor Lee")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
@@ -192,8 +201,8 @@ describe("secure conversation workspace interaction", () => {
     const user = userEvent.setup();
     const firstRender = render(<ChatHelpApp />);
     expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
-    announceExtension();
-    deliverSnapshot();
+    await announceExtension();
+    await deliverSnapshot();
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     const settingsRole = screen.getByLabelText("Your role or team");
@@ -252,8 +261,8 @@ describe("secure conversation workspace interaction", () => {
     const user = userEvent.setup();
     render(<ChatHelpApp />);
     expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
-    announceExtension();
-    deliverSnapshot();
+    await announceExtension();
+    await deliverSnapshot();
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.type(screen.getByLabelText(/Cloud access code/), "not-a-secret-test-placeholder");
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
