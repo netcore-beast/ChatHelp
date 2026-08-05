@@ -1,7 +1,7 @@
 # Rulebook-grounded three-stage drafting pipeline
 
-Date: 2026-08-05  
-Status: Approved source design; implementation pending written-spec review  
+Date: 2026-08-05
+Status: Approved source design; implementation pending written-spec review
 Target: ChatHelp testing environment only
 
 ## Objective
