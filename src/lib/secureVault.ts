@@ -1,5 +1,6 @@
-import { createEmptyWorkspace, normalizeWorkspaceModelId, type Contact, type ConversationAttachment, type Message, type PipelineStage, type WorkspaceData } from "./workspaceTypes";
+import { MESSAGING_ROLES, PLAYBOOK_GOAL_MAX_CHARS, PLAYBOOK_RULES_MAX_CHARS, PLAYBOOK_VOICE_MAX_CHARS, createDefaultMessagingGuidance, createEmptyWorkspace, isMessagingRole, normalizeMessagingRole, normalizeWorkspaceModelId, type Contact, type ConversationAttachment, type Message, type PipelineStage, type RolePlaybooks, type WorkspaceData } from "./workspaceTypes";
 import { PIPELINE_STAGES } from "./linkedinExtension";
+import { repairLegacyLinkedInMessages } from "./messageDedup";
 
 const DB_NAME = "chathelp-secure";
 const DB_VERSION = 1;
@@ -244,26 +245,51 @@ function normalizeLabels(value: unknown): string[] {
 
 export function normalizeWorkspace(value: unknown): WorkspaceData {
   const source = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
-  const empty = createEmptyWorkspace();
   const contacts = Array.isArray(source.contacts) ? source.contacts : [];
   const cloudInference = source.cloudInference && typeof source.cloudInference === "object"
     ? source.cloudInference as Record<string, unknown>
     : {};
   const rememberAccessToken = cloudInference.rememberAccessToken === true;
+  const rawGuidance = source.guidance && typeof source.guidance === "object" ? source.guidance as Record<string, unknown> : {};
+  const selectedRole = normalizeMessagingRole(rawGuidance.selectedRole ?? rawGuidance.role);
+  const defaults = createDefaultMessagingGuidance();
+  const rawPlaybooks = rawGuidance.playbooks && typeof rawGuidance.playbooks === "object" ? rawGuidance.playbooks as Record<string, unknown> : null;
+  const playbooks: RolePlaybooks = {
+    "Human Resource": { ...defaults.playbooks["Human Resource"] },
+    "Network Marketing": { ...defaults.playbooks["Network Marketing"] },
+    "Job Seeker": { ...defaults.playbooks["Job Seeker"] },
+    "Socializing/Networking": { ...defaults.playbooks["Socializing/Networking"] },
+  };
+  if (rawPlaybooks) {
+    for (const role of MESSAGING_ROLES) {
+      const rawPlaybook = rawPlaybooks[role] && typeof rawPlaybooks[role] === "object" ? rawPlaybooks[role] as Record<string, unknown> : {};
+      playbooks[role] = {
+        objective: typeof rawPlaybook.objective === "string" ? rawPlaybook.objective.slice(0, PLAYBOOK_GOAL_MAX_CHARS) : playbooks[role].objective,
+        boundaries: typeof rawPlaybook.boundaries === "string" ? rawPlaybook.boundaries.slice(0, PLAYBOOK_RULES_MAX_CHARS) : playbooks[role].boundaries,
+      };
+    }
+  } else {
+    playbooks[selectedRole] = {
+      objective: typeof rawGuidance.objective === "string" ? rawGuidance.objective.slice(0, PLAYBOOK_GOAL_MAX_CHARS) : playbooks[selectedRole].objective,
+      boundaries: typeof rawGuidance.boundaries === "string" ? rawGuidance.boundaries.slice(0, PLAYBOOK_RULES_MAX_CHARS) : playbooks[selectedRole].boundaries,
+    };
+  }
+  const guidance = {
+    selectedRole,
+    voice: typeof rawGuidance.voice === "string" ? rawGuidance.voice.slice(0, PLAYBOOK_VOICE_MAX_CHARS) : defaults.voice,
+    playbooks,
+  };
+  const inboxRole = isMessagingRole(source.inboxRole) ? source.inboxRole : selectedRole;
   return {
-    version: 5,
+    version: 7,
     modelId: normalizeWorkspaceModelId(),
     cloudInference: {
       accessToken: rememberAccessToken && typeof cloudInference.accessToken === "string" ? cloudInference.accessToken.slice(0, 200) : "",
       consentedAt: typeof cloudInference.consentedAt === "string" ? cloudInference.consentedAt.slice(0, 100) : "",
       rememberAccessToken,
     },
-    guidance: {
-      role: typeof (source.guidance as Record<string, unknown> | undefined)?.role === "string" ? String((source.guidance as Record<string, unknown>).role) : empty.guidance.role,
-      objective: typeof (source.guidance as Record<string, unknown> | undefined)?.objective === "string" ? String((source.guidance as Record<string, unknown>).objective) : empty.guidance.objective,
-      voice: typeof (source.guidance as Record<string, unknown> | undefined)?.voice === "string" ? String((source.guidance as Record<string, unknown>).voice) : empty.guidance.voice,
-      boundaries: typeof (source.guidance as Record<string, unknown> | undefined)?.boundaries === "string" ? String((source.guidance as Record<string, unknown>).boundaries) : empty.guidance.boundaries,
-    },
+    guidance,
+    inboxRole,
     contacts: contacts.slice(0, 100).map((raw, index): Contact => {
       const contact = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
       const captured = typeof contact.capturedContext === "string" ? contact.capturedContext : "";
@@ -274,7 +300,7 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
         profileNotes: typeof contact.profileNotes === "string" ? contact.profileNotes.slice(0, 20_000) : "",
         platform: contact.platform === "gmail" || contact.platform === "outlook" || contact.platform === "other" ? contact.platform : "linkedin",
         platformUrl: typeof contact.platformUrl === "string" ? contact.platformUrl.slice(0, 2000) : "",
-        chat: Array.isArray(contact.chat) ? contact.chat.slice(-1000).map((message, messageIndex) => normalizeMessage(message as Partial<Message>, messageIndex)) : [],
+        chat: Array.isArray(contact.chat) ? repairLegacyLinkedInMessages(contact.chat.slice(-1000).map((message, messageIndex) => normalizeMessage(message as Partial<Message>, messageIndex))) : [],
         documents: Array.isArray(contact.documents) ? contact.documents.slice(0, 50).map((document, documentIndex) => {
           const item = document as Record<string, unknown>;
           return { id: typeof item.id === "string" ? item.id : "document-" + documentIndex, name: typeof item.name === "string" ? item.name.slice(0, 200) : "Imported context", text: typeof item.text === "string" ? item.text.slice(0, 100_000) : "", createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString() };
@@ -287,20 +313,24 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
         retentionDays: contact.retentionDays === 0 || contact.retentionDays === 30 || contact.retentionDays === 365 ? contact.retentionDays : 90,
         profileUrl: typeof contact.profileUrl === "string" ? contact.profileUrl.slice(0, 2_000) : "",
         avatarUrl: typeof contact.avatarUrl === "string" ? contact.avatarUrl.slice(0, 2_000) : "",
+        company: typeof contact.company === "string" ? contact.company.slice(0, 500) : "",
         conversationUrl: typeof contact.conversationUrl === "string" ? contact.conversationUrl.slice(0, 2_000) : "",
+        source: contact.source === "linkedin-extension" ? "linkedin-extension" : "manual",
         labels: normalizeLabels(contact.labels),
         pipelineStage: normalizeStage(contact.pipelineStage),
         notes: typeof contact.notes === "string" ? contact.notes.slice(0, 20_000) : "",
         snoozedUntil: typeof contact.snoozedUntil === "string" ? contact.snoozedUntil.slice(0, 100) : "",
         followUpAt: typeof contact.followUpAt === "string" ? contact.followUpAt.slice(0, 100) : "",
         archivedAt: typeof contact.archivedAt === "string" ? contact.archivedAt.slice(0, 100) : "",
+        firstSyncedAt: typeof contact.firstSyncedAt === "string" ? contact.firstSyncedAt.slice(0, 100) : "",
         lastSyncedAt: typeof contact.lastSyncedAt === "string" ? contact.lastSyncedAt.slice(0, 100) : "",
+        lastSyncMessageCount: typeof contact.lastSyncMessageCount === "number" && Number.isFinite(contact.lastSyncMessageCount) ? Math.max(0, Math.floor(contact.lastSyncMessageCount)) : 0,
         draftHistory: Array.isArray(contact.draftHistory) ? contact.draftHistory.slice(-20).flatMap((draft, draftIndex) => {
           if (!draft || typeof draft !== "object") return [];
           const item = draft as Record<string, unknown>;
           const drafts = Array.isArray(item.drafts) ? item.drafts.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.slice(0, 5_000)).slice(0, 3) : [];
           if (!drafts.length) return [];
-          return [{ id: typeof item.id === "string" ? item.id.slice(0, 200) : `draft-history-${draftIndex}`, agenda: typeof item.agenda === "string" ? item.agenda.slice(0, 5_000) : "", drafts, createdAt: typeof item.createdAt === "string" ? item.createdAt.slice(0, 100) : new Date().toISOString() }];
+          return [{ id: typeof item.id === "string" ? item.id.slice(0, 200) : `draft-history-${draftIndex}`, agenda: typeof item.agenda === "string" ? item.agenda.slice(0, 5_000) : "", drafts, createdAt: typeof item.createdAt === "string" ? item.createdAt.slice(0, 100) : new Date().toISOString(), role: isMessagingRole(item.role) ? item.role : inboxRole }];
         }) : [],
       };
     }),

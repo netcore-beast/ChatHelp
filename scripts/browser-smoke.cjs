@@ -49,7 +49,7 @@ app.whenReady().then(async () => {
     if (errors.length) throw new Error(errors.join("\n"));
     if (!state?.indexedDb) throw new Error("IndexedDB is unavailable in the rendered app.");
     if (state.checking) throw new Error(`The application remained on its startup loading screen. Body: ${state.bodyText}`);
-    if (state.heading !== "Your conversations stay under your key.") throw new Error(`Unexpected startup heading: ${state?.heading || "none"}`);
+    if (state.heading !== "Private conversation studio") throw new Error(`Unexpected startup heading: ${state?.heading || "none"}`);
     console.log("Browser smoke verified: React hydrated and secure storage initialization completed.");
     clearTimeout(timeout);
     app.exit(0);
