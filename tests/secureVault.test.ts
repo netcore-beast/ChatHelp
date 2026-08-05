@@ -41,25 +41,29 @@ describe("encrypted device vault", () => {
       },
     });
 
-    expect(workspace.version).toBe(7);
+    expect(workspace.version).toBe(8);
     expect(workspace.guidance.selectedRole).toBe("Human Resource");
     expect(workspace.inboxRole).toBe("Human Resource");
-    expect(workspace.guidance.playbooks["Human Resource"]).toEqual({ objective: "LEGACY-HR-GOAL", boundaries: "LEGACY-HR-RULES" });
+    expect(workspace.guidance.playbooks["Human Resource"]).toEqual({
+      objective: "LEGACY-HR-GOAL",
+      boundaries: "LEGACY-HR-RULES",
+      rulebookDigest: "- LEGACY-HR-RULES",
+    });
     expect(workspace.guidance.playbooks["Network Marketing"].objective).not.toBe("LEGACY-HR-GOAL");
     expect(workspace.guidance.voice).toBe("Clear and considerate");
   });
 
   it("preserves separately edited role playbooks and the Inbox role after reopening", async () => {
     const workspace = createEmptyWorkspace();
-    workspace.guidance.playbooks["Human Resource"] = { objective: "HR-ONLY-GOAL", boundaries: "HR-ONLY-RULES" };
-    workspace.guidance.playbooks["Network Marketing"] = { objective: "NETWORK-ONLY-GOAL", boundaries: "NETWORK-ONLY-RULES" };
+    workspace.guidance.playbooks["Human Resource"] = { objective: "HR-ONLY-GOAL", boundaries: "HR-ONLY-RULES", rulebookDigest: "- HR-ONLY-RULES" };
+    workspace.guidance.playbooks["Network Marketing"] = { objective: "NETWORK-ONLY-GOAL", boundaries: "NETWORK-ONLY-RULES", rulebookDigest: "- NETWORK-ONLY-RULES" };
     workspace.guidance.selectedRole = "Human Resource";
     workspace.inboxRole = "Network Marketing";
     await createDeviceVault(workspace);
 
     const reopened = (await openDeviceVault()).workspace;
-    expect(reopened.guidance.playbooks["Human Resource"]).toEqual({ objective: "HR-ONLY-GOAL", boundaries: "HR-ONLY-RULES" });
-    expect(reopened.guidance.playbooks["Network Marketing"]).toEqual({ objective: "NETWORK-ONLY-GOAL", boundaries: "NETWORK-ONLY-RULES" });
+    expect(reopened.guidance.playbooks["Human Resource"]).toEqual({ objective: "HR-ONLY-GOAL", boundaries: "HR-ONLY-RULES", rulebookDigest: "- HR-ONLY-RULES" });
+    expect(reopened.guidance.playbooks["Network Marketing"]).toEqual({ objective: "NETWORK-ONLY-GOAL", boundaries: "NETWORK-ONLY-RULES", rulebookDigest: "- NETWORK-ONLY-RULES" });
     expect(reopened.guidance.selectedRole).toBe("Human Resource");
     expect(reopened.inboxRole).toBe("Network Marketing");
   });

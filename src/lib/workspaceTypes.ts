@@ -1,3 +1,5 @@
+import { buildRulebookDigest } from "./rulebookDigest";
+
 export type MessageRole = "me" | "them";
 export type ConversationPlatform = "linkedin" | "gmail" | "outlook" | "other";
 export type PipelineStage = "inbox" | "hot" | "warm" | "cold" | "follow-up" | "replied" | "snoozed" | "done";
@@ -92,11 +94,13 @@ export interface Guidance {
   objective: string;
   voice: string;
   boundaries: string;
+  rulebookDigest: string;
 }
 
 export interface RolePlaybook {
   objective: string;
   boundaries: string;
+  rulebookDigest: string;
 }
 
 export type RolePlaybooks = Record<MessagingRole, RolePlaybook>;
@@ -133,7 +137,7 @@ export interface AiUsageEntry {
 }
 
 export interface WorkspaceData {
-  version: 7;
+  version: 8;
   modelId: string;
   cloudInference: CloudInferenceSettings;
   contacts: Contact[];
@@ -178,18 +182,22 @@ export function createDefaultMessagingGuidance(): MessagingGuidance {
       "Human Resource": {
         objective: "Build a respectful professional relationship and communicate clearly about people, roles, and workplace topics",
         boundaries: "Do not invent role details, make promises, pressure the person, or use discriminatory or invasive language.",
+        rulebookDigest: buildRulebookDigest("Do not invent role details, make promises, pressure the person, or use discriminatory or invasive language."),
       },
       "Network Marketing": {
         objective: "Build genuine trust and explore mutual value without leading with a pitch",
         boundaries: "Do not make income claims, create false urgency, pressure the person, or imply a relationship that does not exist.",
+        rulebookDigest: buildRulebookDigest("Do not make income claims, create false urgency, pressure the person, or imply a relationship that does not exist."),
       },
       "Job Seeker": {
         objective: "Build a credible professional connection and learn about relevant opportunities",
         boundaries: "Do not invent experience, claim a referral or relationship that does not exist, demand help, or send a generic sales-style pitch.",
+        rulebookDigest: buildRulebookDigest("Do not invent experience, claim a referral or relationship that does not exist, demand help, or send a generic sales-style pitch."),
       },
       "Socializing/Networking": {
         objective: "Build a genuine relationship and explore mutual business value",
         boundaries: "Do not invent facts, pressure the person, or imply a relationship that does not exist.",
+        rulebookDigest: buildRulebookDigest("Do not invent facts, pressure the person, or imply a relationship that does not exist."),
       },
     },
   };
@@ -197,13 +205,13 @@ export function createDefaultMessagingGuidance(): MessagingGuidance {
 
 export function resolveRoleGuidance(guidance: MessagingGuidance, role: MessagingRole): Guidance {
   const playbook = guidance.playbooks[role];
-  return { role, objective: playbook.objective, voice: guidance.voice, boundaries: playbook.boundaries };
+  return { role, objective: playbook.objective, voice: guidance.voice, boundaries: playbook.boundaries, rulebookDigest: playbook.rulebookDigest || buildRulebookDigest(playbook.boundaries) };
 }
 
 export function createEmptyWorkspace(): WorkspaceData {
   const guidance = createDefaultMessagingGuidance();
   return {
-    version: 7,
+    version: 8,
     modelId: DEFAULT_MODEL_ID,
     cloudInference: {
       accessToken: "",

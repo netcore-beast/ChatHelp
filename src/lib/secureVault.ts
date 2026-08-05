@@ -1,6 +1,7 @@
 import { MESSAGING_ROLES, PLAYBOOK_GOAL_MAX_CHARS, PLAYBOOK_RULES_MAX_CHARS, PLAYBOOK_VOICE_MAX_CHARS, createDefaultMessagingGuidance, createEmptyWorkspace, isMessagingRole, normalizeMessagingRole, normalizeWorkspaceModelId, type Contact, type ConversationAttachment, type Message, type PipelineStage, type RolePlaybooks, type WorkspaceData } from "./workspaceTypes";
 import { PIPELINE_STAGES } from "./linkedinExtension";
 import { repairLegacyLinkedInMessages } from "./messageDedup";
+import { buildRulebookDigest } from "./rulebookDigest";
 
 const DB_NAME = "chathelp-secure";
 const DB_VERSION = 1;
@@ -282,13 +283,17 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
       playbooks[role] = {
         objective: typeof rawPlaybook.objective === "string" ? rawPlaybook.objective.slice(0, PLAYBOOK_GOAL_MAX_CHARS) : playbooks[role].objective,
         boundaries: typeof rawPlaybook.boundaries === "string" ? rawPlaybook.boundaries.slice(0, PLAYBOOK_RULES_MAX_CHARS) : playbooks[role].boundaries,
+        rulebookDigest: "",
       };
+      playbooks[role].rulebookDigest = buildRulebookDigest(playbooks[role].boundaries);
     }
   } else {
     playbooks[selectedRole] = {
       objective: typeof rawGuidance.objective === "string" ? rawGuidance.objective.slice(0, PLAYBOOK_GOAL_MAX_CHARS) : playbooks[selectedRole].objective,
       boundaries: typeof rawGuidance.boundaries === "string" ? rawGuidance.boundaries.slice(0, PLAYBOOK_RULES_MAX_CHARS) : playbooks[selectedRole].boundaries,
+      rulebookDigest: "",
     };
+    playbooks[selectedRole].rulebookDigest = buildRulebookDigest(playbooks[selectedRole].boundaries);
   }
   const guidance = {
     selectedRole,
@@ -297,7 +302,7 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
   };
   const inboxRole = isMessagingRole(source.inboxRole) ? source.inboxRole : selectedRole;
   return {
-    version: 7,
+    version: 8,
     modelId: normalizeWorkspaceModelId(),
     cloudInference: {
       accessToken: rememberAccessToken && typeof cloudInference.accessToken === "string" ? cloudInference.accessToken.slice(0, 200) : "",
