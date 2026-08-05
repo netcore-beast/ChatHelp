@@ -1,4 +1,4 @@
-globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConversation(expectedContact) {
+globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConversation(captureMode = "manual") {
   const cleanText = (value, limit = 20_000) => String(value || "").replace(/\s+/g, " ").trim().slice(0, limit);
   const visible = (element) => {
     if (!(element instanceof Element)) return false;
@@ -7,8 +7,7 @@ globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConvers
   };
   const firstElement = (root, selectors) => {
     for (const selector of selectors) {
-      const candidates = root.querySelectorAll(selector);
-      for (const candidate of candidates) {
+      for (const candidate of root.querySelectorAll(selector)) {
         if (visible(candidate)) return candidate;
       }
     }
@@ -16,8 +15,7 @@ globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConvers
   };
   const firstText = (root, selectors, limit) => {
     for (const selector of selectors) {
-      const candidates = root.querySelectorAll(selector);
-      for (const candidate of candidates) {
+      for (const candidate of root.querySelectorAll(selector)) {
         const value = cleanText(candidate.textContent, limit);
         if (visible(candidate) && value && !/^(messaging|messages|details)$/i.test(value)) return value;
       }
@@ -48,7 +46,7 @@ globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConvers
       return "";
     }
   };
-  const normalizedName = (value) => cleanText(value, 200).normalize("NFKC").toLocaleLowerCase();
+  const normalized = (value) => cleanText(value, 20_000).normalize("NFKC").toLocaleLowerCase();
   const personName = (value) => cleanText(value, 300)
     .replace(/^view\s+/i, "")
     .replace(/[’']s\s+(?:linkedin\s+)?profile.*$/i, "")
@@ -67,28 +65,38 @@ globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConvers
   };
   const failure = (code, message, observedContact = null) => ({ ok: false, error: { code, message, observedContact } });
 
-  const thread = firstElement(document, [
+  // Start from LinkedIn's central application region. Overlay chats, inbox
+  // previews, and complementary side panels can contain similar message
+  // markup, but are intentionally outside this root.
+  const centralRoot = firstElement(document, [
+    ".scaffold-layout__main",
+    "main",
+    "[role='main']",
+  ]);
+  if (!centralRoot) return failure("conversation_not_found", "No conversation open. Open a LinkedIn Messaging conversation and keep its header and at least one message visible.");
+
+  // Every message query below is scoped to this one visible central container.
+  const thread = firstElement(centralRoot, [
     ".msg-s-message-list-container",
     ".msg-s-message-list",
     ".msg-thread",
-    ".msg-convo-wrapper",
-    "[data-view-name='message-thread']",
+    ".msg-convo-wrapper [data-view-name='message-thread-list']",
     "[data-view-name='message-thread-list']",
     "[data-view-name='conversation-thread']",
   ]);
-  if (!thread) return failure("conversation_not_found", "Open a LinkedIn Messaging conversation and keep its header and at least one message visible.");
+  if (!thread) return failure("conversation_not_found", "No conversation open. Open a LinkedIn Messaging conversation and keep its header and at least one message visible.");
 
-  const header = firstElement(document, [
+  const conversationRoot = thread.closest(".msg-convo-wrapper, .msg-thread, [data-view-name='message-thread'], [data-view-name='conversation-view'], main, [role='main']") || centralRoot;
+  const header = firstElement(conversationRoot, [
     ".msg-thread__top-card",
     ".msg-convo-wrapper__top-card",
-    ".msg-overlay-conversation-bubble__header",
-    ".msg-overlay-bubble-header",
     "[data-view-name='message-thread-header']",
     "[data-view-name='conversation-header']",
     ".msg-entity-lockup",
   ]);
-  if (!header) return failure("contact_header_not_found", "ChatHelp could not find the open conversation header. Keep the contact name visible and try again.");
+  if (!header) return failure("contact_header_not_found", "LinkedIn layout unsupported. ChatHelp could not find the open conversation header.");
 
+  // Identity is read and validated before any message node is queried.
   const profileAnchor = firstElement(header, ["a[href*='/in/']", ".msg-thread__link-to-profile"]);
   const rawName = firstText(header, [
     "[data-anonymize='person-name']",
@@ -100,7 +108,7 @@ globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConvers
     "h2",
   ], 300) || profileAnchor?.getAttribute("aria-label") || profileAnchor?.getAttribute("title") || "";
   const name = personName(rawName);
-  if (!name) return failure("contact_name_not_found", "ChatHelp could not identify the selected LinkedIn contact. Keep the conversation header visible and try again.");
+  if (!name) return failure("contact_name_not_found", "LinkedIn layout unsupported. ChatHelp could not identify the open conversation contact.");
 
   const headline = firstText(header, [
     ".msg-entity-lockup__entity-subtitle",
@@ -108,23 +116,15 @@ globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConvers
     ".msg-thread__participant-info",
     "[data-view-name='message-thread-subtitle']",
   ], 500);
+  const explicitCompany = firstText(header, ["[data-view-name='message-thread-company']", "[data-anonymize='company-name']"], 500);
+  const company = explicitCompany || cleanText(headline.match(/\bat\s+(.+)$/i)?.[1] || "", 500);
   const avatar = firstElement(header, ["img.msg-entity-lockup__entity-image", "img.presence-entity__image", "img"]);
   const profileUrl = safeLinkedInUrl(profileAnchor?.getAttribute("href") || "", "/in/");
   const avatarUrl = safeImageUrl(avatar?.getAttribute("src") || "");
   const observedContact = { name, profileUrl };
-  const expectedName = personName(expectedContact?.name);
-  const expectedProfileUrl = safeLinkedInUrl(expectedContact?.profileUrl || "", "/in/");
-  const namesMatch = normalizedName(name) === normalizedName(expectedName);
-  const identityMatches = expectedProfileUrl && profileUrl ? expectedProfileUrl === profileUrl : namesMatch;
-  if (!expectedName || !identityMatches) {
-    return failure(
-      "contact_mismatch",
-      `ChatHelp is locked to ${expectedName || "the selected contact"}, but the open conversation is ${name}. Confirm the identity in ChatHelp before capturing messages.`,
-      observedContact,
-    );
-  }
+  const pageUrl = safeLinkedInUrl(`${location.origin}${location.pathname}`, "/messaging/");
+  const contactIdentity = profileUrl || pageUrl || normalized(name);
 
-  // Identity verification above must complete before any message nodes are traversed.
   const eventNodes = Array.from(thread.querySelectorAll([
     ".msg-s-message-list__event",
     ".msg-s-event-listitem",
@@ -133,6 +133,7 @@ globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConvers
   ].join(","))).filter(visible);
   const seenNodes = new Set();
   const seenMessages = new Set();
+  const fallbackOccurrences = new Map();
   const messages = [];
   let lastSpeaker = "";
 
@@ -172,17 +173,24 @@ globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConvers
     if (speaker) lastSpeaker = speaker;
     const ownSelector = ".msg-s-message-list__event--own, .msg-s-message-group--self, .msg-s-event-listitem--self, [data-is-own-message='true'], [data-sender-is-viewer='true']";
     const own = eventNode.matches(ownSelector) || Boolean(eventNode.querySelector(ownSelector));
-    const normalizedSpeaker = normalizedName(speaker);
-    const role = own || normalizedSpeaker === "you" || (normalizedSpeaker && normalizedSpeaker !== normalizedName(name)) ? "me" : "them";
+    const normalizedSpeaker = normalized(speaker);
+    const role = own || normalizedSpeaker === "you" || (normalizedSpeaker && normalizedSpeaker !== normalized(name)) ? "me" : "them";
     const timeElement = eventNode.querySelector("time, [datetime], .msg-s-message-group__timestamp, .msg-s-event-listitem__time-stamp");
     const rawDate = timeElement?.getAttribute("datetime") || "";
     const parsedDate = rawDate && !Number.isNaN(new Date(rawDate).getTime()) ? new Date(rawDate).toISOString() : "";
-    const sourceId = cleanText(eventNode.getAttribute("data-event-urn") || eventNode.id, 200);
-    const fingerprint = `${role}|${body.toLowerCase()}|${parsedDate}|${attachments.map((item) => item.label).join("|")}`;
-    if (seenMessages.has(fingerprint)) return;
-    seenMessages.add(fingerprint);
+    // LinkedIn can regenerate ordinary DOM element IDs during SPA rerenders.
+    // Trust only message-specific data identifiers; otherwise use a stable
+    // content fingerprint with an occurrence number for repeated short texts.
+    const sourceId = cleanText(eventNode.getAttribute("data-event-urn") || eventNode.getAttribute("data-message-id") || eventNode.getAttribute("data-urn"), 200);
+    const fingerprintBase = [contactIdentity, role, normalized(speaker), normalized(body), parsedDate || "undated", attachments.map((item) => normalized(item.label)).join("|")].join("|");
+    const occurrence = (fallbackOccurrences.get(fingerprintBase) || 0) + 1;
+    fallbackOccurrences.set(fingerprintBase, occurrence);
+    const fingerprint = `${fingerprintBase}|occurrence:${occurrence}`;
+    if (seenMessages.has(sourceId || fingerprint)) return;
+    seenMessages.add(sourceId || fingerprint);
     messages.push({
       id: sourceId || `visible-message-${hash(fingerprint)}`,
+      sourceId,
       role,
       speaker,
       body,
@@ -191,16 +199,17 @@ globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConvers
     });
   });
 
-  if (!messages.length) return failure("messages_not_found", "No visible LinkedIn messages were found. Scroll the open conversation until at least one message is visible, then try again.", observedContact);
+  if (!messages.length) return failure("messages_not_found", "No visible messages were found in the open central conversation.", observedContact);
   return {
     ok: true,
     snapshot: {
       source: "chathelp-linkedin-extension",
-      version: 1,
+      version: 2,
+      captureMode: captureMode === "automatic" ? "automatic" : "manual",
       captureId: `capture-${crypto.randomUUID()}`,
       capturedAt: new Date().toISOString(),
-      pageUrl: safeLinkedInUrl(`${location.origin}${location.pathname}`, "/messaging/"),
-      contact: { name, headline, profileUrl, avatarUrl },
+      pageUrl,
+      contact: { name, headline, company, profileUrl, avatarUrl },
       messages,
     },
   };

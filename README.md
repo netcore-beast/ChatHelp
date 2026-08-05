@@ -9,7 +9,7 @@ ChatHelp is a local-first, encrypted web application that helps a person write t
 - Draft generation through an authenticated Cloudflare Worker and Workers AI; no model is downloaded to the device.
 - Local relevance ranking for imported context; no embedding service.
 - Self-hosted Tesseract worker, WebAssembly engine, and English OCR data.
-- Desktop-first Chrome extension import for the contact already selected in ChatHelp. The extension verifies that identity before reading visible messages; mobile uses manual paste/import, and screen/OCR remains a desktop fallback.
+- Desktop-first, opt-in Chrome synchronization for only the LinkedIn conversation the user manually opens. Unknown contacts are created locally; mobile uses manual paste/import, and one-time extension capture plus screen/OCR remain fallbacks.
 - Local inbox, CRM pipeline stages, labels, private notes, snooze/follow-up reminders, editable draft history, and local AI usage metadata.
 - Per-contact retention and complete local erasure, including the browser-held device key.
 - Restrictive CSP and browser permission policy.
@@ -41,12 +41,12 @@ The test suite covers automatic device encryption, one-time migration of older p
 ## Desktop LinkedIn extension workflow
 
 1. Load the unpacked `extension` directory in desktop Chrome during private beta testing. After updating the source, click **Reload** for ChatHelp in `chrome://extensions`, then reload the ChatHelp tab; the app shows the connected extension version.
-2. Add or select the intended LinkedIn contact in ChatHelp.
-3. Open that same contact's LinkedIn Messaging conversation.
-4. Click the ChatHelp extension icon. Its temporary `activeTab` grant verifies the visible contact before reading any message nodes; a different conversation is blocked. If a short saved name such as `Amit` does not match LinkedIn's `Amit Dabral`, ChatHelp shows the header-only identity and asks for confirmation without reading chat content.
-5. ChatHelp opens or focuses, validates the snapshot, merges new messages into only the selected existing contact, encrypts it locally, and clears the extension&apos;s pending copy.
+2. Click **Enable automatic LinkedIn conversation sync** and approve Chrome's optional LinkedIn host permission. This setting is off by default and can be paused or disabled at any time.
+3. Manually open a conversation in LinkedIn Messaging. ChatHelp reads the visible central header and thread only; it never opens, scrolls, clicks, types, or scans the inbox.
+4. ChatHelp matches by normalized profile URL, then conversation URL, then guarded unique name. Unknown contacts are created in the encrypted local vault, while ambiguous identities are never merged.
+5. Manually opening another conversation synchronizes it without another toolbar click. Repeated DOM changes and captures are deduplicated.
 6. Triage the conversation with pipeline stages, labels, notes, snooze/follow-up times, and keyboard shortcuts. Generate three editable drafts only when needed.
-7. Copy the chosen draft, review it on LinkedIn, and send it yourself. ChatHelp never types or clicks Send.
+7. Copy the chosen draft, review it on LinkedIn, and send it yourself. The toolbar's one-time capture remains available as a fallback; ChatHelp never types or clicks Send.
 
 See [extension/README.md](extension/README.md) and [docs/DESKTOP_LINKEDIN_WORKFLOW.md](docs/DESKTOP_LINKEDIN_WORKFLOW.md).
 
@@ -62,7 +62,14 @@ See [docs/NATIVE_PACKAGING.md](docs/NATIVE_PACKAGING.md) for artifact and signin
 
 ## Important product boundary
 
-ChatHelp is a drafting assistant, not a messaging automation client. Its extension runs an isolated DOM reader only after the user clicks it on the active LinkedIn conversation. It does not enumerate the inbox, bypass platform APIs, click controls, type, insert drafts, or send messages. This keeps the user in control.
+ChatHelp is a drafting assistant, not a messaging automation client. After explicit opt-in, its isolated DOM reader observes only the central conversation the user manually opens. It does not enumerate the inbox, use LinkedIn APIs or cookies, click controls, type, insert drafts, or send messages. This keeps the user in control.
+
+## Deployment channels
+
+- Production remains `https://chathelp-private-cloud.project-mission-ai.workers.dev/` until a public custom domain is purchased and explicitly attached.
+- Testing uses the stable aliased preview `https://testing-chathelp-private-cloud.project-mission-ai.workers.dev/`.
+- The testing link is a preview version of the same Worker, not a duplicate Worker. Uploading a test version does not promote it to production.
+- GitHub remains the release source of truth: changes are reviewed through a pull request and production is promoted only after checks and testing pass.
 
 
 ## Guided LinkedIn profile test

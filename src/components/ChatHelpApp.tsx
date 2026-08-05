@@ -4,27 +4,32 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { applyRetention } from "@/lib/retention";
 import { buildOutcomeSummary, containsLinkedInPageNoise, isConversationCapture, isLikelyFullLinkedInPageCapture, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
 import { captureVisibleScreen, cropImageToRegion, extractTextFromImage, type NormalizedCropRegion } from "@/lib/localOcr";
-import { CLOUDFLARE_MODEL_NAME, generatePrivateDrafts } from "@/lib/privateAi";
-import { PLATFORM_OPTIONS, platformLabel, safePlatformUrl } from "@/lib/platforms";
+import { buildDraftContextSummary, CLOUDFLARE_MODEL_NAME, generatePrivateDrafts, type PrivateAiInput } from "@/lib/privateAi";
+import { deriveConversationState, sortPinnedThenRecent } from "@/lib/conversationState";
+import { PLATFORM_OPTIONS, safePlatformUrl } from "@/lib/platforms";
+import { createRulesDocumentDownload, mergeRulesDocument } from "@/lib/rulesDocument";
 import {
   LINKEDIN_EXTENSION_SOURCE,
   LINKEDIN_EXTENSION_STATUS_ACK_EVENT,
   LINKEDIN_EXTENSION_STATUS_EVENT,
-  LINKEDIN_SELECTED_CONTACT_EVENT,
   LINKEDIN_SNAPSHOT_ACK_EVENT,
   LINKEDIN_SNAPSHOT_EVENT,
   LINKEDIN_SNAPSHOT_REQUEST_EVENT,
+  LINKEDIN_SYNC_COMMAND_EVENT,
+  LINKEDIN_SYNC_STATE_EVENT,
   PIPELINE_STAGES,
   contactStage,
   isActivelySnoozed,
   isCurrentLinkedInExtensionVersion,
-  linkedInSelectionForContact,
   isLikelyMobileDevice,
   isReminderDue,
-  mergeLinkedInSnapshotForContact,
   parseLinkedInExtensionStatus,
   parseLinkedInExtensionSnapshot,
+  parseLinkedInSyncState,
   recommendLinkedInCaptureMethod,
+  upsertLinkedInSnapshot,
+  type LinkedInSyncCommand,
+  type LinkedInSyncState,
 } from "@/lib/linkedinExtension";
 import { LinkedInTestWizard } from "@/components/LinkedInTestWizard";
 import { PwaInstall } from "@/components/PwaInstall";
@@ -41,10 +46,16 @@ import {
 } from "@/lib/secureVault";
 import {
   CLOUDFLARE_MODEL_ID,
+  MESSAGING_ROLES,
+  PLAYBOOK_GOAL_MAX_CHARS,
+  PLAYBOOK_RULES_MAX_CHARS,
+  PLAYBOOK_VOICE_MAX_CHARS,
   createEmptyWorkspace,
   newId,
+  resolveRoleGuidance,
   type Contact,
   type ConversationPlatform,
+  type MessagingRole,
   type MessageRole,
   type PipelineStage,
   type WorkspaceData,
@@ -52,7 +63,26 @@ import {
 
 const LEGACY_KEY = "chathelp-private-v2";
 const STORAGE_CHECK_TIMEOUT_MS = 8_000;
-type InboxView = "inbox" | "pipeline" | "reminders" | "archived";
+type InboxView = "inbox" | "contacts" | "pipeline" | "reminders" | "labels" | "archived" | "settings";
+type InboxFilter = "main" | "to-respond" | "awaiting-reply" | "follow-up-due" | "snoozed" | "new-contacts" | "archived";
+const NAV_ITEMS: ReadonlyArray<{ value: InboxView; label: string; glyph: string }> = [
+  { value: "inbox", label: "Inbox", glyph: "I" },
+  { value: "contacts", label: "Contacts", glyph: "C" },
+  { value: "pipeline", label: "Pipeline", glyph: "P" },
+  { value: "reminders", label: "Reminders", glyph: "R" },
+  { value: "labels", label: "Labels", glyph: "L" },
+  { value: "archived", label: "Archived", glyph: "A" },
+  { value: "settings", label: "Settings", glyph: "S" },
+];
+const INBOX_FILTERS: ReadonlyArray<{ value: InboxFilter; label: string }> = [
+  { value: "main", label: "Main inbox" },
+  { value: "to-respond", label: "To respond" },
+  { value: "awaiting-reply", label: "Awaiting reply" },
+  { value: "follow-up-due", label: "Follow-up due" },
+  { value: "snoozed", label: "Snoozed" },
+  { value: "new-contacts", label: "New contacts" },
+  { value: "archived", label: "Archived" },
+];
 
 function toDateTimeLocal(value: string | undefined): string {
   if (!value) return "";
@@ -103,6 +133,32 @@ function formatError(error: unknown): string {
 
 function hasConversationContext(contact: Contact): boolean {
   return contact.chat.length > 0 || contact.documents.some((document) => isConversationCapture(document) && !isLikelyFullLinkedInPageCapture(document));
+}
+
+function latestDraftsForRole(contact: Contact | null | undefined, role: MessagingRole): string[] {
+  const history = contact?.draftHistory ?? [];
+  return history.findLast((entry) => entry.role === role)?.drafts
+    ?? history.findLast((entry) => !entry.role)?.drafts
+    ?? [];
+}
+
+function createDraftInput(
+  activeContact: Contact,
+  guidance: ReturnType<typeof resolveRoleGuidance>,
+  requestAgenda: string,
+  workspace: WorkspaceData,
+): PrivateAiInput {
+  const query = [requestAgenda, activeContact.profileNotes, activeContact.chat.slice(-8).map((item) => item.body).join(" ")].join(" ");
+  const relevant = selectRelevantContext(activeContact.documents.filter((document) => !isConversationCapture(document) && !isLikelyFullLinkedInPageCapture(document)), query);
+  const feedbackSummary = workspace.feedback.filter((item) => item.contactId === activeContact.id).slice(-20).map((item) => item.rating + ": " + item.note).join("\n");
+  return {
+    contact: activeContact,
+    guidance,
+    latestQuestion: requestAgenda,
+    retrievedContext: relevant,
+    feedbackSummary,
+    outcomeSummary: buildOutcomeSummary(activeContact),
+  };
 }
 
 export default function ChatHelpApp() {
@@ -204,23 +260,28 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [workspace, setWorkspace] = useState(() => applyRetention(initial));
   const [selectedId, setSelectedId] = useState(initial.contacts[0]?.id ?? "");
   const [inboxView, setInboxView] = useState<InboxView>("inbox");
+  const [inboxFilter, setInboxFilter] = useState<InboxFilter>("main");
   const [contactSearch, setContactSearch] = useState("");
   const [labelFilter, setLabelFilter] = useState("");
-  const [extensionStatus, setExtensionStatus] = useState("Chrome extension not connected yet. Load or reload it in Chrome, then refresh ChatHelp. Screen capture remains available under other import options.");
+  const [extensionStatus, setExtensionStatus] = useState("Automatic sync disabled. Connect the Chrome extension to enable it on desktop.");
   const [extensionConnected, setExtensionConnected] = useState(false);
-  const [extensionIdentityCandidate, setExtensionIdentityCandidate] = useState<{ name: string; profileUrl: string } | null>(null);
+  const [syncState, setSyncState] = useState<LinkedInSyncState | null>(null);
+  const [manualCaptureHelp, setManualCaptureHelp] = useState(false);
+  const [navCollapsed, setNavCollapsed] = useState(false);
+  const [contextCollapsed, setContextCollapsed] = useState(false);
+  const [mobileConversationOpen, setMobileConversationOpen] = useState(false);
   const [captureEnvironment, setCaptureEnvironment] = useState({ detected: false, isMobile: false, supportsScreenCapture: false });
-  const [showImportAlternatives, setShowImportAlternatives] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [saveStatus, setSaveStatus] = useState("Encrypted");
   const [newContactName, setNewContactName] = useState("");
   const [newPlatform, setNewPlatform] = useState<ConversationPlatform>("linkedin");
   const [wizardOpen, setWizardOpen] = useState(false);
   const [agenda, setAgenda] = useState("");
-  const [drafts, setDrafts] = useState<string[]>(() => initial.contacts[0]?.draftHistory?.at(-1)?.drafts ?? []);
+  const [drafts, setDrafts] = useState<string[]>(() => latestDraftsForRole(initial.contacts[0], initial.inboxRole));
   const [aiStatus, setAiStatus] = useState("");
   const [draftError, setDraftError] = useState("");
   const [appError, setAppError] = useState("");
+  const [playbookStatus, setPlaybookStatus] = useState("");
   const [cloudAccessCode, setCloudAccessCode] = useState(() => initial.cloudInference.rememberAccessToken ? initial.cloudInference.accessToken : "");
   const [chatPaste, setChatPaste] = useState("");
   const [messageBody, setMessageBody] = useState("");
@@ -234,24 +295,20 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     resolve: (region: NormalizedCropRegion | null) => void;
   } | null>(null);
   const documentRef = useRef<HTMLInputElement>(null);
+  const rulesFileRef = useRef<HTMLInputElement>(null);
   const chatPasteRef = useRef<HTMLTextAreaElement>(null);
   const agendaRef = useRef<HTMLTextAreaElement>(null);
   const snoozeRef = useRef<HTMLInputElement>(null);
   const labelsRef = useRef<HTMLInputElement>(null);
   const shortcutDialogRef = useRef<HTMLDialogElement>(null);
   const workspaceRef = useRef(workspace);
-  const selectedIdRef = useRef(selectedId);
   const extensionConnectedRef = useRef(false);
   const extensionVersionRef = useRef("");
   const shortcutSequenceRef = useRef("");
 
   const contact = workspace.contacts.find((item) => item.id === selectedId) ?? workspace.contacts[0] ?? null;
-  const selectedContactName = contact?.name ?? "";
-  const selectedContactProfileUrl = contact?.profileUrl ?? "";
-  const selectedContactPlatform = contact?.platform ?? "";
 
   useEffect(() => { workspaceRef.current = workspace; }, [workspace]);
-  useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
@@ -273,12 +330,18 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         extensionVersionRef.current = version;
         const currentVersion = isCurrentLinkedInExtensionVersion(version);
         setExtensionConnected(currentVersion);
-        const selected = workspaceRef.current.contacts.find((item) => item.id === selectedIdRef.current);
-        const selection = linkedInSelectionForContact(selected);
         setExtensionStatus(currentVersion
-          ? selection ? `Chrome extension ${version} connected and locked to ${selection.name}. It will refuse to read a different conversation.` : `Chrome extension ${version} connected. Add and select a LinkedIn contact before capturing messages.`
+          ? `Chrome extension ${version} connected. Automatic sync is opt-in and currently checking its permission state.`
           : `An older ChatHelp extension${version ? ` (${version})` : ""} is installed. In chrome://extensions, reload the current ChatHelp extension folder, then reload this tab.`);
-        window.postMessage({ source: "chathelp-app", type: LINKEDIN_SELECTED_CONTACT_EVENT, contact: selection }, targetOrigin);
+        return;
+      }
+      if (data.type === LINKEDIN_SYNC_STATE_EVENT) {
+        const state = parseLinkedInSyncState(data.payload);
+        if (!state) return;
+        extensionConnectedRef.current = true;
+        if (isCurrentLinkedInExtensionVersion(extensionVersionRef.current)) setExtensionConnected(true);
+        setSyncState(state);
+        setExtensionStatus(state.message);
         return;
       }
       if (data.type === LINKEDIN_EXTENSION_STATUS_EVENT) {
@@ -287,7 +350,6 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         extensionConnectedRef.current = true;
         if (isCurrentLinkedInExtensionVersion(extensionVersionRef.current)) setExtensionConnected(true);
         setExtensionStatus(status.message);
-        setExtensionIdentityCandidate(status.code === "contact_mismatch" ? status.observedContact : null);
         window.postMessage({ source: "chathelp-app", type: LINKEDIN_EXTENSION_STATUS_ACK_EVENT, statusId: status.statusId }, targetOrigin);
         return;
       }
@@ -299,22 +361,28 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       }
       extensionConnectedRef.current = true;
       setExtensionConnected(true);
-      setExtensionIdentityCandidate(null);
-      const selectedContactId = selectedIdRef.current;
-      const selected = workspaceRef.current.contacts.find((item) => item.id === selectedContactId);
-      const preview = mergeLinkedInSnapshotForContact(workspaceRef.current.contacts, selectedContactId, snapshot);
-      if (!preview) {
-        const expectedName = selected?.name || "the selected ChatHelp contact";
-        setExtensionStatus(`Capture blocked and discarded. The open LinkedIn conversation is not ${expectedName}. Select ${expectedName} in ChatHelp, then open that same conversation before clicking the extension.`);
+      const preview = upsertLinkedInSnapshot(workspaceRef.current.contacts, snapshot);
+      if (preview.action === "ambiguous") {
+        setExtensionStatus(`Ambiguous identity for ${snapshot.contact.name}. ChatHelp did not merge or create a duplicate. Add a profile or conversation URL to disambiguate this local contact.`);
         window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_ACK_EVENT, captureId: snapshot.captureId }, targetOrigin);
         return;
       }
       setWorkspace((current) => {
-        const merged = mergeLinkedInSnapshotForContact(current.contacts, selectedContactId, snapshot);
-        return merged ? { ...current, contacts: merged.contacts } : current;
+        const merged = upsertLinkedInSnapshot(current.contacts, snapshot);
+        return merged.action === "ambiguous" ? current : { ...current, contacts: merged.contacts };
       });
+      const syncedContact = preview.contacts.find((item) => item.id === preview.contactId);
+      setSelectedId(preview.contactId);
+      setMobileConversationOpen(true);
+      setDrafts(latestDraftsForRole(syncedContact, workspaceRef.current.inboxRole));
       setInboxView("inbox");
-      setExtensionStatus(`${selected?.name || snapshot.contact.name} imported: ${preview.importedMessages} new visible message${preview.importedMessages === 1 ? "" : "s"}. The extension read only the selected contact's open conversation.`);
+      setInboxFilter("main");
+      const restoreNotice = preview.restoredFromArchive ? " The archived conversation was restored to Inbox because a genuinely new incoming message arrived." : "";
+      setExtensionStatus((preview.action === "created"
+        ? `Contact automatically added: ${snapshot.contact.name}. Synchronized ${preview.importedMessages} visible message${preview.importedMessages === 1 ? "" : "s"}.`
+        : preview.importedMessages
+          ? `Existing contact updated: ${snapshot.contact.name}. Added ${preview.importedMessages} new visible message${preview.importedMessages === 1 ? "" : "s"}.`
+          : `No new messages for ${snapshot.contact.name}. The existing local conversation is already current.`) + restoreNotice);
       window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_ACK_EVENT, captureId: snapshot.captureId }, targetOrigin);
     };
     window.addEventListener("message", handleSnapshot);
@@ -331,24 +399,6 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   }, []);
 
   useEffect(() => {
-    const targetOrigin = window.location.origin === "null" ? "*" : window.location.origin;
-    const selected = workspaceRef.current.contacts.find((item) => item.id === selectedIdRef.current);
-    const selection = linkedInSelectionForContact(selected);
-    window.postMessage({ source: "chathelp-app", type: LINKEDIN_SELECTED_CONTACT_EVENT, contact: selection }, targetOrigin);
-  }, [selectedId, selectedContactName, selectedContactProfileUrl, selectedContactPlatform]);
-
-  useEffect(() => {
-    if (!extensionConnectedRef.current) return;
-    const selected = workspaceRef.current.contacts.find((item) => item.id === selectedIdRef.current);
-    const selection = linkedInSelectionForContact(selected);
-    setExtensionIdentityCandidate(null);
-    const version = extensionVersionRef.current;
-    setExtensionStatus(isCurrentLinkedInExtensionVersion(version)
-      ? selection ? `Chrome extension ${version} connected and locked to ${selection.name}. It will refuse to read a different conversation.` : `Chrome extension ${version} connected. Add and select a LinkedIn contact before capturing messages.`
-      : `An older ChatHelp extension${version ? ` (${version})` : ""} is installed. In chrome://extensions, reload the current ChatHelp extension folder, then reload this tab.`);
-  }, [selectedId, selectedContactName, selectedContactPlatform]);
-
-  useEffect(() => {
     const timer = window.setTimeout(() => {
       setSaveStatus("Encrypting…");
       void saveVault(applyRetention(workspace), session).then(() => setSaveStatus("Encrypted"), (error) => {
@@ -361,11 +411,14 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
 
   function updateWorkspace(updater: (current: WorkspaceData) => WorkspaceData) {
     setSaveStatus("Unsaved changes");
-    setWorkspace((current) => updater(current));
+    setWorkspace((current) => {
+      const next = updater(current);
+      workspaceRef.current = next;
+      return next;
+    });
   }
 
   function setActiveContactId(contactId: string) {
-    selectedIdRef.current = contactId;
     setSelectedId(contactId);
   }
 
@@ -381,23 +434,21 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     updateContactById(contact.id, updater);
   }
 
-  function confirmObservedLinkedInIdentity() {
-    if (!contact || !extensionIdentityCandidate) return;
-    const observed = extensionIdentityCandidate;
-    updateContact((current) => ({
-      ...current,
-      name: observed.name,
-      profileUrl: observed.profileUrl || current.profileUrl,
-    }));
-    setExtensionIdentityCandidate(null);
-    setExtensionStatus(`${observed.name} is now linked to this ChatHelp contact. Return to that open LinkedIn conversation and click the ChatHelp extension once more to capture its visible messages.`);
-  }
-
-  function selectContact(nextContact: Contact) {
-    setActiveContactId(nextContact.id);
-    setDrafts(nextContact.draftHistory?.at(-1)?.drafts ?? []);
-    setDraftError("");
-    setShowImportAlternatives(false);
+  function controlAutomaticSync(command: LinkedInSyncCommand) {
+    if (captureEnvironment.isMobile) {
+      setExtensionStatus("Automatic LinkedIn sync is desktop-only. Use manual paste or import on mobile.");
+      return;
+    }
+    if (!extensionConnected) {
+      setExtensionStatus("The current ChatHelp Chrome extension is not connected. Reload version 0.4.2 in chrome://extensions, then reload this tab.");
+      return;
+    }
+    if (command === "enable") setExtensionStatus("Waiting for Chrome's LinkedIn permission decision…");
+    if (command === "pause") setExtensionStatus("Pausing automatic sync…");
+    if (command === "resume") setExtensionStatus("Resuming automatic sync…");
+    if (command === "disable") setExtensionStatus("Disabling automatic sync and revoking LinkedIn permission…");
+    const targetOrigin = window.location.origin === "null" ? "*" : window.location.origin;
+    window.postMessage({ source: "chathelp-app", type: LINKEDIN_SYNC_COMMAND_EVENT, command }, targetOrigin);
   }
 
   function moveContactToStage(contactId: string, stage: PipelineStage) {
@@ -414,10 +465,111 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
 
   function persistDrafts(nextDrafts = drafts) {
     if (!contact?.draftHistory?.length) return;
-    updateContact((current) => ({
-      ...current,
-      draftHistory: (current.draftHistory ?? []).map((entry, index, entries) => index === entries.length - 1 ? { ...entry, drafts: nextDrafts } : entry),
-    }));
+    const activeRole = workspace.inboxRole;
+    updateContact((current) => {
+      const history = current.draftHistory ?? [];
+      let targetIndex = -1;
+      for (let index = history.length - 1; index >= 0; index -= 1) {
+        if (history[index].role === activeRole || (!history[index].role && targetIndex < 0)) {
+          targetIndex = index;
+          if (history[index].role === activeRole) break;
+        }
+      }
+      return targetIndex < 0 ? current : { ...current, draftHistory: history.map((entry, index) => index === targetIndex ? { ...entry, drafts: nextDrafts } : entry) };
+    });
+  }
+
+  function changeInboxRole(role: MessagingRole) {
+    if (role === workspace.inboxRole) return;
+    updateWorkspace((current) => ({ ...current, inboxRole: role }));
+    setDrafts([]);
+    setDraftError("");
+    setAiStatus("");
+  }
+
+  function updateRolePlaybook(role: MessagingRole, field: "objective" | "boundaries", value: string) {
+    const maxCharacters = field === "boundaries" ? PLAYBOOK_RULES_MAX_CHARS : PLAYBOOK_GOAL_MAX_CHARS;
+    updateWorkspace((current) => {
+      return {
+        ...current,
+        guidance: {
+          ...current.guidance,
+          playbooks: {
+            ...current.guidance.playbooks,
+            [role]: { ...current.guidance.playbooks[role], [field]: value.slice(0, maxCharacters) },
+          },
+        },
+      };
+    });
+  }
+
+  function updateSelectedPlaybook(field: "objective" | "boundaries", value: string) {
+    updateRolePlaybook(workspace.guidance.selectedRole, field, value);
+  }
+
+  async function persistWorkspaceNow(nextWorkspace = workspaceRef.current) {
+    setSaveStatus("Encrypting…");
+    try {
+      await saveVault(applyRetention(nextWorkspace), session);
+      setSaveStatus("Encrypted");
+      return true;
+    } catch (error) {
+      setSaveStatus("Save failed");
+      setAppError(formatError(error));
+      return false;
+    }
+  }
+
+  async function saveMessagingPlaybooks() {
+    setPlaybookStatus("");
+    if (await persistWorkspaceNow()) setPlaybookStatus("All four messaging playbooks were saved in the encrypted local vault.");
+  }
+
+  function downloadCurrentRules() {
+    setPlaybookStatus("");
+    try {
+      const download = createRulesDocumentDownload(workspace.guidance.selectedRole, selectedSettingsPlaybook.boundaries);
+      const url = URL.createObjectURL(new Blob([download.text], { type: "text/plain;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = download.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      setPlaybookStatus(`Downloaded the current ${workspace.guidance.selectedRole} reply rules as text.`);
+    } catch (error) {
+      setAppError(formatError(error));
+    }
+  }
+
+  async function uploadRulesDocument(file: File) {
+    setPlaybookStatus("");
+    try {
+      const currentWorkspace = workspaceRef.current;
+      const role = currentWorkspace.guidance.selectedRole;
+      const mergedRules = await mergeRulesDocument(currentWorkspace.guidance.playbooks[role].boundaries, file);
+      const nextWorkspace = {
+        ...currentWorkspace,
+        guidance: {
+          ...currentWorkspace.guidance,
+          playbooks: {
+            ...currentWorkspace.guidance.playbooks,
+            [role]: { ...currentWorkspace.guidance.playbooks[role], boundaries: mergedRules },
+          },
+        },
+      };
+      workspaceRef.current = nextWorkspace;
+      setWorkspace(nextWorkspace);
+      setDrafts([]);
+      setDraftError("");
+      setAiStatus("");
+      if (await persistWorkspaceNow(nextWorkspace)) setPlaybookStatus(`Loaded ${file.name} into the ${role} reply rules and encrypted the combined text in the local vault.`);
+    } catch (error) {
+      setAppError(formatError(error));
+    } finally {
+      if (rulesFileRef.current) rulesFileRef.current.value = "";
+    }
   }
 
   function markDraftManuallySent(draft: string) {
@@ -547,11 +699,6 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     }
   }
 
-  async function captureContext() {
-    if (!contact) return;
-    try { await captureContextFor(contact.id, "profile"); } catch { /* The user-facing error is already shown. */ }
-  }
-
   async function captureConversation() {
     if (!contact) return;
     try { await captureContextFor(contact.id, "chat"); } catch { /* The user-facing error is already shown. */ }
@@ -580,8 +727,10 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
 
   async function generate(agendaOverride?: string, contactIdOverride?: string) {
     const activeContact = workspace.contacts.find((item) => item.id === contactIdOverride) ?? contact;
+    const draftingRole = workspace.inboxRole;
+    const draftingGuidance = resolveRoleGuidance(workspace.guidance, draftingRole);
     const requestAgenda = (agendaOverride ?? agenda).trim();
-    if (!activeContact || !requestAgenda) return;
+    if (!activeContact) return;
     if (!hasConversationContext(activeContact)) {
       const rejectedFullPage = activeContact.documents.some((document) => isConversationCapture(document) && isLikelyFullLinkedInPageCapture(document));
       setAppError(rejectedFullPage
@@ -593,24 +742,18 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setDraftError("");
     setDrafts([]);
     try {
-      const query = [requestAgenda, activeContact.profileNotes, activeContact.chat.slice(-8).map((item) => item.body).join(" ")].join(" ");
-      const relevant = selectRelevantContext(activeContact.documents.filter((document) => !isConversationCapture(document) && !isLikelyFullLinkedInPageCapture(document)), query);
-      const feedbackSummary = workspace.feedback.filter((item) => item.contactId === activeContact.id).slice(-20).map((item) => item.rating + ": " + item.note).join("\n");
-      const nextDrafts = await generatePrivateDrafts(CLOUDFLARE_MODEL_ID, {
-        contact: activeContact,
-        guidance: workspace.guidance,
-        latestQuestion: requestAgenda,
-        retrievedContext: relevant,
-        feedbackSummary,
-        outcomeSummary: buildOutcomeSummary(activeContact),
-      }, setAiStatus, { ...workspace.cloudInference, accessToken: cloudAccessCode });
+      const nextDrafts = await generatePrivateDrafts(CLOUDFLARE_MODEL_ID, createDraftInput(activeContact, draftingGuidance, requestAgenda, workspace), setAiStatus, { ...workspace.cloudInference, accessToken: cloudAccessCode });
+      if (workspaceRef.current.inboxRole !== draftingRole) {
+        setAiStatus("");
+        return;
+      }
       setDrafts(nextDrafts);
       const generatedAt = new Date().toISOString();
       updateWorkspace((current) => ({
         ...current,
         contacts: current.contacts.map((item) => item.id === activeContact.id ? {
           ...item,
-          draftHistory: [...(item.draftHistory ?? []), { id: newId("draft-set"), agenda: requestAgenda.slice(0, 5_000), drafts: nextDrafts, createdAt: generatedAt }].slice(-20),
+          draftHistory: [...(item.draftHistory ?? []), { id: newId("draft-set"), agenda: requestAgenda.slice(0, 5_000), drafts: nextDrafts, createdAt: generatedAt, role: draftingRole }].slice(-20),
         } : item),
         aiUsage: [...(current.aiUsage ?? []), {
           id: newId("ai-usage"),
@@ -622,7 +765,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
           createdAt: generatedAt,
         }].slice(-1000),
       }));
-      setAiStatus("Generated in Cloudflare Workers AI. No LLM was downloaded or run on this device, and nothing was sent to LinkedIn.");
+      setAiStatus(`Generated using the ${draftingRole} playbook (${draftingGuidance.boundaries.trim().length.toLocaleString()} rule characters) in Cloudflare Workers AI. Nothing was sent to LinkedIn.`);
     } catch (error) {
       setAiStatus("");
       setDraftError(formatError(error));
@@ -645,23 +788,30 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const dueReminderCount = useMemo(() => workspace.contacts.filter((item) => !item.archivedAt && isReminderDue(item, now)).length, [now, workspace.contacts]);
   const visibleContacts = useMemo(() => {
     const query = contactSearch.trim().toLowerCase();
-    return workspace.contacts.filter((item) => {
-      if (inboxView === "archived" ? !item.archivedAt : Boolean(item.archivedAt)) return false;
-      if (inboxView === "inbox" && isActivelySnoozed(item, now)) return false;
+    const filtered = workspace.contacts.filter((item) => {
+      const archivedView = inboxView === "archived" || inboxFilter === "archived";
+      if (archivedView ? !item.archivedAt : Boolean(item.archivedAt)) return false;
+      if (inboxFilter === "main" && inboxView === "inbox" && isActivelySnoozed(item, now)) return false;
+      if (inboxFilter === "to-respond" && item.chat.at(-1)?.role !== "them") return false;
+      if (inboxFilter === "awaiting-reply" && item.chat.at(-1)?.role !== "me") return false;
+      if (inboxFilter === "follow-up-due" && !isReminderDue(item, now)) return false;
+      if (inboxFilter === "snoozed" && !isActivelySnoozed(item, now)) return false;
+      if (inboxFilter === "new-contacts" && item.source !== "linkedin-extension") return false;
       if (inboxView === "reminders" && !item.followUpAt && !item.snoozedUntil) return false;
       if (labelFilter && !(item.labels ?? []).includes(labelFilter)) return false;
       if (!query) return true;
       const latest = item.chat.at(-1)?.body ?? "";
       return [item.name, item.headline, item.notes ?? "", (item.labels ?? []).join(" "), latest].join(" ").toLowerCase().includes(query);
-    }).sort((left, right) => {
-      if (inboxView === "reminders") {
+    });
+    if (inboxView === "reminders") {
+      return filtered.sort((left, right) => {
         const leftDate = Math.min(...[left.followUpAt, left.snoozedUntil].filter(Boolean).map((value) => new Date(value as string).getTime()));
         const rightDate = Math.min(...[right.followUpAt, right.snoozedUntil].filter(Boolean).map((value) => new Date(value as string).getTime()));
         return leftDate - rightDate;
-      }
-      return new Date(right.chat.at(-1)?.createdAt ?? right.lastSyncedAt ?? 0).getTime() - new Date(left.chat.at(-1)?.createdAt ?? left.lastSyncedAt ?? 0).getTime();
-    });
-  }, [contactSearch, inboxView, labelFilter, now, workspace.contacts]);
+      });
+    }
+    return sortPinnedThenRecent(filtered);
+  }, [contactSearch, inboxFilter, inboxView, labelFilter, now, workspace.contacts]);
   const stageCounts = useMemo(() => Object.fromEntries(PIPELINE_STAGES.map((stage) => [stage.value, workspace.contacts.filter((item) => !item.archivedAt && contactStage(item) === stage.value).length])) as Record<PipelineStage, number>, [workspace.contacts]);
 
   useEffect(() => {
@@ -696,7 +846,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         const nextIndex = key === "j" ? Math.min(visibleContacts.length - 1, currentIndex + 1) : Math.max(0, currentIndex - 1);
         const nextContact = visibleContacts[nextIndex];
         setActiveContactId(nextContact.id);
-        setDrafts(nextContact.draftHistory?.at(-1)?.drafts ?? []);
+        setDrafts(latestDraftsForRole(nextContact, workspace.inboxRole));
       } else if (key === "e" && contact) {
         event.preventDefault();
         setWorkspace((current) => ({ ...current, contacts: current.contacts.map((item) => item.id === contact.id ? { ...item, archivedAt: item.archivedAt ? "" : new Date().toISOString(), pipelineStage: item.archivedAt ? "inbox" : "done" } : item) }));
@@ -713,11 +863,17 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     };
     window.addEventListener("keydown", handleKeyboard);
     return () => window.removeEventListener("keydown", handleKeyboard);
-  }, [contact, visibleContacts]);
+  }, [contact, visibleContacts, workspace.inboxRole]);
 
   const storageSummary = useMemo(() => contact ? contact.chat.length + " messages · " + contact.documents.length + " context files · " + contact.outcomes.length + " outcomes · " + (contact.draftHistory?.length ?? 0) + " draft sets" : "No contact selected", [contact]);
+  const latestMeaningfulIncomingId = useMemo(() => contact?.chat.findLast((message) => message.role === "them" && (message.body.trim() || message.attachments?.length))?.id ?? "", [contact]);
+  const selectedSettingsPlaybook = workspace.guidance.playbooks[workspace.guidance.selectedRole];
+  const activeDraftGuidance = resolveRoleGuidance(workspace.guidance, workspace.inboxRole);
+  const activeConversationState = contact ? deriveConversationState(contact, now) : null;
+  const draftContextSummary = useMemo(() => contact
+    ? buildDraftContextSummary(createDraftInput(contact, resolveRoleGuidance(workspace.guidance, workspace.inboxRole), agenda.trim(), workspace))
+    : null, [agenda, contact, workspace]);
   const handoffUrl = contact ? safePlatformUrl(contact) : null;
-  const handoffLabel = contact ? platformLabel(contact.platform) : "platform";
   const cloudReady = Boolean(workspace.cloudInference.consentedAt && cloudAccessCode.trim().length >= 20);
   const conversationReady = Boolean(contact && hasConversationContext(contact));
   const captureMethod = recommendLinkedInCaptureMethod({
@@ -726,197 +882,253 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     isMobile: captureEnvironment.isMobile,
     supportsScreenCapture: captureEnvironment.supportsScreenCapture,
   });
+  const automaticSyncLabel = !extensionConnected
+    ? "Extension not connected"
+    : syncState?.enabled
+      ? syncState.paused ? "Sync paused" : "Automatic sync enabled"
+      : syncState?.code === "permission_removed" ? "Permission removed" : "Automatic sync disabled";
 
-  return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div><p className="eyebrow">CHATHELP</p><h1>Private conversation studio</h1></div>
-        <div className="top-actions">{dueReminderCount > 0 && <button className="reminder-badge" onClick={() => setInboxView("reminders")}>{dueReminderCount} reminder{dueReminderCount === 1 ? "" : "s"} due</button>}<button onClick={() => shortcutDialogRef.current?.showModal()} aria-label="Show keyboard shortcuts">Shortcuts</button><button className="wizard-launch" data-testid="open-linkedin-test-wizard" onClick={() => setWizardOpen(true)}>Guided LinkedIn test</button><PwaInstall /><span className="save-state">● {saveStatus} on this device</span></div>
-      </header>
-      <div className="privacy-strip"><strong>Manual-safe {captureEnvironment.isMobile ? "mobile" : "desktop"} mode:</strong> {captureEnvironment.isMobile ? "ChatHelp recommends manual paste or import on this device." : "The Chrome extension is the primary desktop reader and is locked to the contact selected in ChatHelp."} It never scans the inbox, clicks, types, or sends on LinkedIn. Imported text stays in this device vault; only selected text context is sent to Cloudflare Workers AI when you request drafts. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Details</button></div>
-      {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
-      <div className={inboxView === "pipeline" ? "workspace-grid pipeline-active" : "workspace-grid"}>
-        <aside className="contacts-panel">
-          <div className="section-heading"><div><p className="eyebrow">DESKTOP WORKSPACE</p><h2>LinkedIn inbox</h2></div><button aria-label="Show keyboard shortcuts" onClick={() => shortcutDialogRef.current?.showModal()}>?</button></div>
-          <div className="inbox-tabs" role="tablist" aria-label="Conversation views">
-            <button role="tab" aria-selected={inboxView === "inbox"} onClick={() => setInboxView("inbox")}>Inbox <span>{workspace.contacts.filter((item) => !item.archivedAt && !isActivelySnoozed(item, now)).length}</span></button>
-            <button role="tab" aria-selected={inboxView === "pipeline"} onClick={() => setInboxView("pipeline")}>Pipeline</button>
-            <button role="tab" aria-selected={inboxView === "reminders"} onClick={() => setInboxView("reminders")}>Reminders <span>{dueReminderCount}</span></button>
-            <button role="tab" aria-selected={inboxView === "archived"} onClick={() => setInboxView("archived")}>Archive</button>
+  function renderWorkspace() {
+    const renderAvatar = (item: Contact, className = "") => item.avatarUrl
+      ? <img className={className} src={item.avatarUrl} alt="" referrerPolicy="no-referrer" />
+      : <span className={className + " contact-avatar"} aria-hidden="true">{item.name.slice(0, 1).toUpperCase()}</span>;
+
+    return (
+      <main className="app-shell">
+        <header className="topbar">
+          <div className="topbar-brand"><div className="brand-mark" aria-hidden="true">CH</div><div><p className="eyebrow">CHATHELP</p><h1>Private conversation studio</h1></div></div>
+          <div className="top-actions">
+            {dueReminderCount > 0 && <button className="reminder-badge" onClick={() => { setInboxView("reminders"); setInboxFilter("follow-up-due"); }}>{dueReminderCount} due</button>}
+            <button onClick={() => shortcutDialogRef.current?.showModal()} aria-label="Show keyboard shortcuts">Shortcuts</button>
+            <button className="wizard-launch" data-testid="open-linkedin-test-wizard" onClick={() => setWizardOpen(true)}>Guided import</button>
+            <PwaInstall />
+            <span className="save-state">● {saveStatus}</span>
           </div>
-          <div className="inbox-filters"><input aria-label="Search contacts and messages" value={contactSearch} onChange={(event) => setContactSearch(event.target.value)} placeholder="Search contacts or messages" /><select aria-label="Filter by label" value={labelFilter} onChange={(event) => setLabelFilter(event.target.value)}><option value="">All labels</option>{allLabels.map((label) => <option key={label} value={label}>{label}</option>)}</select></div>
-          <div className="contact-create"><small>Add a contact manually</small><select aria-label="Conversation platform" value={newPlatform} onChange={(event) => setNewPlatform(event.target.value as ConversationPlatform)}>{PLATFORM_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><div className="inline-form"><input aria-label="New contact name" value={newContactName} onChange={(event) => setNewContactName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addContact()} placeholder="Add a person" /><button onClick={addContact}>Add</button></div></div>
-          <nav aria-label="Contacts">
-            {visibleContacts.map((item) => {
-              const latest = item.chat.at(-1);
-              const reminderAt = item.followUpAt || item.snoozedUntil;
-              return <button className={item.id === contact?.id ? "contact active" : "contact"} key={item.id} onClick={() => selectContact(item)}>
-                {item.avatarUrl ? <img src={item.avatarUrl} alt="" referrerPolicy="no-referrer" /> : <span className="contact-avatar">{item.name.slice(0, 1).toUpperCase()}</span>}
-                <div><span className="contact-title"><strong>{item.name}</strong><small className={`stage-pill stage-${contactStage(item)}`}>{PIPELINE_STAGES.find((stage) => stage.value === contactStage(item))?.label}</small></span><small>{latest?.body || item.headline || "No conversation imported yet"}</small><span className="contact-meta"><small>{latest ? formatRelativeTime(latest.createdAt, now) : platformLabel(item.platform)}</small>{reminderAt && <small className={isReminderDue(item, now) ? "reminder-due" : ""}>{isReminderDue(item, now) ? "Due " : ""}{formatRelativeTime(reminderAt, now)}</small>}</span>{Boolean(item.labels?.length) && <span className="label-row">{item.labels?.slice(0, 3).map((label) => <small key={label} className="label-chip">{label}</small>)}</span>}</div>
-              </button>;
-            })}
-          </nav>
-          {!visibleContacts.length && <p className="empty">No conversations match this view. ChatHelp never scans LinkedIn in the background.</p>}
-        </aside>
+        </header>
+        <div className="privacy-strip">
+          <strong>Local-first workspace.</strong> ChatHelp reads only the visible LinkedIn conversation you manually open after you opt in. It never accesses cookies, scans the inbox, opens chats, clicks, types, scrolls, or sends. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Privacy details</button>
+        </div>
+        {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
 
-        <section className="context-panel">
-          {inboxView === "pipeline" ? <div className="pipeline-view">
-            <div className="section-heading"><div><p className="eyebrow">LOCAL CRM VIEW</p><h2>Conversation pipeline</h2><p className="identity-note">Drag cards between stages or use each stage menu. This changes only your local ChatHelp workspace and never touches LinkedIn.</p></div></div>
-            <div className="pipeline-board">
-              {PIPELINE_STAGES.map((stage) => <section className="pipeline-column" key={stage.value} onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
-                event.preventDefault();
-                const contactId = event.dataTransfer.getData("text/contact-id");
-                if (contactId) moveContactToStage(contactId, stage.value);
-              }}>
-                <header><strong>{stage.label}</strong><span>{stageCounts[stage.value]}</span></header>
-                <div>{visibleContacts.filter((item) => contactStage(item) === stage.value).map((item) => <article className={item.id === contact?.id ? "pipeline-card selected" : "pipeline-card"} draggable key={item.id} onDragStart={(event) => event.dataTransfer.setData("text/contact-id", item.id)} onClick={() => selectContact(item)}>
-                  <div><strong>{item.name}</strong><small>{formatRelativeTime(item.chat.at(-1)?.createdAt ?? item.lastSyncedAt, now)}</small></div>
-                  <p>{item.chat.at(-1)?.body || item.headline || "No message preview"}</p>
-                  <select aria-label={`Move ${item.name} to pipeline stage`} value={contactStage(item)} onClick={(event) => event.stopPropagation()} onChange={(event) => moveContactToStage(item.id, event.target.value as PipelineStage)}>{PIPELINE_STAGES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
-                  {Boolean(item.labels?.length) && <span className="label-row">{item.labels?.slice(0, 3).map((label) => <small className="label-chip" key={label}>{label}</small>)}</span>}
-                </article>)}</div>
-              </section>)}
-            </div>
-          </div> : contact ? <>
-            <div className="section-heading"><div><p className="eyebrow">SELECTED LINKEDIN CONTACT · MESSAGE RECIPIENT</p><h2>{contact.name}</h2><p className="identity-note">Profile context, chat history, and generated replies in this workspace are for your conversation with <strong>{contact.name}</strong>.</p><small>{storageSummary}{contact.lastSyncedAt ? ` · extension sync ${formatRelativeTime(contact.lastSyncedAt, now)}` : ""}</small></div><button className="danger-link" onClick={deleteContact}>Delete</button></div>
-            <div className="panel-card workflow-card">
-              <div className="workflow-title"><div><p className="eyebrow">TRIAGE & FOLLOW-UP</p><h3>Conversation workflow</h3></div><button onClick={() => toggleArchive(contact)}>{contact.archivedAt ? "Restore to inbox" : "Archive"}</button></div>
-              <div className="workflow-grid">
-                <label>Pipeline stage<select aria-label={`Pipeline stage for ${contact.name}`} value={contactStage(contact)} onChange={(event) => moveContactToStage(contact.id, event.target.value as PipelineStage)}>{PIPELINE_STAGES.map((stage) => <option key={stage.value} value={stage.value}>{stage.label}</option>)}</select></label>
-                <label>Labels<input key={contact.id} ref={labelsRef} defaultValue={(contact.labels ?? []).join(", ")} onBlur={(event) => updateContact((current) => ({ ...current, labels: parseLabels(event.target.value) }))} placeholder="candidate, warm lead, client" /></label>
-                <label>Snooze until<input ref={snoozeRef} type="datetime-local" value={toDateTimeLocal(contact.snoozedUntil)} onChange={(event) => updateContact((current) => ({ ...current, snoozedUntil: fromDateTimeLocal(event.target.value), pipelineStage: event.target.value ? "snoozed" : contactStage(current) }))} /></label>
-                <label>Follow-up reminder<input type="datetime-local" value={toDateTimeLocal(contact.followUpAt)} onChange={(event) => updateContact((current) => ({ ...current, followUpAt: fromDateTimeLocal(event.target.value), pipelineStage: event.target.value ? "follow-up" : contactStage(current) }))} /></label>
+        <div className={"workspace-frame" + (navCollapsed ? " nav-is-collapsed" : "") + (contextCollapsed ? " context-is-collapsed" : "")}>
+          <aside className="workspace-nav" aria-label="Workspace navigation">
+            <div className="nav-brand"><div className="brand-mark" aria-hidden="true">CH</div><strong>ChatHelp</strong><button aria-label={navCollapsed ? "Expand navigation" : "Collapse navigation"} onClick={() => setNavCollapsed((current) => !current)}>{navCollapsed ? "›" : "‹"}</button></div>
+            <nav>
+              {NAV_ITEMS.map((item) => <button key={item.value} className={inboxView === item.value ? "active" : ""} aria-current={inboxView === item.value ? "page" : undefined} onClick={() => {
+                setInboxView(item.value);
+                if (item.value === "archived") setInboxFilter("archived");
+                else if (item.value === "reminders") setInboxFilter("follow-up-due");
+                else if (item.value === "inbox") setInboxFilter("main");
+              }}><span aria-hidden="true">{item.glyph}</span><b>{item.label}</b>{item.value === "reminders" && dueReminderCount > 0 && <small>{dueReminderCount}</small>}</button>)}
+            </nav>
+            <div className="nav-privacy"><span className={"sync-dot " + (syncState?.enabled && !syncState.paused ? "on" : "")} /><b>{automaticSyncLabel}</b><small>Encrypted on this device</small></div>
+          </aside>
+
+          <section className={"inbox-column" + (mobileConversationOpen ? " mobile-list-hidden" : "")} aria-label="Conversation inbox">
+            <header className="inbox-header">
+              <div><p className="eyebrow">CONVERSATIONS</p><h2>{inboxView === "archived" ? "Archived" : inboxView === "reminders" ? "Reminders" : inboxView === "contacts" ? "Contacts" : inboxView === "labels" ? "Labels" : "Inbox"}</h2></div>
+              <span>{visibleContacts.length}</span>
+            </header>
+            <label className="search-field"><span className="sr-only">Search conversations</span><input aria-label="Search conversations" value={contactSearch} onChange={(event) => setContactSearch(event.target.value)} placeholder="Search conversations" /></label>
+            {inboxView !== "settings" && <section className={"sync-card sync-" + (syncState?.enabled ? syncState.paused ? "paused" : "on" : "off")} aria-label="LinkedIn conversation synchronization">
+              <div className="sync-card-row">
+                <span className="sync-dot" aria-hidden="true" />
+                <strong>Automatic sync</strong>
+                <span className="sync-info">
+                  <button className="info-button" type="button" aria-label="About automatic LinkedIn conversation sync" aria-describedby="sync-description">i</button>
+                  <span className="sync-tooltip" id="sync-description" role="tooltip"><strong>{automaticSyncLabel}.</strong> {extensionStatus} When enabled, ChatHelp reads only the visible LinkedIn conversation you manually open. It does not scan the inbox, access LinkedIn cookies, open conversations, or send messages.</span>
+                </span>
+                <span className="sr-only" role="status" aria-live="polite">{automaticSyncLabel}. {extensionStatus}</span>
+                {!captureEnvironment.isMobile && <button
+                  className="sync-switch"
+                  type="button"
+                  role="switch"
+                  aria-checked={Boolean(syncState?.enabled && !syncState.paused)}
+                  aria-label={syncState?.enabled ? syncState.paused ? "Resume automatic sync" : "Pause automatic sync" : "Enable automatic LinkedIn conversation sync"}
+                  disabled={!syncState?.enabled && !extensionConnected}
+                  onClick={() => controlAutomaticSync(syncState?.enabled ? syncState.paused ? "resume" : "pause" : "enable")}
+                ><span aria-hidden="true" /></button>}
+                {!captureEnvironment.isMobile && <details className="sync-more">
+                  <summary aria-label="More synchronization options">More</summary>
+                  <div className="sync-more-menu">
+                    <button type="button" aria-label="One-time manual capture" onClick={() => setManualCaptureHelp((current) => !current)}>Capture once</button>
+                    {syncState?.enabled && <button type="button" className="danger-link" aria-label="Disable and revoke LinkedIn permission" onClick={() => controlAutomaticSync("disable")}>Disable &amp; revoke</button>}
+                  </div>
+                </details>}
               </div>
-              {(contact.snoozedUntil || contact.followUpAt) && <div className="reminder-summary"><span>{contact.snoozedUntil && `Snoozed ${formatRelativeTime(contact.snoozedUntil, now)}`}{contact.snoozedUntil && contact.followUpAt ? " · " : ""}{contact.followUpAt && `Follow-up ${formatRelativeTime(contact.followUpAt, now)}`}</span><button onClick={() => updateContact((current) => ({ ...current, snoozedUntil: "", followUpAt: "", pipelineStage: contactStage(current) === "snoozed" || contactStage(current) === "follow-up" ? "inbox" : contactStage(current) }))}>Clear schedule</button></div>}
-              <label>Private conversation notes<textarea value={contact.notes ?? ""} onChange={(event) => updateContact((current) => ({ ...current, notes: event.target.value.slice(0, 20_000) }))} placeholder={`Decisions, next steps, and private notes about the conversation with ${contact.name}.`} /></label>
-            </div>
-            <div className="panel-card">
-              <h3>{contact.name}&apos;s LinkedIn profile</h3>
-              <p className="section-explainer">This section is about the selected contact—not your own profile. Use only details relevant to this conversation.</p>
-              <label>Contact&apos;s name<input value={contact.name} onChange={(event) => updateContact((current) => ({ ...current, name: event.target.value.slice(0, 200) }))} /></label>
-              <label>Contact&apos;s headline, role, or company<input value={contact.headline} onChange={(event) => updateContact((current) => ({ ...current, headline: event.target.value.slice(0, 500) }))} placeholder={`Example: ${contact.name}'s role, company, or relevant expertise`} /></label>
-              {contact.profileUrl && <a className="profile-link" href={contact.profileUrl} target="_blank" rel="noreferrer">Open {contact.name}&apos;s LinkedIn profile ↗</a>}
-              <label>Relevant notes about {contact.name}<textarea value={contact.profileNotes} onChange={(event) => updateContact((current) => ({ ...current, profileNotes: event.target.value.slice(0, 20_000) }))} placeholder={`Only add relevant, non-sensitive context about ${contact.name}.`} /></label>
-              <input ref={documentRef} hidden type="file" accept=".txt,.md,.json,text/plain,application/json" onChange={(event) => event.target.files?.[0] && void importDocument(event.target.files[0])} />
-              {contact.documents.filter((document) => !isConversationCapture(document)).map((document) => <div className="document-row" key={document.id}><div><strong>{document.name}</strong><small>{isLikelyFullLinkedInPageCapture(document) ? "Not used by AI — full LinkedIn page detected" : `${document.text.length.toLocaleString()} encrypted characters`}</small></div><button aria-label={"Delete " + document.name} onClick={() => updateContact((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== document.id) }))}>Remove</button></div>)}
-            </div>
-            <div className="panel-card">
-              <h3>Your conversation with {contact.name}</h3>
-              <p className="section-explainer"><strong>You</strong> means the person using ChatHelp. <strong>{contact.name}</strong> is the selected LinkedIn contact who will receive your reply.</p>
-              <div className={`capture-recommendation capture-${captureMethod}`} data-testid="recommended-linkedin-import">
-                <div className="capture-recommendation-copy">
-                  <span className="capture-method-label">Recommended for this device</span>
-                  {captureMethod === "detecting" && <><h4>Choosing the safest import method…</h4><p>ChatHelp is checking this browser&apos;s local capabilities. No LinkedIn data is being read.</p></>}
-                  {captureMethod === "extension" && <><h4>{extensionConnected ? "Chrome extension connected" : "Chrome extension recommended for this desktop"}</h4><p>Select {contact.name} in ChatHelp, open that same contact&apos;s LinkedIn conversation, and click the ChatHelp extension icon. Before reading any messages, the extension verifies the open conversation matches {contact.name}. A different contact is blocked.</p></>}
-                  {captureMethod === "screen" && <><h4>Screen capture recommended for this desktop</h4><p>Choose the LinkedIn Messaging tab or window, then select only the central message column in ChatHelp&apos;s private preview. Navigation, other chats, job cards, and side panels are excluded.</p></>}
-                  {captureMethod === "manual" && <><h4>Paste or import recommended on this device</h4><p>{captureEnvironment.isMobile ? "Mobile browsers do not provide the safe desktop capture flow. Copy only the relevant LinkedIn messages and paste them below." : "This browser does not provide a compatible screen-capture or extension connection. Copy only the relevant LinkedIn messages and paste them below."}</p></>}
+              <details className="sync-diagnostics">
+                <summary>Sync diagnostics</summary>
+                <div role="region" aria-label="Sync diagnostics">
+                  <span>{syncState?.permissionGranted ? "Permission granted" : "Permission not granted"}</span>
+                  <span>{extensionConnected ? "Bridge connected" : "Bridge disconnected"}</span>
+                  <span>{syncState?.paused ? "Sync paused" : syncState?.enabled ? "Sync active" : "Sync disabled"}</span>
+                  <span>Last contact {contact?.name || syncState?.lastContactName || "Not yet available"}</span>
+                  {contact?.lastSyncDiagnostic ? <>
+                    <span>Visible messages {contact.lastSyncDiagnostic.visibleMessages}</span>
+                    <span>New messages {contact.lastSyncDiagnostic.importedMessages}</span>
+                    <span>Duplicates {contact.lastSyncDiagnostic.duplicateMessages}</span>
+                    <span>Result {contact.lastSyncDiagnostic.action[0].toUpperCase() + contact.lastSyncDiagnostic.action.slice(1)}</span>
+                    <span>{contact.lastSyncDiagnostic.restoredFromArchive ? "Restored from archive" : "Archive unchanged"}</span>
+                    <span>Last success {new Date(contact.lastSyncDiagnostic.synchronizedAt).toLocaleString()}</span>
+                    <span>Snapshot {contact.lastSyncDiagnostic.snapshotFingerprint.slice(0, 10)}</span>
+                  </> : <span>Snapshot diagnostics not yet available</span>}
                 </div>
-                <div className="capture-primary-action">
-                  {captureMethod === "detecting" && <button disabled>Choosing best method…</button>}
-                  {captureMethod === "extension" && <a className="capture-action" href={handoffUrl ?? "https://www.linkedin.com/messaging/"} target="_blank" rel="noreferrer">Open {contact.name}&apos;s LinkedIn conversation</a>}
-                  {captureMethod === "screen" && <button onClick={() => void captureConversation()}>Capture conversation screen</button>}
-                  {captureMethod === "manual" && <button onClick={() => chatPasteRef.current?.focus()}>Paste messages manually</button>}
-                </div>
-                {captureMethod === "extension" && <small role="status" aria-live="polite">{extensionStatus}</small>}
-                {captureMethod === "extension" && extensionIdentityCandidate && <div className="extension-identity-confirmation" role="alert">
-                  <p>The extension found <strong>{extensionIdentityCandidate.name}</strong> in the open LinkedIn header but read no messages because it did not match this contact.</p>
-                  <button onClick={confirmObservedLinkedInIdentity}>Confirm {extensionIdentityCandidate.name} is this contact</button>
-                </div>}
-                {captureMethod !== "detecting" && <button className="capture-options-toggle" aria-expanded={showImportAlternatives} onClick={() => setShowImportAlternatives((current) => !current)}>{showImportAlternatives ? "Hide other import options" : "Show other import options"}</button>}
-                {showImportAlternatives && captureMethod !== "detecting" && <div className="capture-alternatives">
-                  {captureEnvironment.supportsScreenCapture && captureMethod !== "screen" && <button onClick={() => void captureConversation()}>Capture conversation screen</button>}
-                  {captureEnvironment.supportsScreenCapture && <button onClick={() => void captureContext()}>Capture {contact.name}&apos;s profile screen</button>}
-                  <button onClick={() => documentRef.current?.click()}>Import profile/context file</button>
-                  {captureMethod !== "manual" && <button onClick={() => chatPasteRef.current?.focus()}>Paste messages manually</button>}
-                </div>}
-              </div>
-              {contact.documents.filter(isConversationCapture).map((document) => {
-                const noisy = isLikelyFullLinkedInPageCapture(document);
-                return <article className="captured-context" key={document.id}>
-                <div className="document-row"><div><strong>{document.name}</strong><small>{noisy ? "Not used by AI — full LinkedIn page detected" : "Exact locally extracted text used as conversation history"}</small></div><button aria-label={"Delete " + document.name} onClick={() => updateContact((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== document.id) }))}>Remove</button></div>
-                {noisy && <p className="capture-warning" role="note">This capture contains LinkedIn navigation, another conversation list, or job suggestions. Remove it and capture again, selecting only {contact.name}&apos;s central message column.</p>}
-                <pre aria-label={`Captured conversation text for ${contact.name}`}>{document.text}</pre>
-              </article>;})}
-              <textarea ref={chatPasteRef} aria-label="Paste conversation messages" value={chatPaste} onChange={(event) => setChatPaste(event.target.value)} placeholder={"Paste selected lines only, for example:\nMe: Great to reconnect\nAlex: Likewise—how is the new role?"} />
-              <button onClick={importChat}>Import manually pasted chat lines</button>
-              <div className="inline-form"><select aria-label="Message sender" value={messageRole} onChange={(event) => setMessageRole(event.target.value as MessageRole)}><option value="them">{contact.name}</option><option value="me">You</option></select><input value={messageBody} onChange={(event) => setMessageBody(event.target.value)} placeholder={`Add one message from ${messageRole === "me" ? "you" : contact.name}`} /><button onClick={addMessage}>Add</button></div>
-              <div className="chat-list">{contact.chat.slice(-30).map((message) => <div className={message.role === "me" ? "bubble mine" : "bubble"} key={message.id}><span className="message-meta"><small>{message.role === "me" ? "You" : message.speaker || contact.name}</small><time dateTime={message.createdAt}>{formatRelativeTime(message.createdAt, now)}</time></span>{message.body && <p>{message.body}</p>}{Boolean(message.attachments?.length) && <span className="attachment-row">{message.attachments?.map((attachment) => <small className="attachment-chip" key={attachment.id}>{attachment.kind === "image" ? "Image" : attachment.kind === "file" ? "File" : "Attachment"}: {attachment.label}</small>)}</span>}</div>)}</div>
-            </div>
-            <div className="panel-card compact">
-              <h3>Retention</h3>
-              <label>Automatically remove dated context after<select value={contact.retentionDays} onChange={(event) => updateContact((current) => ({ ...current, retentionDays: Number(event.target.value) as Contact["retentionDays"] }))}><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option><option value={0}>Keep until I delete it</option></select></label>
-            </div>
-          </> : <div className="empty-state"><div className="brand-mark">1</div><h2>Add a person to begin</h2><p>Only context you deliberately paste, import, or capture will be used.</p><button className="primary" onClick={() => setWizardOpen(true)}>Start guided LinkedIn test</button></div>}
-        </section>
+              </details>
+              {captureEnvironment.isMobile && <p>Automatic LinkedIn sync is desktop-only. Manual paste and import remain available.</p>}
+              {manualCaptureHelp && <p className="manual-capture-help">Open the conversation in LinkedIn and click the ChatHelp extension icon once. This fallback works without enabling automatic sync and never sends a message.</p>}
+            </section>}
 
-        <section className="draft-panel">
-          <div className="panel-card guidance-card"><p className="eyebrow">ABOUT YOU · THE CHATHELP USER</p><h2>Your messaging playbook</h2>
-            <p className="section-explainer">These instructions describe you and how you want to communicate. They do not describe {contact?.name || "the selected contact"}.</p>
-            <label>Your role or team<input value={workspace.guidance.role} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, role: event.target.value } }))} /></label>
-            <label>Your relationship goal with {contact?.name || "this contact"}<textarea value={workspace.guidance.objective} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, objective: event.target.value } }))} /></label>
-            <label>How your messages should sound<input value={workspace.guidance.voice} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: event.target.value } }))} /></label>
-            <label>Rules every reply must follow<textarea value={workspace.guidance.boundaries} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, boundaries: event.target.value } }))} /></label>
-          </div>
-          <div className="panel-card compose-card">
-            <p className="eyebrow">CLOUDFLARE PRIVATE AI</p><h2>Your next reply to {contact?.name || "the selected contact"}</h2>
-            <label>What should your next message accomplish?<textarea ref={agendaRef} value={agenda} onChange={(event) => setAgenda(event.target.value)} placeholder={contact ? `Example: Answer ${contact.name}'s latest question naturally and ask one relevant follow-up.` : "Example: Answer their latest question naturally and ask one relevant follow-up."} /></label>
-            <div className="provider-summary" role="status"><span>Runs in the cloud</span><strong>{CLOUDFLARE_MODEL_NAME}</strong><small>No LLM model is downloaded or run on this device.</small></div>
-            <label>Cloud access code · session-only by default<input type="password" autoComplete="off" value={cloudAccessCode} onChange={(event) => {
-              const nextCode = event.target.value.slice(0, 200);
-              setCloudAccessCode(nextCode);
-              if (workspace.cloudInference.rememberAccessToken) updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, accessToken: nextCode } }));
-            }} placeholder="Enter the code yourself; it is not saved unless you grant permission below" /></label>
-            <label className="consent-check"><input type="checkbox" checked={workspace.cloudInference.rememberAccessToken} onChange={(event) => {
-              const rememberAccessToken = event.target.checked;
-              updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, rememberAccessToken, accessToken: rememberAccessToken ? cloudAccessCode : "" } }));
-            }} /><span>Remember this access code in this browser&apos;s encrypted vault. Leave unchecked to forget it when the workspace is locked or closed.</span></label>
-            <label className="consent-check"><input type="checkbox" checked={Boolean(workspace.cloudInference.consentedAt)} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, consentedAt: event.target.checked ? new Date().toISOString() : "" } }))} /><span>I understand that ChatHelp will send the relevant recent chat, selected context, my guidance, and agenda as text to Cloudflare Workers AI. Screenshots, the full vault, and the access code are not included in the AI prompt.</span></label>
-            {!conversationReady && contact && <p className="missing-context" role="note">Before generating, capture only the message area for your LinkedIn conversation with {contact.name}, or add at least one chat message. Full-page captures containing navigation, other chats, or job suggestions are not used.</p>}
-            <button className="primary" disabled={!contact || !conversationReady || !agenda.trim() || !cloudReady || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("processed locally"))} onClick={() => void generate()}>Generate 3 cloud drafts for {contact?.name || "selected contact"}</button>
-            {aiStatus && <p className="status" aria-live="polite">{aiStatus}</p>}
-            {draftError && <div className="notice error inline-draft-error" role="alert"><span><strong>Drafts were not generated.</strong> {draftError}</span><button aria-label="Dismiss draft generation error" onClick={() => setDraftError("")}>×</button></div>}
-            <p className="fine-print">Cloud mode avoids downloading or running an LLM on this device. The Worker uses no app storage or AI Gateway. Review every draft before sending.</p>
-          </div>
-          <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={`${contact?.id || "draft"}-${index}`}><div><span>EDITABLE DRAFT {index + 1}</span><div><button onClick={() => {
-            void navigator.clipboard.writeText(draft).then(() => setExtensionStatus("Draft copied. Review it in LinkedIn and send it yourself."), () => setAppError("Clipboard access was blocked. Select the draft text and copy it manually."));
-          }}>Copy</button><button onClick={() => markDraftManuallySent(draft)}>Mark manually sent</button><button aria-label={`Dismiss draft ${index + 1}`} onClick={() => {
-            const nextDrafts = drafts.filter((_item, draftIndex) => draftIndex !== index);
-            setDrafts(nextDrafts);
-            persistDrafts(nextDrafts);
-          }}>Dismiss</button><button title="Useful" aria-label={`Rate draft ${index + 1} useful`} onClick={() => rateDraft(draft, "useful")}>👍</button><button title="Not useful" aria-label={`Rate draft ${index + 1} not useful`} onClick={() => rateDraft(draft, "not-useful")}>👎</button></div></div><textarea aria-label={`Edit draft ${index + 1}`} value={draft} onChange={(event) => setDrafts((current) => current.map((item, draftIndex) => draftIndex === index ? event.target.value.slice(0, 5_000) : item))} onBlur={() => persistDrafts()} /></article>)}</div>
-          {Boolean(contact?.draftHistory?.length) && <p className="fine-print">The latest editable set is restored when you return to this contact. Up to 20 draft sets and local usage metadata are retained in the encrypted vault.</p>}
-          {contact && <div className="panel-card compact"><h3>Conversation outcome</h3><div className="inline-form"><select value={outcomeResult} onChange={(event) => setOutcomeResult(event.target.value as typeof outcomeResult)}><option value="positive">Positive</option><option value="neutral">Neutral</option><option value="negative">Negative</option></select><input value={outcomeNote} onChange={(event) => setOutcomeNote(event.target.value)} placeholder="What worked or went wrong?" /><button onClick={addOutcome}>Save</button></div></div>}
-          {handoffUrl ? <a className="platform-link" href={handoffUrl} target="_blank" rel="noreferrer">Open {handoffLabel} for manual review and paste ↗</a> : <p className="fine-print">Add a valid HTTPS service URL to enable manual handoff.</p>}
-        </section>
-      </div>
-      <footer><span>ChatHelp never sends platform messages or email automatically.</span><button className="danger-link" onClick={() => void eraseEverything()}>Erase all local data</button></footer>
-      {wizardOpen && <LinkedInTestWizard
-        initialContact={contact}
-        guidance={workspace.guidance}
-        drafts={drafts}
-        aiStatus={draftError ? `Drafts were not generated. ${draftError}` : aiStatus}
-        onClose={() => setWizardOpen(false)}
-        onSaveProfile={saveWizardProfile}
-        onCapture={captureContextFor}
-        onImportChat={importChatFor}
-        onGuidanceChange={(field, value) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, [field]: value } }))}
-        onGenerate={async (contactId, nextAgenda) => {
-          setActiveContactId(contactId);
-          setAgenda(nextAgenda);
-          await generate(nextAgenda, contactId);
-        }}
-      />}
-      {cropRequest && <ScreenRegionSelector image={cropRequest.image} contactName={cropRequest.contactName} purpose={cropRequest.purpose} onCancel={() => {
-        const request = cropRequest;
-        setCropRequest(null);
-        request.resolve(null);
-      }} onConfirm={(region) => {
-        const request = cropRequest;
-        setCropRequest(null);
-        request.resolve(region);
-      }} />}
-      <dialog ref={shortcutDialogRef} className="privacy-dialog shortcut-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">KEYBOARD-FIRST INBOX</p><h2>Shortcuts</h2><dl><div><dt>J / K</dt><dd>Next / previous conversation</dd></div><div><dt>E</dt><dd>Archive or restore selected conversation</dd></div><div><dt>R</dt><dd>Focus reply agenda</dd></div><div><dt>S</dt><dd>Focus snooze time</dd></div><div><dt>L</dt><dd>Focus labels</dd></div><div><dt>Ctrl/⌘ + J</dt><dd>Focus AI draft composer</dd></div><div><dt>G then I</dt><dd>Go to inbox</dd></div><div><dt>?</dt><dd>Show this help</dd></div></dl><p className="fine-print">Shortcuts are disabled while you are typing in a field.</p><button className="primary">Done</button></form></dialog>
-      <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Extension capture:</strong> the Manifest V3 extension receives temporary access only after you click it on a LinkedIn Messaging tab. It reads the open visible conversation and hands the snapshot to this authenticated app through a local extension bridge. It makes no network request, performs no background inbox scan, and cannot send a message.</li><li><strong>No browser LLM:</strong> ChatHelp does not download or run language-model weights on this device.</li><li><strong>Cloud AI (opt-in):</strong> only the relevant recent chat, selected text context, guidance, and agenda are sent to ChatHelp&apos;s authenticated Cloudflare Worker. The Worker has no database, object storage, AI Gateway, or application logging configured.</li><li><strong>Never uploaded:</strong> screen images, the encrypted vault, its device key, and the cloud access code are not included in the AI prompt.</li><li><strong>Device encryption:</strong> this browser stores a non-exportable AES-256 key and uses it to open the local vault automatically after Cloudflare Access authentication. Clearing site data permanently removes this local workspace.</li><li><strong>Access-code storage:</strong> the code is session-only unless you explicitly allow ChatHelp to remember it in the encrypted vault.</li><li><strong>OCR fallback:</strong> if the extension cannot be used, the browser asks you to choose a visible screen and ChatHelp asks you to select only the relevant area. Cropping and OCR run locally.</li><li><strong>Sending:</strong> ChatHelp never sends a LinkedIn message or email. Copying a draft and marking it manually sent are separate human actions.</li><li><strong>Limits:</strong> Cloudflare processes cloud prompts to provide Workers AI. Browser malware, a compromised origin, or someone who controls this browser profile can still expose unlocked data. No software can promise absolute security.</li></ul><button className="primary">Understood</button></form></dialog>
-    </main>
-  );
+            <div className="inbox-filter-row">
+              <select aria-label="Inbox filter" value={inboxFilter} onChange={(event) => setInboxFilter(event.target.value as InboxFilter)}>{INBOX_FILTERS.map((filter) => <option key={filter.value} value={filter.value}>{filter.label}</option>)}</select>
+              <select aria-label="Filter by label" value={labelFilter} onChange={(event) => setLabelFilter(event.target.value)}><option value="">All labels</option>{allLabels.map((label) => <option key={label} value={label}>{label}</option>)}</select>
+            </div>
+
+            <nav className="conversation-list" aria-label="Conversations">
+              {visibleContacts.map((item) => {
+                const latest = item.chat.at(-1);
+                const reminderAt = item.followUpAt || item.snoozedUntil;
+                const state = deriveConversationState(item, now);
+                return <div className={item.id === contact?.id ? "conversation-row-shell active" : "conversation-row-shell"} key={item.id}>
+                  <button className="conversation-row" aria-label={`Open conversation with ${item.name}`} onClick={() => {
+                    setSelectedId(item.id);
+                    setDrafts(latestDraftsForRole(item, workspace.inboxRole));
+                    setDraftError("");
+                    setMobileConversationOpen(true);
+                  }}>
+                    {renderAvatar(item)}
+                    <span className="conversation-row-body">
+                      <span className="conversation-row-title"><strong>{item.name}</strong><time dateTime={latest?.createdAt || item.lastSyncedAt}>{formatRelativeTime(latest?.createdAt || item.lastSyncedAt, now)}</time></span>
+                      <span className="conversation-preview">{latest?.body || item.headline || "No conversation imported yet"}</span>
+                      <span className="conversation-row-meta"><small className={`conversation-state-badge state-${state.code}`} title={state.explanation}>{state.label}</small><small className={"stage-pill stage-" + contactStage(item)}>{PIPELINE_STAGES.find((stage) => stage.value === contactStage(item))?.label}</small>{item.source === "linkedin-extension" && <small className="new-chip">Synced</small>}{reminderAt && <small className={isReminderDue(item, now) ? "reminder-due" : ""}>Follow-up {formatRelativeTime(reminderAt, now)}</small>}</span>
+                      {Boolean(item.labels?.length) && <span className="label-row">{item.labels?.slice(0, 3).map((label) => <small key={label} className="label-chip">{label}</small>)}</span>}
+                    </span>
+                    {item.lastSyncedAt && <span className="updated-dot" title="Synchronized conversation" aria-label="Synchronized conversation" />}
+                  </button>
+                  <span className="conversation-quick-actions">
+                    <button type="button" aria-label={item.pinned ? `Unpin ${item.name}` : `Pin ${item.name}`} aria-pressed={Boolean(item.pinned)} title={item.pinned ? "Unpin" : "Pin"} onClick={() => updateContactById(item.id, (current) => ({ ...current, pinned: !current.pinned }))}>★</button>
+                    <button type="button" aria-label={item.readLater ? `Clear read later for ${item.name}` : `Read ${item.name} later`} aria-pressed={Boolean(item.readLater)} title={item.readLater ? "Clear read later" : "Read later"} onClick={() => updateContactById(item.id, (current) => ({ ...current, readLater: !current.readLater }))}>◷</button>
+                  </span>
+                </div>;
+              })}
+            </nav>
+            {!visibleContacts.length && <div className="inbox-empty"><strong>No conversations here yet</strong><p>Open a LinkedIn conversation after enabling sync, or add one manually in Settings.</p></div>}
+          </section>
+
+          {inboxView === "pipeline" ? <section className="conversation-column pipeline-view-column">
+            <header className="conversation-header"><div><p className="eyebrow">LOCAL WORKFLOW</p><h2>Conversation pipeline</h2><p>Drag contacts between stages. This changes only the encrypted local workspace.</p></div></header>
+            <div className="pipeline-board">{PIPELINE_STAGES.map((stage) => <section className="pipeline-column" key={stage.value} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData("text/contact-id"); if (id) moveContactToStage(id, stage.value); }}>
+              <header><strong>{stage.label}</strong><span>{stageCounts[stage.value]}</span></header>
+              <div>{workspace.contacts.filter((item) => !item.archivedAt && contactStage(item) === stage.value).map((item) => <article className={item.id === contact?.id ? "pipeline-card selected" : "pipeline-card"} draggable key={item.id} onDragStart={(event) => event.dataTransfer.setData("text/contact-id", item.id)} onClick={() => {
+                setSelectedId(item.id);
+                setDrafts(latestDraftsForRole(item, workspace.inboxRole));
+                setDraftError("");
+                setMobileConversationOpen(true);
+              }}><div><strong>{item.name}</strong><small>{formatRelativeTime(item.chat.at(-1)?.createdAt || item.lastSyncedAt, now)}</small></div><p>{item.chat.at(-1)?.body || item.headline || "No message preview"}</p><select aria-label={"Move " + item.name + " to pipeline stage"} value={contactStage(item)} onClick={(event) => event.stopPropagation()} onChange={(event) => moveContactToStage(item.id, event.target.value as PipelineStage)}>{PIPELINE_STAGES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></article>)}</div>
+            </section>)}</div>
+          </section> : inboxView === "settings" ? <section className="conversation-column settings-column">
+            <header className="conversation-header"><div><p className="eyebrow">SETTINGS</p><h2>Workspace and drafting</h2><p>Preferences and guidance stay in this encrypted browser vault.</p></div></header>
+            <div className="settings-scroll">
+              <section className="panel-card"><h3>Add a contact manually</h3><p className="section-explainer">Automatic sync creates new LinkedIn contacts for you. Manual creation remains available for other services and fallback imports.</p><label>Conversation platform<select aria-label="Conversation platform" value={newPlatform} onChange={(event) => setNewPlatform(event.target.value as ConversationPlatform)}>{PLATFORM_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><div className="inline-form"><input aria-label="New contact name" value={newContactName} onChange={(event) => setNewContactName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addContact()} placeholder="New contact name" /><button onClick={addContact}>Add</button></div></section>
+              <section className="panel-card guidance-card">
+                <p className="eyebrow">ABOUT YOU</p>
+                <h3>Your messaging playbook</h3>
+                <label>Your role or team<select value={workspace.guidance.selectedRole} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, selectedRole: event.target.value as MessagingRole } }))}>{MESSAGING_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
+                <label>Your relationship goal<textarea aria-label="Your relationship goal" maxLength={PLAYBOOK_GOAL_MAX_CHARS} value={selectedSettingsPlaybook.objective} onChange={(event) => updateSelectedPlaybook("objective", event.target.value)} /><small>{selectedSettingsPlaybook.objective.length.toLocaleString()} / {PLAYBOOK_GOAL_MAX_CHARS.toLocaleString()} characters</small></label>
+                <label>How your messages should sound<input maxLength={PLAYBOOK_VOICE_MAX_CHARS} value={workspace.guidance.voice} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: event.target.value.slice(0, PLAYBOOK_VOICE_MAX_CHARS) } }))} /></label>
+                <label>Rules every reply must follow<textarea aria-label="Rules every reply must follow" maxLength={PLAYBOOK_RULES_MAX_CHARS} value={selectedSettingsPlaybook.boundaries} onChange={(event) => updateSelectedPlaybook("boundaries", event.target.value)} /><small>{selectedSettingsPlaybook.boundaries.length.toLocaleString()} / {PLAYBOOK_RULES_MAX_CHARS.toLocaleString()} characters</small></label>
+                <input ref={rulesFileRef} hidden type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" onChange={(event) => event.target.files?.[0] && void uploadRulesDocument(event.target.files[0])} />
+                <div className="playbook-actions"><button type="button" className="primary" onClick={() => void saveMessagingPlaybooks()}>Save playbook settings</button><button type="button" onClick={() => rulesFileRef.current?.click()}>Upload rules document</button><button type="button" onClick={downloadCurrentRules}>Download rules</button></div>
+                <p className="section-explainer">Type rules above, upload a plain-text or Markdown document, or use both. Uploaded text is appended to existing rules for the selected role and saved in the encrypted local vault. Download exports the current combined rules field as a text file.</p>
+                {playbookStatus && <p className="status" role="status" aria-live="polite">{playbookStatus}</p>}
+              </section>
+              <section className="panel-card"><p className="eyebrow">CLOUDFLARE PRIVATE AI</p><h3>Draft-generation consent</h3><div className="provider-summary"><span>Automatic two-model planning and review</span><strong>{CLOUDFLARE_MODEL_NAME}</strong><small>Llama maps the latest message to the active relationship goal and reply rules. GPT-OSS then writes and checks the final three independently. Conversation text is sent to both models only when you click Generate.</small></div><label>Cloud access code · session-only by default<input type="password" autoComplete="off" value={cloudAccessCode} onChange={(event) => { const nextCode = event.target.value.slice(0, 200); setCloudAccessCode(nextCode); if (workspace.cloudInference.rememberAccessToken) updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, accessToken: nextCode } })); }} placeholder="Enter the code yourself" /></label><label className="consent-check"><input type="checkbox" checked={workspace.cloudInference.rememberAccessToken} onChange={(event) => { const rememberAccessToken = event.target.checked; updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, rememberAccessToken, accessToken: rememberAccessToken ? cloudAccessCode : "" } })); }} /><span>Remember this access code in the encrypted vault.</span></label><label className="consent-check"><input type="checkbox" checked={Boolean(workspace.cloudInference.consentedAt)} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, consentedAt: event.target.checked ? new Date().toISOString() : "" } }))} /><span>I understand that relevant visible conversation text, my guidance, and my objective will be sent to ChatHelp&apos;s authenticated Cloudflare Worker and processed by both configured Cloudflare-hosted models only when I request drafts. Screenshots, cookies, the full vault, and access credentials are not included in the AI request.</span></label></section>
+            </div>
+          </section> : <section className={"conversation-column" + (!mobileConversationOpen ? " mobile-conversation-hidden" : "")}>
+            {contact ? <>
+              <header className="conversation-header">
+                <button className="mobile-back" onClick={() => setMobileConversationOpen(false)}>← Inbox</button>
+                {renderAvatar(contact, "conversation-avatar")}
+                <div className="conversation-identity"><h2>{contact.name}</h2><p>{[contact.headline, contact.company].filter(Boolean).join(" · ") || "LinkedIn conversation"}</p>{contact.profileUrl && <a href={contact.profileUrl} target="_blank" rel="noreferrer">View LinkedIn profile ↗</a>}</div>
+                <div className="conversation-header-actions"><span className={"sync-status-pill " + (syncState?.enabled && !syncState.paused ? "on" : "")}>{contact.lastSyncedAt ? "Synchronized " + formatRelativeTime(contact.lastSyncedAt, now) : automaticSyncLabel}</span>{activeConversationState && <span className={`conversation-state-badge state-${activeConversationState.code}`} title={activeConversationState.explanation}>{activeConversationState.label}</span>}<button type="button" className="header-icon-action" aria-label={contact.pinned ? "Unpin selected conversation" : "Pin selected conversation"} aria-pressed={Boolean(contact.pinned)} title={contact.pinned ? "Unpin" : "Pin"} onClick={() => updateContact((current) => ({ ...current, pinned: !current.pinned }))}>★</button><button type="button" className="header-icon-action" aria-label={contact.readLater ? "Clear read later for selected conversation" : "Read selected conversation later"} aria-pressed={Boolean(contact.readLater)} title={contact.readLater ? "Clear read later" : "Read later"} onClick={() => updateContact((current) => ({ ...current, readLater: !current.readLater }))}>◷</button><select aria-label={"Pipeline stage for " + contact.name} value={contactStage(contact)} onChange={(event) => moveContactToStage(contact.id, event.target.value as PipelineStage)}>{PIPELINE_STAGES.map((stage) => <option key={stage.value} value={stage.value}>{stage.label}</option>)}</select><button onClick={() => setContextCollapsed((current) => !current)}>{contextCollapsed ? "Show contact" : "Hide contact"}</button></div>
+              </header>
+
+              <div className="conversation-split">
+                <div className="conversation-scroll" aria-label="Conversation history">
+                  <div className="message-thread" aria-label={"Conversation with " + contact.name}>
+                  {contact.chat.length ? contact.chat.map((message) => <article className={"bubble " + (message.role === "me" ? "mine " : "") + (message.id === latestMeaningfulIncomingId ? "latest-incoming" : "")} key={message.id}><span className="message-meta"><strong>{message.role === "me" ? "You" : message.speaker || contact.name}</strong><time dateTime={message.createdAt}>{formatRelativeTime(message.createdAt, now)}</time></span>{message.body && <p>{message.body}</p>}{Boolean(message.attachments?.length) && <span className="attachment-row">{message.attachments?.map((attachment) => <small className="attachment-chip" key={attachment.id}>{attachment.kind}: {attachment.label}</small>)}</span>}{message.id === latestMeaningfulIncomingId && <small className="latest-marker">Latest meaningful incoming message</small>}</article>) : <div className="thread-empty"><strong>No messages synchronized yet</strong><p>Enable automatic sync, then manually open this conversation on LinkedIn. ChatHelp will never open or scroll it for you.</p></div>}
+                </div>
+
+                <details className="import-fallback">
+                  <summary>Manual capture and import fallback</summary>
+                  <div className={"capture-recommendation capture-" + captureMethod} data-testid="recommended-linkedin-import"><div><strong>{captureEnvironment.isMobile ? "Manual import" : "One-time local fallback"}</strong><p>Use screen-area OCR, paste selected messages, or click the extension once on an open LinkedIn conversation.</p></div><div className="capture-alternatives">{captureEnvironment.supportsScreenCapture && <button onClick={() => void captureConversation()}>Capture conversation screen</button>}<button onClick={() => chatPasteRef.current?.focus()}>Paste messages</button><button onClick={() => documentRef.current?.click()}>Import context file</button></div></div>
+                  <input ref={documentRef} hidden type="file" accept=".txt,.md,.json,text/plain,application/json" onChange={(event) => event.target.files?.[0] && void importDocument(event.target.files[0])} />
+                  <textarea ref={chatPasteRef} aria-label="Paste conversation messages" value={chatPaste} onChange={(event) => setChatPaste(event.target.value)} placeholder={"Me: Great to reconnect\nAlex: Likewise—how is the new role?"} />
+                  <button onClick={importChat}>Import manually pasted chat lines</button>
+                  <div className="inline-form"><select aria-label="Message sender" value={messageRole} onChange={(event) => setMessageRole(event.target.value as MessageRole)}><option value="them">{contact.name}</option><option value="me">You</option></select><input value={messageBody} onChange={(event) => setMessageBody(event.target.value)} placeholder="Add one message" /><button onClick={addMessage}>Add</button></div>
+                </details>
+
+                </div>
+
+                <div className="drafting-scroll" aria-label="Draft composer and generated responses">
+                <section className="composer-card">
+                  <div className="composer-heading"><div><p className="eyebrow">PRIVATE DRAFTING</p><h3>Reply to {contact.name}</h3></div><span>Review and send manually</span></div>
+                  <div className="draft-playbook-control">
+                    <label className="draft-role-select"><span>Your role or team</span><select aria-label="Your role or team" value={workspace.inboxRole} onChange={(event) => changeInboxRole(event.target.value as MessagingRole)}>{MESSAGING_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
+                    <div className="active-playbook-summary" role="status" aria-live="polite"><strong>Using {activeDraftGuidance.role} playbook</strong><span className="composer-info"><button className="info-button" type="button" aria-label={`About the ${activeDraftGuidance.role} playbook`} aria-describedby="active-playbook-description">i</button><span className="composer-tooltip" id="active-playbook-description" role="tooltip">Relationship goal: {activeDraftGuidance.objective.trim() || "No relationship goal configured"}. {activeDraftGuidance.boundaries.trim() ? `${activeDraftGuidance.boundaries.trim().length.toLocaleString()} rule characters loaded.` : "No reply rules configured for this role."}</span></span></div>
+                  </div>
+                  <details className="draft-context-inspector">
+                    <summary>Draft context</summary>
+                    <div role="region" aria-label="Draft context">
+                      {draftContextSummary ? <>
+                        <span>{draftContextSummary.role} playbook</span>
+                        <span>{draftContextSummary.hasRelationshipGoal ? "Relationship goal included" : "No relationship goal"}</span>
+                        <span>{draftContextSummary.replyRuleCharacters.toLocaleString()} reply-rule characters</span>
+                        <span>{draftContextSummary.hasObjective ? "Optional objective included" : "No optional objective"}</span>
+                        <span>{draftContextSummary.hasContactNotes ? "Contact notes included" : "No contact notes"}</span>
+                        <span>{draftContextSummary.structuredMessagesIncluded} conversation message{draftContextSummary.structuredMessagesIncluded === 1 ? "" : "s"} included</span>
+                        <span>{draftContextSummary.conversationCaptureCount} safe conversation capture{draftContextSummary.conversationCaptureCount === 1 ? "" : "s"} included</span>
+                        <span>Latest incoming: {draftContextSummary.latestIncomingText || "Not available"}</span>
+                        <span>Generation mode: {CLOUDFLARE_MODEL_NAME}</span>
+                      </> : <span>No draft context available</span>}
+                    </div>
+                  </details>
+                  <label className="objective-field"><span>What should your reply accomplish? <span className="field-optional">Optional</span> <span className="composer-info"><button className="info-button" type="button" aria-label="About the optional reply objective" aria-describedby="objective-description">i</button><span className="composer-tooltip objective-tooltip" id="objective-description" role="tooltip">Leave blank to reply strictly from the existing chat, latest message, and selected-role rules. When provided, the objective is applied together with—not instead of—the conversation and playbook rules.</span></span></span><textarea aria-label="What should your reply accomplish?" ref={agendaRef} maxLength={5_000} value={agenda} onChange={(event) => setAgenda(event.target.value.slice(0, 5_000))} placeholder="Optional objective for this reply" /></label>
+                  {!cloudReady && <p className="missing-context">Finish Cloudflare draft consent in Settings before generating.</p>}
+                  {!conversationReady && <p className="missing-context">Synchronize or manually import at least one relevant message first.</p>}
+                  <div className="generate-row"><button className="primary" disabled={!conversationReady || !cloudReady || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("processed locally"))} onClick={() => void generate()}>Generate 3 drafts for {contact.name}</button>{aiStatus && <span className="status" aria-live="polite">{aiStatus}</span>}</div>
+                  {draftError && <div className="notice error inline-draft-error" role="alert"><span><strong>Drafts were not generated.</strong> {draftError}</span><button aria-label="Dismiss draft generation error" onClick={() => setDraftError("")}>×</button></div>}
+                </section>
+
+                <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={contact.id + "-" + index}><div><span>DRAFT {index + 1}</span><div><button onClick={() => void navigator.clipboard.writeText(draft).then(() => setExtensionStatus("Draft copied. Review and send it yourself."), () => setAppError("Clipboard access was blocked."))}>Copy</button><button onClick={() => markDraftManuallySent(draft)}>Mark manually sent</button><button aria-label={"Dismiss draft " + (index + 1)} onClick={() => { const nextDrafts = drafts.filter((_item, draftIndex) => draftIndex !== index); setDrafts(nextDrafts); persistDrafts(nextDrafts); }}>Dismiss</button><button title="Useful" aria-label={"Rate draft " + (index + 1) + " useful"} onClick={() => rateDraft(draft, "useful")}>Useful</button><button title="Not useful" aria-label={"Rate draft " + (index + 1) + " not useful"} onClick={() => rateDraft(draft, "not-useful")}>Not useful</button></div></div><textarea aria-label={"Edit draft " + (index + 1)} value={draft} onChange={(event) => setDrafts((current) => current.map((item, draftIndex) => draftIndex === index ? event.target.value.slice(0, 5_000) : item))} onBlur={() => persistDrafts()} /></article>)}</div>
+                {handoffUrl && <a className="platform-link" href={handoffUrl} target="_blank" rel="noreferrer">Open LinkedIn to review and paste ↗</a>}
+                </div>
+              </div>
+            </> : <div className="empty-state"><div className="brand-mark">CH</div><h2>Open your first conversation</h2><p>Enable automatic sync, then manually open a LinkedIn conversation. Unknown contacts are added locally without inbox crawling.</p></div>}
+          </section>}
+
+          <aside className="contact-context" aria-label="Contact context">
+            {contact ? <>
+              <header><button aria-label={contextCollapsed ? "Expand contact context" : "Collapse contact context"} onClick={() => setContextCollapsed((current) => !current)}>{contextCollapsed ? "‹" : "×"}</button>{renderAvatar(contact, "context-avatar")}<h2>{contact.name}</h2><p>{contact.headline || "No headline synchronized"}</p><small>{contact.company || "No visible company"}</small>{contact.profileUrl && <a href={contact.profileUrl} target="_blank" rel="noreferrer">Visit LinkedIn profile ↗</a>}</header>
+              <div className="contact-context-scroll">
+                <section><h3>Workflow</h3><label>Pipeline stage<select value={contactStage(contact)} onChange={(event) => moveContactToStage(contact.id, event.target.value as PipelineStage)}>{PIPELINE_STAGES.map((stage) => <option key={stage.value} value={stage.value}>{stage.label}</option>)}</select></label><label>Labels<input key={contact.id} ref={labelsRef} defaultValue={(contact.labels || []).join(", ")} onBlur={(event) => updateContact((current) => ({ ...current, labels: parseLabels(event.target.value) }))} placeholder="warm lead, client" /></label><label>Relationship notes<textarea value={contact.notes || ""} onChange={(event) => updateContact((current) => ({ ...current, notes: event.target.value.slice(0, 20_000) }))} /></label><label>Follow-up reminder<input type="datetime-local" value={toDateTimeLocal(contact.followUpAt)} onChange={(event) => updateContact((current) => ({ ...current, followUpAt: fromDateTimeLocal(event.target.value), pipelineStage: event.target.value ? "follow-up" : contactStage(current) }))} /></label><label>Snooze until<input ref={snoozeRef} type="datetime-local" value={toDateTimeLocal(contact.snoozedUntil)} onChange={(event) => updateContact((current) => ({ ...current, snoozedUntil: fromDateTimeLocal(event.target.value), pipelineStage: event.target.value ? "snoozed" : contactStage(current) }))} /></label></section>
+                <section><h3>Synchronization</h3><dl><div><dt>Source</dt><dd>{contact.source === "linkedin-extension" ? "Opened LinkedIn conversation" : "Manual"}</dd></div><div><dt>First synchronized</dt><dd>{contact.firstSyncedAt ? new Date(contact.firstSyncedAt).toLocaleString() : "Not yet"}</dd></div><div><dt>Last synchronized</dt><dd>{contact.lastSyncedAt ? new Date(contact.lastSyncedAt).toLocaleString() : "Not yet"}</dd></div><div><dt>Visible messages</dt><dd>{contact.lastSyncMessageCount || contact.chat.length}</dd></div></dl></section>
+                <section><h3>Conversation outcome</h3><div className="inline-form"><select aria-label="Conversation outcome" value={outcomeResult} onChange={(event) => setOutcomeResult(event.target.value as typeof outcomeResult)}><option value="positive">Positive</option><option value="neutral">Neutral</option><option value="negative">Negative</option></select><input value={outcomeNote} onChange={(event) => setOutcomeNote(event.target.value)} placeholder="What happened?" /><button onClick={addOutcome}>Save</button></div>{contact.outcomes.at(-1) && <p className="context-summary"><strong>{contact.outcomes.at(-1)?.result}</strong> {contact.outcomes.at(-1)?.note}</p>}</section>
+                <section><h3>Local storage and retention</h3><p>{storageSummary}. Stored only in this encrypted local vault.</p><label>Remove dated context after<select value={contact.retentionDays} onChange={(event) => updateContact((current) => ({ ...current, retentionDays: Number(event.target.value) as Contact["retentionDays"] }))}><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option><option value={0}>Keep until I delete it</option></select></label></section>
+                <section><h3>Profile details</h3><label>Name<input value={contact.name} onChange={(event) => updateContact((current) => ({ ...current, name: event.target.value.slice(0, 200) }))} /></label><label>Headline<input value={contact.headline} onChange={(event) => updateContact((current) => ({ ...current, headline: event.target.value.slice(0, 500) }))} /></label><label>Company<input value={contact.company || ""} onChange={(event) => updateContact((current) => ({ ...current, company: event.target.value.slice(0, 500) }))} /></label><label>Relevant profile notes<textarea value={contact.profileNotes} onChange={(event) => updateContact((current) => ({ ...current, profileNotes: event.target.value.slice(0, 20_000) }))} /></label></section>
+                <div className="context-actions"><button onClick={() => toggleArchive(contact)}>{contact.archivedAt ? "Restore to inbox" : "Archive"}</button><button className="danger-link" onClick={deleteContact}>Delete local contact</button></div>
+              </div>
+            </> : <div className="context-empty">Select a conversation to see local contact context.</div>}
+          </aside>
+        </div>
+
+        <footer><span>ChatHelp never sends platform messages or email automatically.</span><button className="danger-link" onClick={() => void eraseEverything()}>Erase all local data</button></footer>
+        {wizardOpen && <LinkedInTestWizard initialContact={contact} guidance={resolveRoleGuidance(workspace.guidance, workspace.inboxRole)} drafts={drafts} aiStatus={draftError ? "Drafts were not generated. " + draftError : aiStatus} onClose={() => setWizardOpen(false)} onSaveProfile={saveWizardProfile} onCapture={captureContextFor} onImportChat={importChatFor} onGuidanceChange={(field, value) => { if (field === "role") changeInboxRole(value as MessagingRole); else if (field === "voice") updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: value.slice(0, PLAYBOOK_VOICE_MAX_CHARS) } })); else updateRolePlaybook(workspace.inboxRole, field, value); }} onGenerate={async (contactId, nextAgenda) => { setActiveContactId(contactId); setAgenda(nextAgenda); await generate(nextAgenda, contactId); }} />}
+        {cropRequest && <ScreenRegionSelector image={cropRequest.image} contactName={cropRequest.contactName} purpose={cropRequest.purpose} onCancel={() => { const request = cropRequest; setCropRequest(null); request.resolve(null); }} onConfirm={(region) => { const request = cropRequest; setCropRequest(null); request.resolve(region); }} />}
+        <dialog ref={shortcutDialogRef} className="privacy-dialog shortcut-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">KEYBOARD-FIRST INBOX</p><h2>Shortcuts</h2><dl><div><dt>J / K</dt><dd>Next / previous conversation</dd></div><div><dt>E</dt><dd>Archive or restore</dd></div><div><dt>R</dt><dd>Focus reply objective</dd></div><div><dt>S</dt><dd>Focus snooze</dd></div><div><dt>L</dt><dd>Focus labels</dd></div><div><dt>Ctrl/⌘ + J</dt><dd>Focus draft composer</dd></div><div><dt>G then I</dt><dd>Go to inbox</dd></div><div><dt>?</dt><dd>Show help</dd></div></dl><button className="primary">Done</button></form></dialog>
+        <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Automatic sync:</strong> after explicit optional host permission, an isolated content script reads only the visible central LinkedIn conversation you manually open. It never reads cookies, scans the inbox, opens chats, clicks, types, scrolls, or sends.</li><li><strong>Local handoff:</strong> synchronized snapshots pass through the existing extension bridge into this authenticated app and are encrypted in the local vault. Automatic snapshots are not retained in extension storage.</li><li><strong>One-time fallback:</strong> a manual toolbar capture may remain only in extension session storage until this app acknowledges it.</li><li><strong>Cloud AI:</strong> relevant recent conversation text, guidance, and your objective are sent to the authenticated same-origin /api/drafts endpoint only when you click Generate.</li><li><strong>Never uploaded:</strong> screenshots, cookies, session tokens, access credentials, the full vault, navigation, job cards, side panels, and unrelated conversations are excluded.</li><li><strong>Sending:</strong> every draft requires manual review, copy, paste, and sending.</li></ul><button className="primary">Understood</button></form></dialog>
+      </main>
+    );
+  }
+
+  return renderWorkspace();
 }

@@ -1,25 +1,34 @@
 # ChatHelp LinkedIn Conversation Reader
 
-This Manifest V3 extension is the desktop companion for ChatHelp. It receives temporary `activeTab` access only when the user clicks the extension while viewing a LinkedIn Messaging conversation.
+This Manifest V3 companion supports two user-controlled modes:
 
-## Manual-safe boundary
+- Optional automatic sync of the visible LinkedIn conversation the user manually opens.
+- A one-time toolbar capture fallback.
 
-- Requires an existing LinkedIn contact to be selected in ChatHelp first.
-- Verifies the open conversation matches that selected contact before traversing any message nodes.
-- Reports connection, selector, identity, and empty-message failures inside ChatHelp instead of relying on a short-lived extension badge.
-- Reads only that matching, currently open, visible conversation after an explicit click.
-- Does not enumerate conversations, contacts, notifications, or connection graphs.
-- Does not click, type into, submit, or send anything on LinkedIn.
-- Keeps one pending snapshot in `chrome.storage.local` until the authenticated ChatHelp app imports and acknowledges it.
-- Sends the snapshot only to the ChatHelp page through an extension content-script bridge. There is no extension network request or server sync.
-- Stores attachment labels and types, not attachment download URLs.
+## Privacy boundary
+
+When automatic sync is enabled, ChatHelp reads the visible LinkedIn conversation you manually open. It does not scan the inbox, access LinkedIn cookies, open conversations, click, type, scroll, or send messages.
+
+- Automatic sync is off by default.
+- Enabling it requests only the optional 'https://www.linkedin.com/*' host permission.
+- The isolated content script runs only on LinkedIn Messaging pages.
+- It observes SPA route and central-thread DOM changes with debouncing.
+- Only the visible conversation header and central message thread are queried.
+- Background conversation previews, navigation, job cards, recommendations, notifications, and side panels are excluded.
+- No LinkedIn API or authenticated network request is made.
+- Automatic snapshots are handed directly to the authenticated ChatHelp app and are not stored by the extension.
+- A one-time manual snapshot may remain in extension session storage only until ChatHelp acknowledges the encrypted local-vault import.
+- Disabling sync unregisters the content script and revokes the optional LinkedIn host permission.
 
 ## Local testing
 
-1. Open `chrome://extensions`, enable Developer mode, and choose **Load unpacked**.
-2. Select this `extension` directory. When updating an existing installation, click **Reload** on its card and confirm version `0.3.0`, then reload the ChatHelp tab.
-3. Add or select a LinkedIn contact in ChatHelp. Use the person's full LinkedIn name when possible.
-4. Open that same contact's LinkedIn Messaging conversation and click the ChatHelp extension icon.
-5. ChatHelp opens or focuses, imports the visible messages into only that existing contact's encrypted local record, then clears the pending extension snapshot. A different contact is blocked before message reading begins. For a shortened saved name, ChatHelp can show and confirm the header-only LinkedIn identity; return to LinkedIn and click the extension again after confirming.
+1. Open 'chrome://extensions', enable Developer mode, and choose **Load unpacked**.
+2. Select this 'extension' directory. When updating, click **Reload** and confirm version '0.4.2', then reload the ChatHelp and LinkedIn tabs.
+3. In desktop ChatHelp, click **Enable automatic LinkedIn conversation sync** and approve Chrome's LinkedIn host prompt.
+4. Manually open conversations at LinkedIn Messaging. ChatHelp's local inbox grows only from conversations you open.
+5. Test Pause, Resume, and Disable. Disable must revoke the optional host permission.
+6. For a one-time fallback, open one LinkedIn conversation and click the ChatHelp extension icon.
 
-LinkedIn may change its DOM. When capture fails, the extension stops, focuses ChatHelp, and displays the exact safe failure reason. It never falls back to scanning the whole page.
+LinkedIn may change its DOM. When the layout is unsupported, the extension reports a safe status and stops; it never broadens its scan.
+
+The bridge is restricted to ChatHelp's exact production and testing Worker hosts. The testing host is a Cloudflare aliased preview of the same Worker version stream; it is not a second Worker and receives no broader Chrome capability.
