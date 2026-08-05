@@ -127,7 +127,7 @@ describe("secure conversation workspace interaction", () => {
     await user.type(screen.getByLabelText("New contact name"), "Alex Morgan");
     await user.click(screen.getByRole("button", { name: "Add" }));
     await user.click(screen.getByRole("button", { name: "Inbox" }));
-    expect(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: /Alex Morgan/ })).toBeTruthy();
+    expect(await within(screen.getByRole("navigation", { name: "Conversations" })).findByRole("button", { name: /Alex Morgan/ })).toBeTruthy();
     expect(screen.getByLabelText("Conversation with Alex Morgan")).toBeTruthy();
     await waitFor(() => expect(document.querySelector(".save-state")?.textContent).toContain("Encrypted"), { timeout: 3000 });
 

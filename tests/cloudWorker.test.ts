@@ -250,6 +250,38 @@ describe("Cloudflare private inference Worker", () => {
     });
   });
 
+  it("rejects invented personal origin stories and rewrites them as evidence-safe replies", async () => {
+    const env = await workerEnv();
+    env.AI.run
+      .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
+      .mockResolvedValueOnce({ response: { drafts: [
+        "Honestly, I got into zero trust after seeing perimeter defenses bypassed as work moved to the cloud.",
+        "My motivation came from watching breaches exploit implicit trust inside networks.",
+        "The appeal of zero trust is its focus on verifying access instead of assuming trust.",
+      ] } })
+      .mockResolvedValueOnce({ response: { drafts: [
+        "What appeals to me about zero trust is the move from assumed trust to continuous verification.",
+        "The principle resonates with me because access decisions stay explicit and contextual rather than relying on network location.",
+        "I find the shift toward verification at each access decision especially relevant to modern cloud environments.",
+      ] } });
+
+    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + ACCESS_CODE, "Content-Type": "application/json", Origin: "https://chathelp.example" },
+      body: JSON.stringify({
+        prompt: "Amit: What inspired you to go for zero trust networks?",
+        playbook: { role: "Network Marketing", relationshipGoal: "Build genuine trust", voice: "Natural", replyRules: "Do not invent facts" },
+      }),
+    }), env);
+
+    expect(response.status).toBe(200);
+    expect(env.AI.run).toHaveBeenCalledTimes(3);
+    expect(env.AI.run.mock.calls[2][1].messages[1].content).toContain("invented unsupported personal history or origin stories");
+    const body = await response.json();
+    expect(body.drafts.join(" ")).not.toContain("got into zero trust");
+    expect(body.drafts.join(" ")).not.toContain("My motivation came from");
+  });
+
   it("automatically retries when the model copies a message from captured history", async () => {
     const env = await workerEnv();
     env.AI.run
