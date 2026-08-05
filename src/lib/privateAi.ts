@@ -26,6 +26,17 @@ export interface CloudDraftRequest {
   replyObjective: string;
 }
 
+export interface DraftContextSummary {
+  role: string;
+  structuredMessagesIncluded: number;
+  latestIncomingText: string;
+  replyRuleCharacters: number;
+  hasRelationshipGoal: boolean;
+  hasObjective: boolean;
+  hasContactNotes: boolean;
+  conversationCaptureCount: number;
+}
+
 export const CPU_FALLBACK_MODEL_ID = "cpu:qwen2.5-0.5b-instruct-q4";
 export const CPU_FALLBACK_MODEL_NAME = "Qwen 2.5 0.5B · private CPU/WASM";
 export const CLOUDFLARE_MODEL_NAME = "Auto · Llama 3.1 8B + GPT-OSS 120B";
@@ -61,16 +72,40 @@ function clipForPrompt(value: string, maxCharacters: number): string {
   return text.slice(0, headLength) + marker + text.slice(-(available - headLength));
 }
 
-export function buildPrompt(input: PrivateAiInput): string {
+function selectPromptContext(input: PrivateAiInput) {
   const structuredChat = repairLegacyLinkedInMessages(input.contact.chat);
+  const structuredMessages = structuredChat.slice(-80);
+  const latestMessage = structuredChat.at(-1);
+  const latestMeaningfulIncoming = structuredChat.findLast((message) => message.role === "them" && Boolean(message.body.trim() || message.attachments?.length));
+  const replyTarget = latestMessage?.role === "them" && (latestMessage.body.trim() || latestMessage.attachments?.length) ? latestMessage : undefined;
+  const conversationCaptures = selectRecentConversationCaptures(input.contact.documents);
+  const capturedIds = new Set(conversationCaptures.map((item) => item.documentId));
+  const rejectedFullPageIds = new Set(input.contact.documents.filter(isLikelyFullLinkedInPageCapture).map((document) => document.id));
+  const supportingContext = input.retrievedContext.filter((item) => !capturedIds.has(item.documentId) && !rejectedFullPageIds.has(item.documentId));
+  return { structuredChat, structuredMessages, latestMessage, latestMeaningfulIncoming, replyTarget, conversationCaptures, supportingContext };
+}
+
+export function buildDraftContextSummary(input: PrivateAiInput): DraftContextSummary {
+  const context = selectPromptContext(input);
+  return {
+    role: input.guidance.role,
+    structuredMessagesIncluded: context.structuredMessages.length,
+    latestIncomingText: clipForPrompt(context.latestMeaningfulIncoming?.body ?? "", 240),
+    replyRuleCharacters: input.guidance.boundaries.trim().length,
+    hasRelationshipGoal: Boolean(input.guidance.objective.trim()),
+    hasObjective: Boolean(input.latestQuestion.trim()),
+    hasContactNotes: Boolean(input.contact.notes?.trim() || input.contact.profileNotes.trim()),
+    conversationCaptureCount: context.conversationCaptures.length,
+  };
+}
+
+export function buildPrompt(input: PrivateAiInput): string {
+  const { structuredChat, structuredMessages, latestMessage, latestMeaningfulIncoming, replyTarget, conversationCaptures, supportingContext } = selectPromptContext(input);
   const renderMessage = (message: (typeof structuredChat)[number]) => {
     const attachments = message.attachments?.length ? ` [Visible attachments: ${message.attachments.map((attachment) => attachment.label).join(", ")}]` : "";
     return (message.role === "me" ? "USER" : input.contact.name) + ": " + clipForPrompt(message.body + attachments, 2_000);
   };
-  const chatHistory = clipForPrompt(structuredChat.slice(-80).map(renderMessage).join("\n"), 20_000);
-  const latestMessage = structuredChat.at(-1);
-  const latestMeaningfulIncoming = structuredChat.findLast((message) => message.role === "them" && Boolean(message.body.trim() || message.attachments?.length));
-  const replyTarget = latestMessage?.role === "them" && (latestMessage.body.trim() || latestMessage.attachments?.length) ? latestMessage : undefined;
+  const chatHistory = clipForPrompt(structuredMessages.map(renderMessage).join("\n"), 20_000);
   const highestPriorityTarget = replyTarget
       ? `The latest actual message is an unanswered incoming message from CONTACT. Answer this exact message directly and preserve its actual subject before considering any optional reply objective.\n${renderMessage(replyTarget)}`
     : latestMessage
@@ -80,13 +115,9 @@ export function buildPrompt(input: PrivateAiInput): string {
   const priorSuggestions = previousDrafts.length
     ? previousDrafts.map((draft, index) => `Previous suggestion ${index + 1}: ${clipForPrompt(draft, 1_000)}`).join("\n")
     : "No previous draft suggestions for this contact.";
-  const conversationCaptures = selectRecentConversationCaptures(input.contact.documents);
-  const capturedIds = new Set(conversationCaptures.map((item) => item.documentId));
-  const rejectedFullPageIds = new Set(input.contact.documents.filter(isLikelyFullLinkedInPageCapture).map((document) => document.id));
   const capturedConversation = conversationCaptures.length
     ? conversationCaptures.map((item, index) => "[Conversation screen " + (index + 1) + " for " + input.contact.name + "]\n" + clipForPrompt(item.text, 6_000)).join("\n\n")
     : "No conversation screen captured.";
-  const supportingContext = input.retrievedContext.filter((item) => !capturedIds.has(item.documentId) && !rejectedFullPageIds.has(item.documentId));
   const evidence = supportingContext.length
     ? clipForPrompt(supportingContext.map((item, index) => "[Supporting evidence " + (index + 1) + " from " + item.documentName + "]\n" + item.text).join("\n\n"), 5_000)
     : "No imported supporting context.";

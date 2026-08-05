@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MAX_CLOUD_PROMPT_CHARS, buildCloudDraftRequest, buildPrompt, generateWithCloud, parseDrafts, type PrivateAiInput } from "../src/lib/privateAi";
+import { MAX_CLOUD_PROMPT_CHARS, buildCloudDraftRequest, buildDraftContextSummary, buildPrompt, generateWithCloud, parseDrafts, type PrivateAiInput } from "../src/lib/privateAi";
 import { selectRelevantContext } from "../src/lib/retrieval";
 
 function input(): PrivateAiInput {
@@ -172,6 +172,48 @@ Hi Amit, hope you're doing well. I noticed your profile and thought it would be 
     expect(request.prompt).toContain("Every draft must satisfy it together with the actual conversation and every mandatory playbook rule");
     expect(request.prompt).toContain("Answer Alex and suggest two times.");
     expect(request.prompt).toContain("No pressure");
+  });
+
+  it("summarizes the exact grounded context selection used for draft generation", () => {
+    const messages = Array.from({ length: 84 }, (_item, index) => ({
+      id: `history-${index}`,
+      role: index % 2 ? "me" as const : "them" as const,
+      speaker: index % 2 ? "You" : "Alex",
+      body: `Historical message ${index}`,
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+    }));
+    messages.push({
+      id: "latest-incoming",
+      role: "them",
+      speaker: "Alex",
+      body: "Could you send the role details?",
+      createdAt: "2026-01-01T02:00:00.000Z",
+    });
+    const summary = buildDraftContextSummary({
+      ...input(),
+      contact: {
+        ...input().contact,
+        notes: "Follow up carefully",
+        chat: messages,
+        documents: [
+          { id: "conversation", name: "LinkedIn conversation screen", text: "Alex\nA relevant reply", createdAt: "2026-01-01T02:01:00.000Z" },
+          { id: "full-page", name: "LinkedIn page", text: "Home Jobs Messaging Notifications People you may know", createdAt: "2026-01-01T02:02:00.000Z" },
+        ],
+      },
+    });
+
+    expect(summary.structuredMessagesIncluded).toBe(80);
+    expect(summary.latestIncomingText).toBe("Could you send the role details?");
+    expect(summary.replyRuleCharacters).toBe(11);
+    expect(summary.hasRelationshipGoal).toBe(true);
+    expect(summary.hasObjective).toBe(true);
+    expect(summary.hasContactNotes).toBe(true);
+    expect(summary.conversationCaptureCount).toBe(1);
+    expect(summary.role).toBe("Human Resource");
+  });
+
+  it("reports a blank optional objective as absent", () => {
+    expect(buildDraftContextSummary({ ...input(), latestQuestion: "   " }).hasObjective).toBe(false);
   });
 
   it("makes the newest unanswered incoming message authoritative and rejects prior draft suggestions", () => {
