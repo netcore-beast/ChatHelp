@@ -53,6 +53,7 @@ import {
   createEmptyWorkspace,
   newId,
   resolveRoleGuidance,
+  updateRolePlaybookRules,
   type Contact,
   type ConversationPlatform,
   type MessagingRole,
@@ -490,13 +491,17 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   function updateRolePlaybook(role: MessagingRole, field: "objective" | "boundaries", value: string) {
     const maxCharacters = field === "boundaries" ? PLAYBOOK_RULES_MAX_CHARS : PLAYBOOK_GOAL_MAX_CHARS;
     updateWorkspace((current) => {
+      const currentPlaybook = current.guidance.playbooks[role];
+      const nextPlaybook = field === "boundaries"
+        ? updateRolePlaybookRules(currentPlaybook, value)
+        : { ...currentPlaybook, objective: value.slice(0, maxCharacters) };
       return {
         ...current,
         guidance: {
           ...current.guidance,
           playbooks: {
             ...current.guidance.playbooks,
-            [role]: { ...current.guidance.playbooks[role], [field]: value.slice(0, maxCharacters) },
+            [role]: nextPlaybook,
           },
         },
       };
@@ -555,7 +560,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
           ...currentWorkspace.guidance,
           playbooks: {
             ...currentWorkspace.guidance.playbooks,
-            [role]: { ...currentWorkspace.guidance.playbooks[role], boundaries: mergedRules },
+            [role]: updateRolePlaybookRules(currentWorkspace.guidance.playbooks[role], mergedRules),
           },
         },
       };

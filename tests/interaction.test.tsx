@@ -11,7 +11,7 @@ import {
   LINKEDIN_SYNC_COMMAND_EVENT,
   LINKEDIN_SYNC_STATE_EVENT,
 } from "../src/lib/linkedinExtension";
-import { resetVaultForTests } from "../src/lib/secureVault";
+import { openDeviceVault, resetVaultForTests } from "../src/lib/secureVault";
 
 vi.mock("@/lib/localOcr", () => ({
   captureVisibleScreen: vi.fn().mockResolvedValue(new Blob(["screen"])),
@@ -315,7 +315,7 @@ describe("secure conversation workspace interaction", () => {
     await user.clear(screen.getByLabelText("Your relationship goal"));
     await user.type(screen.getByLabelText("Your relationship goal"), "NETWORK-ONLY-GOAL");
     await user.clear(screen.getByLabelText("Rules every reply must follow"));
-    await user.type(screen.getByLabelText("Rules every reply must follow"), "NETWORK-ONLY-RULES");
+    await user.type(screen.getByLabelText("Rules every reply must follow"), "Always answer the newest message.\nNever invent facts.\nNETWORK-ONLY-RULES");
     await user.selectOptions(settingsRole, "Human Resource");
     await user.clear(screen.getByLabelText("Your relationship goal"));
     await user.type(screen.getByLabelText("Your relationship goal"), "HR-ONLY-GOAL");
@@ -323,7 +323,13 @@ describe("secure conversation workspace interaction", () => {
     await user.type(screen.getByLabelText("Rules every reply must follow"), "HR-ONLY-RULES");
     await user.selectOptions(settingsRole, "Network Marketing");
     expect((screen.getByLabelText("Your relationship goal") as HTMLTextAreaElement).value).toBe("NETWORK-ONLY-GOAL");
-    expect((screen.getByLabelText("Rules every reply must follow") as HTMLTextAreaElement).value).toBe("NETWORK-ONLY-RULES");
+    expect((screen.getByLabelText("Rules every reply must follow") as HTMLTextAreaElement).value).toContain("NETWORK-ONLY-RULES");
+    await user.click(screen.getByRole("button", { name: "Save playbook settings" }));
+    expect(await screen.findByText(/All four messaging playbooks were saved/)).toBeTruthy();
+    expect((await openDeviceVault()).workspace.guidance.playbooks["Network Marketing"].rulebookDigest).toBe([
+      "- Always answer the newest message.",
+      "- Never invent facts.",
+    ].join("\n"));
     await user.type(screen.getByLabelText(/Cloud access code/), "not-a-secret-test-placeholder");
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
 

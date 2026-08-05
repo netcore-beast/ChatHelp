@@ -1,8 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { buildPrompt } from "../src/lib/privateAi";
-import { MESSAGING_ROLES, createEmptyWorkspace, resolveRoleGuidance } from "../src/lib/workspaceTypes";
+import { MESSAGING_ROLES, createEmptyWorkspace, resolveRoleGuidance, updateRolePlaybookRules } from "../src/lib/workspaceTypes";
 
 describe("role-based messaging playbooks", () => {
+  it("refreshes the cached digest in the same update as edited rules", () => {
+    const playbook = createEmptyWorkspace().guidance.playbooks["Network Marketing"];
+    const updated = updateRolePlaybookRules(playbook, "Always answer the newest message.\nNever invent facts.");
+
+    expect(updated.objective).toBe(playbook.objective);
+    expect(updated.boundaries).toBe("Always answer the newest message.\nNever invent facts.");
+    expect(updated.rulebookDigest).toBe("- Always answer the newest message.\n- Never invent facts.");
+    expect(playbook.boundaries).not.toBe(updated.boundaries);
+  });
+
   it("creates every supported role and resolves only the requested playbook", () => {
     const workspace = createEmptyWorkspace();
     expect(Object.keys(workspace.guidance.playbooks)).toEqual([...MESSAGING_ROLES]);

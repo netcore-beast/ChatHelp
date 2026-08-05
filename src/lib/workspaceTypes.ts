@@ -208,6 +208,15 @@ export function resolveRoleGuidance(guidance: MessagingGuidance, role: Messaging
   return { role, objective: playbook.objective, voice: guidance.voice, boundaries: playbook.boundaries, rulebookDigest: playbook.rulebookDigest || buildRulebookDigest(playbook.boundaries) };
 }
 
+export function updateRolePlaybookRules(playbook: RolePlaybook, boundaries: string): RolePlaybook {
+  const normalizedBoundaries = boundaries.slice(0, PLAYBOOK_RULES_MAX_CHARS);
+  return {
+    ...playbook,
+    boundaries: normalizedBoundaries,
+    rulebookDigest: buildRulebookDigest(normalizedBoundaries),
+  };
+}
+
 export function createEmptyWorkspace(): WorkspaceData {
   const guidance = createDefaultMessagingGuidance();
   return {
