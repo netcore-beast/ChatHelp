@@ -50,7 +50,10 @@ function limitedText(value, maxCharacters) {
 }
 
 function parseModelDrafts(result) {
-  const candidate = result?.response ?? result;
+  const candidate = result?.response
+    ?? result?.choices?.[0]?.message?.content
+    ?? result?.choices?.[0]?.text
+    ?? result;
   let parsed = candidate;
   if (typeof parsed === "string") {
     const cleaned = parsed.trim().replace(/^\`\`\`(?:json)?\s*/i, "").replace(/\s*\`\`\`$/i, "");

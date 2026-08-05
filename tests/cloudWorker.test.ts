@@ -164,6 +164,34 @@ describe("Cloudflare private inference Worker", () => {
     expect(env.AI.run.mock.calls[1][1].response_format).toBeUndefined();
   });
 
+  it("parses the OpenAI-compatible choices response returned by Cloudflare GPT-OSS", async () => {
+    const env = await workerEnv();
+    env.AI.run
+      .mockResolvedValueOnce({ response: { drafts: ["Candidate one", "Candidate two", "Candidate three"] } })
+      .mockResolvedValueOnce({
+        choices: [{
+          finish_reason: "stop",
+          message: {
+            content: "{\"drafts\":[\"Cloudflare one\",\"Cloudflare two\",\"Cloudflare three\"]}",
+            reasoning: "Synthetic reasoning metadata",
+            role: "assistant",
+          },
+        }],
+      });
+
+    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + ACCESS_CODE, "Content-Type": "application/json", Origin: "https://chathelp.example" },
+      body: JSON.stringify({ prompt: "Alex: Can you share more?" }),
+    }), env);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      drafts: ["Cloudflare one", "Cloudflare two", "Cloudflare three"],
+    });
+    expect(env.AI.run).toHaveBeenCalledTimes(2);
+  });
+
   it("retries GPT-OSS once when its first final review is not parseable JSON", async () => {
     const env = await workerEnv();
     env.AI.run
