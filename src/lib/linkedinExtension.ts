@@ -100,6 +100,9 @@ export interface LinkedInSnapshotUpsertResult {
   contacts: Contact[];
   contactId: string;
   importedMessages: number;
+  duplicateMessages: number;
+  restoredFromArchive: boolean;
+  snapshotFingerprint: string;
   action: "created" | "updated" | "no-change" | "ambiguous";
   matchedBy: "profile" | "conversation" | "name" | "new" | "ambiguous";
 }
@@ -297,6 +300,16 @@ function snapshotIdentity(snapshot: LinkedInExtensionSnapshot): string {
   return snapshot.contact.profileUrl || snapshot.pageUrl || normalizedName(snapshot.contact.name);
 }
 
+function safeSnapshotFingerprint(snapshot: LinkedInExtensionSnapshot): string {
+  const messageMetadata = snapshot.messages.map((message) => [
+    message.sourceId || message.id,
+    message.role,
+    message.createdAt || "undated",
+    message.attachments.map((attachment) => normalizedText(attachment.label)).join("|"),
+  ].join("|")).join("||");
+  return hashText(`${snapshotIdentity(snapshot)}||${messageMetadata}`);
+}
+
 function newContactId(snapshot: LinkedInExtensionSnapshot): string {
   const suffix = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${hashText(snapshot.captureId)}`;
   return `contact-${suffix}`;
@@ -332,12 +345,13 @@ function emptyLinkedInContact(snapshot: LinkedInExtensionSnapshot): Contact {
   };
 }
 
-function mergeMessages(contact: Contact, snapshot: LinkedInExtensionSnapshot): { contact: Contact; importedMessages: number } {
+function mergeMessages(contact: Contact, snapshot: LinkedInExtensionSnapshot): { contact: Contact; importedMessages: number; duplicateMessages: number; hasNewIncoming: boolean } {
   const identity = snapshotIdentity(snapshot);
   const repairedChat = repairLegacyLinkedInMessages(contact.chat);
   const knownIds = new Set(repairedChat.map((message) => message.id));
   const knownFingerprints = new Set(repairedChat.map((message) => messageFingerprint(identity, message)));
   const imported: Message[] = [];
+  let duplicateMessages = 0;
   for (const message of snapshot.messages) {
     const createdAt = message.createdAt || snapshot.capturedAt;
     const visibleTimestamp = message.createdAt || "undated";
@@ -354,11 +368,15 @@ function mergeMessages(contact: Contact, snapshot: LinkedInExtensionSnapshot): {
       attachments: message.attachments,
     };
     const fingerprint = messageFingerprint(identity, next);
-    if (knownIds.has(next.id) || (!extractorFingerprintId && knownFingerprints.has(fingerprint))) continue;
+    if (knownIds.has(next.id) || (!extractorFingerprintId && knownFingerprints.has(fingerprint))) {
+      duplicateMessages += 1;
+      continue;
+    }
     const legacyMatchIndex = repairedChat.findIndex((existingMessage) => isLegacyLinkedInMessageId(existingMessage.id) && linkedInMessageContentKey(existingMessage) === linkedInMessageContentKey(next));
     if (legacyMatchIndex >= 0) {
       repairedChat[legacyMatchIndex] = { ...repairedChat[legacyMatchIndex], id: next.id };
       knownIds.add(next.id);
+      duplicateMessages += 1;
       continue;
     }
     knownIds.add(next.id);
@@ -367,6 +385,8 @@ function mergeMessages(contact: Contact, snapshot: LinkedInExtensionSnapshot): {
   }
   return {
     importedMessages: imported.length,
+    duplicateMessages,
+    hasNewIncoming: imported.some((message) => message.role === "them"),
     contact: {
       ...contact,
       name: snapshot.contact.name || contact.name,
@@ -386,17 +406,18 @@ function mergeMessages(contact: Contact, snapshot: LinkedInExtensionSnapshot): {
 }
 
 export function upsertLinkedInSnapshot(contacts: Contact[], snapshot: LinkedInExtensionSnapshot): LinkedInSnapshotUpsertResult {
+  const snapshotFingerprint = safeSnapshotFingerprint(snapshot);
   const linkedInContacts = contacts.filter((contact) => contact.platform === "linkedin");
   const profileMatches = snapshot.contact.profileUrl
     ? linkedInContacts.filter((contact) => normalizeLinkedInProfileUrl(contact.profileUrl) === snapshot.contact.profileUrl)
     : [];
-  if (profileMatches.length > 1) return { contacts, contactId: "", importedMessages: 0, action: "ambiguous", matchedBy: "ambiguous" };
+  if (profileMatches.length > 1) return { contacts, contactId: "", importedMessages: 0, duplicateMessages: 0, restoredFromArchive: false, snapshotFingerprint, action: "ambiguous", matchedBy: "ambiguous" };
 
   let existing = profileMatches[0];
   let matchedBy: LinkedInSnapshotUpsertResult["matchedBy"] = existing ? "profile" : "new";
   if (!existing && snapshot.pageUrl) {
     const conversationMatches = linkedInContacts.filter((contact) => normalizeLinkedInConversationUrl(contact.conversationUrl) === snapshot.pageUrl);
-    if (conversationMatches.length > 1) return { contacts, contactId: "", importedMessages: 0, action: "ambiguous", matchedBy: "ambiguous" };
+    if (conversationMatches.length > 1) return { contacts, contactId: "", importedMessages: 0, duplicateMessages: 0, restoredFromArchive: false, snapshotFingerprint, action: "ambiguous", matchedBy: "ambiguous" };
     existing = conversationMatches[0];
     if (existing) matchedBy = "conversation";
   }
@@ -414,28 +435,58 @@ export function upsertLinkedInSnapshot(contacts: Contact[], snapshot: LinkedInEx
       existing = nameMatches[0];
       matchedBy = "name";
     } else if (nameMatches.length > 1 && !snapshot.contact.profileUrl && !snapshot.pageUrl) {
-      return { contacts, contactId: "", importedMessages: 0, action: "ambiguous", matchedBy: "ambiguous" };
+      return { contacts, contactId: "", importedMessages: 0, duplicateMessages: 0, restoredFromArchive: false, snapshotFingerprint, action: "ambiguous", matchedBy: "ambiguous" };
     }
   }
 
   if (!existing) {
     const created = emptyLinkedInContact(snapshot);
     const merged = mergeMessages(created, snapshot);
+    const diagnostic = {
+      action: "created" as const,
+      visibleMessages: snapshot.messages.length,
+      importedMessages: merged.importedMessages,
+      duplicateMessages: merged.duplicateMessages,
+      restoredFromArchive: false,
+      snapshotFingerprint,
+      synchronizedAt: snapshot.capturedAt,
+    };
     return {
-      contacts: [...contacts, { ...merged.contact, source: "linkedin-extension" }],
+      contacts: [...contacts, { ...merged.contact, source: "linkedin-extension", lastSyncDiagnostic: diagnostic }],
       contactId: created.id,
       importedMessages: merged.importedMessages,
+      duplicateMessages: merged.duplicateMessages,
+      restoredFromArchive: false,
+      snapshotFingerprint,
       action: "created",
       matchedBy: "new",
     };
   }
 
   const merged = mergeMessages(existing, snapshot);
+  const action = merged.importedMessages ? "updated" as const : "no-change" as const;
+  const restoredFromArchive = Boolean(existing.archivedAt && merged.hasNewIncoming);
+  const mergedContact: Contact = {
+    ...merged.contact,
+    ...(restoredFromArchive ? { archivedAt: "", pipelineStage: "inbox" as const } : {}),
+    lastSyncDiagnostic: {
+      action,
+      visibleMessages: snapshot.messages.length,
+      importedMessages: merged.importedMessages,
+      duplicateMessages: merged.duplicateMessages,
+      restoredFromArchive,
+      snapshotFingerprint,
+      synchronizedAt: snapshot.capturedAt,
+    },
+  };
   return {
-    contacts: contacts.map((contact) => contact.id === existing?.id ? merged.contact : contact),
+    contacts: contacts.map((contact) => contact.id === existing?.id ? mergedContact : contact),
     contactId: existing.id,
     importedMessages: merged.importedMessages,
-    action: merged.importedMessages ? "updated" : "no-change",
+    duplicateMessages: merged.duplicateMessages,
+    restoredFromArchive,
+    snapshotFingerprint,
+    action,
     matchedBy,
   };
 }

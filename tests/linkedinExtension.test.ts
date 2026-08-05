@@ -191,6 +191,89 @@ describe("automatic LinkedIn extension import", () => {
     expect(fallbackSecond.contacts[0].chat).toHaveLength(2);
   });
 
+  it("reports safe message counts and a stable snapshot fingerprint", () => {
+    const snapshot = parseLinkedInExtensionSnapshot(rawSnapshot) as LinkedInExtensionSnapshot;
+    const first = upsertLinkedInSnapshot([], snapshot);
+    const incoming = {
+      id: "event-3",
+      sourceId: "urn:li:msg:3",
+      role: "them" as const,
+      speaker: "Alex Morgan",
+      body: "Could you share the role details?",
+      createdAt: "2026-08-02T12:04:00.000Z",
+      attachments: [],
+    };
+    const result = upsertLinkedInSnapshot(first.contacts, {
+      ...snapshot,
+      captureId: "capture-with-diagnostics",
+      capturedAt: "2026-08-02T12:05:00.000Z",
+      messages: [...snapshot.messages, incoming],
+    });
+
+    expect(result.importedMessages).toBe(1);
+    expect(result.duplicateMessages).toBe(2);
+    expect(result.snapshotFingerprint).toMatch(/^[a-z0-9]+$/);
+    expect(result.contacts[0].lastSyncDiagnostic).toEqual({
+      action: "updated",
+      visibleMessages: 3,
+      importedMessages: 1,
+      duplicateMessages: 2,
+      restoredFromArchive: false,
+      snapshotFingerprint: result.snapshotFingerprint,
+      synchronizedAt: "2026-08-02T12:05:00.000Z",
+    });
+  });
+
+  it("restores an archived conversation only for a genuinely new incoming message", () => {
+    const snapshot = parseLinkedInExtensionSnapshot(rawSnapshot) as LinkedInExtensionSnapshot;
+    const initial = upsertLinkedInSnapshot([], snapshot).contacts[0];
+    const archived = { ...initial, archivedAt: "2026-08-02T12:01:00.000Z", pipelineStage: "done" as const, notes: "preserve me", labels: ["priority"] };
+    const incoming = {
+      id: "event-archive-incoming",
+      sourceId: "urn:li:msg:archive-incoming",
+      role: "them" as const,
+      speaker: "Alex Morgan",
+      body: "I have a new question.",
+      createdAt: "2026-08-02T12:06:00.000Z",
+      attachments: [],
+    };
+    const result = upsertLinkedInSnapshot([archived], { ...snapshot, captureId: "capture-archive-incoming", capturedAt: "2026-08-02T12:07:00.000Z", messages: [...snapshot.messages, incoming] });
+    const updated = result.contacts[0];
+
+    expect(result.restoredFromArchive).toBe(true);
+    expect(updated.archivedAt).toBe("");
+    expect(updated.pipelineStage).toBe("inbox");
+    expect(updated.notes).toBe("preserve me");
+    expect(updated.labels).toEqual(["priority"]);
+  });
+
+  it("keeps archived conversations archived for duplicates, outgoing messages, and metadata-only updates", () => {
+    const snapshot = parseLinkedInExtensionSnapshot(rawSnapshot) as LinkedInExtensionSnapshot;
+    const initial = upsertLinkedInSnapshot([], snapshot).contacts[0];
+    const archived = { ...initial, archivedAt: "2026-08-02T12:01:00.000Z", pipelineStage: "done" as const };
+
+    const duplicate = upsertLinkedInSnapshot([archived], { ...snapshot, captureId: "capture-archive-duplicate", capturedAt: "2026-08-02T12:08:00.000Z" });
+    expect(duplicate.restoredFromArchive).toBe(false);
+    expect(duplicate.contacts[0]).toMatchObject({ archivedAt: archived.archivedAt, pipelineStage: "done" });
+
+    const outgoing = {
+      id: "event-archive-outgoing",
+      sourceId: "urn:li:msg:archive-outgoing",
+      role: "me" as const,
+      speaker: "You",
+      body: "Following up from my side.",
+      createdAt: "2026-08-02T12:09:00.000Z",
+      attachments: [],
+    };
+    const outgoingResult = upsertLinkedInSnapshot([archived], { ...snapshot, captureId: "capture-archive-outgoing", capturedAt: "2026-08-02T12:10:00.000Z", messages: [...snapshot.messages, outgoing] });
+    expect(outgoingResult.restoredFromArchive).toBe(false);
+    expect(outgoingResult.contacts[0]).toMatchObject({ archivedAt: archived.archivedAt, pipelineStage: "done" });
+
+    const metadataOnly = upsertLinkedInSnapshot([archived], { ...snapshot, captureId: "capture-archive-metadata", capturedAt: "2026-08-02T12:11:00.000Z", contact: { ...snapshot.contact, company: "Updated Example Co" } });
+    expect(metadataOnly.restoredFromArchive).toBe(false);
+    expect(metadataOnly.contacts[0]).toMatchObject({ archivedAt: archived.archivedAt, pipelineStage: "done", company: "Updated Example Co" });
+  });
+
   it("deduplicates undated DOM messages across captures with different capture times", () => {
     const snapshot = parseLinkedInExtensionSnapshot(rawSnapshot) as LinkedInExtensionSnapshot;
     const undated = {
