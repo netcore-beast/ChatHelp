@@ -19,7 +19,7 @@ interface LinkedInTestWizardProps {
   onSaveProfile: (profile: ProfileDraft) => string;
   onCapture: (contactId: string, purpose: "profile" | "chat") => Promise<void>;
   onImportChat: (contactId: string, text: string) => void;
-  onGuidanceChange: (field: keyof Guidance, value: string) => void;
+  onGuidanceChange: (field: "role" | "objective" | "voice" | "boundaries", value: string) => void;
   onGenerate: (contactId: string, agenda: string) => Promise<void>;
 }
 

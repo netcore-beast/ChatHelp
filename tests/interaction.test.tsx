@@ -248,10 +248,10 @@ describe("secure conversation workspace interaction", () => {
     expect(request.mock.calls[0][1]?.credentials).toBe("same-origin");
     const requestBody = JSON.parse(request.mock.calls[0][1]?.body as string);
     expect(requestBody.replyObjective).toBe("");
-    expect(requestBody.replyObjective).toBe("");
     expect(requestBody.conversationContext).toContain("Could you share the role brief?");
     expect(requestBody.playbook.rulebookFull).toBeTruthy();
     expect(requestBody.playbook.rulebookDigest).toBeTruthy();
+    expect(screen.getByText(/independently reviewed against the full Socializing\/Networking rulebook/i)).toBeTruthy();
     expect(screen.getByRole("link", { name: /Open LinkedIn to review and paste/ })).toBeTruthy();
   }, 20_000);
 
@@ -349,7 +349,7 @@ describe("secure conversation workspace interaction", () => {
     await user.type(screen.getByLabelText("What should your reply accomplish?"), "Reply naturally using the selected playbook.");
     await user.click(screen.getByRole("button", { name: "Generate 3 drafts for Taylor Lee" }));
     expect(await screen.findByDisplayValue("Network draft one")).toBeTruthy();
-    expect(screen.getByText(/Generated using the Network Marketing playbook/)).toBeTruthy();
+    expect(screen.getByText(/independently reviewed against the full Network Marketing rulebook/)).toBeTruthy();
     const networkRequest = JSON.parse(request.mock.calls[0][1]?.body as string);
     expect(networkRequest.playbook.role).toBe("Network Marketing");
     expect(networkRequest.playbook.relationshipGoal).toBe("NETWORK-ONLY-GOAL");

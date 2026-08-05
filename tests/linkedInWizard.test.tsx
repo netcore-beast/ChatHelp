@@ -11,6 +11,7 @@ const guidance: Guidance = {
   objective: "Explore a useful collaboration",
   voice: "Warm, concise, and specific",
   boundaries: "No pressure and no invented claims",
+  rulebookDigest: "- No pressure and no invented claims",
 };
 
 function renderWizard() {

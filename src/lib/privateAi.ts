@@ -284,7 +284,7 @@ export async function generateWithCloud(
     throw new Error("Enter the ChatHelp cloud access code. It is encrypted inside your vault.");
   }
 
-  onProgress?.("Mapping the conversation and playbook with Llama, then drafting and reviewing with GPT-OSS...");
+  onProgress?.("Llama is planning from the rulebook digest. GPT-OSS will write three replies, then independently review each one against the full rulebook...");
   const response = await request(cloudDraftEndpoint(), {
     method: "POST",
     cache: "no-store",
