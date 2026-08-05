@@ -2,6 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import { GPT_REVIEW_MODEL, LLAMA_CANDIDATE_MODEL, handleRequest, sha256Hex, WORKERS_AI_MODEL } from "../cloudflare/worker/src/index.js";
 
 const ACCESS_CODE = "test-access-code-with-more-than-twenty-characters";
+const PLAYBOOK_PLAN = {
+  latestMessageIntent: "The contact is sharing an adjacent professional interest.",
+  directions: [
+    { move: "Respond directly", goalStep: "Build relevance", applicableRules: "Stay factual", avoid: "Do not pitch" },
+    { move: "Bridge naturally", goalStep: "Build trust", applicableRules: "Keep it concise", avoid: "Do not invent familiarity" },
+    { move: "Offer a low-pressure step", goalStep: "Explore mutual value", applicableRules: "Stay conversational", avoid: "Do not force a meeting" },
+  ],
+};
 
 async function workerEnv() {
   return {
@@ -10,17 +18,15 @@ async function workerEnv() {
       limit: vi.fn().mockResolvedValue({ success: true }),
     },
     AI: {
-      run: vi.fn().mockResolvedValue({
-        response: {
-          drafts: ["First professional reply", "Second professional reply", "Third professional reply"],
-        },
-      }),
+      run: vi.fn().mockImplementation(async (model: string) => model === LLAMA_CANDIDATE_MODEL
+        ? { response: PLAYBOOK_PLAN }
+        : { response: { drafts: ["First professional reply", "Second professional reply", "Third professional reply"] } }),
     },
   };
 }
 
 describe("Cloudflare private inference Worker", () => {
-  it("uses Llama candidates plus GPT-OSS final review in automatic mode", () => {
+  it("uses Llama playbook planning plus GPT-OSS drafting and review in automatic mode", () => {
     expect(LLAMA_CANDIDATE_MODEL).toBe("@cf/meta/llama-3.1-8b-instruct-fast");
     expect(GPT_REVIEW_MODEL).toBe("@cf/openai/gpt-oss-120b");
     expect(WORKERS_AI_MODEL).toBe("auto:llama-3.1-8b+gpt-oss-120b");
@@ -33,7 +39,7 @@ describe("Cloudflare private inference Worker", () => {
       ok: true,
       model: WORKERS_AI_MODEL,
       models: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
-      mode: "automatic-two-model-review",
+      mode: "automatic-playbook-plan-and-draft",
       persistentStorage: false,
       aiGateway: false,
       observability: false,
@@ -71,7 +77,7 @@ describe("Cloudflare private inference Worker", () => {
       drafts: ["First professional reply", "Second professional reply", "Third professional reply"],
       model: WORKERS_AI_MODEL,
       models: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
-      mode: "automatic-two-model-review",
+      mode: "automatic-playbook-plan-and-draft",
     });
     expect(env.DRAFT_RATE_LIMITER.limit).toHaveBeenCalledTimes(1);
     expect(env.AI.run).toHaveBeenCalledTimes(2);
@@ -86,7 +92,10 @@ describe("Cloudflare private inference Worker", () => {
     expect(reviewInput.messages[0].content).toContain("HIGHEST PRIORITY REPLY TARGET");
     expect(reviewInput.messages[0].content).toContain("previous local draft suggestions");
     expect(reviewInput.messages[1].content).toContain("Relevant conversation text only");
-    expect(reviewInput.messages[1].content).toContain("LLAMA 3.1 8B CANDIDATES");
+    expect(candidateInput.messages[0].content).toContain("conversation and playbook planner");
+    expect(candidateInput.response_format.json_schema.properties.directions).toBeTruthy();
+    expect(reviewInput.messages[1].content).toContain("LLAMA 3.1 8B PLAYBOOK DIRECTIONS");
+    expect(reviewInput.messages[1].content).toContain("At most one of the three drafts may contain a question");
     expect(reviewInput.messages[1].content).not.toContain(ACCESS_CODE);
   });
 
@@ -151,7 +160,7 @@ describe("Cloudflare private inference Worker", () => {
   it("recovers when GPT-OSS adds text around JSON instead of using JSON Schema mode", async () => {
     const env = await workerEnv();
     env.AI.run
-      .mockResolvedValueOnce({ response: { drafts: ["Candidate one", "Candidate two", "Candidate three"] } })
+      .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
       .mockResolvedValueOnce({ response: "Final review complete.\n{\"drafts\":[\"Reviewed one\",\"Reviewed two\",\"Reviewed three\"]}" });
     const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
       method: "POST",
@@ -167,7 +176,7 @@ describe("Cloudflare private inference Worker", () => {
   it("parses the OpenAI-compatible choices response returned by Cloudflare GPT-OSS", async () => {
     const env = await workerEnv();
     env.AI.run
-      .mockResolvedValueOnce({ response: { drafts: ["Candidate one", "Candidate two", "Candidate three"] } })
+      .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
       .mockResolvedValueOnce({
         choices: [{
           finish_reason: "stop",
@@ -195,7 +204,7 @@ describe("Cloudflare private inference Worker", () => {
   it("retries GPT-OSS once when its first final review is not parseable JSON", async () => {
     const env = await workerEnv();
     env.AI.run
-      .mockResolvedValueOnce({ response: { drafts: ["Candidate one", "Candidate two", "Candidate three"] } })
+      .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
       .mockResolvedValueOnce({ response: "not valid JSON" })
       .mockResolvedValueOnce({ response: "{\"drafts\":[\"Recovered one\",\"Recovered two\",\"Recovered three\"]}" });
     const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
@@ -209,10 +218,42 @@ describe("Cloudflare private inference Worker", () => {
     expect(env.AI.run.mock.calls[2][1].messages[1].content).toContain("FORMAT CORRECTION");
   });
 
+  it("replaces a generic all-question set with more varied playbook-grounded replies", async () => {
+    const env = await workerEnv();
+    env.AI.run
+      .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
+      .mockResolvedValueOnce({ response: { drafts: [
+        "Are you focused on Sentinel?",
+        "Do you spend more time on ZTNA?",
+        "Which part of SASE do you enjoy?",
+      ] } })
+      .mockResolvedValueOnce({ response: { drafts: [
+        "That mix of Sentinel, ZTNA, and SASE gives you a useful view across detection and access.",
+        "It sounds like you enjoy working across both monitoring and access security. I would be interested in comparing how those priorities connect in practice.",
+        "There is a lot of overlap between those areas. Which side are you exploring most right now?",
+      ] } });
+
+    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + ACCESS_CODE, "Content-Type": "application/json", Origin: "https://chathelp.example" },
+      body: JSON.stringify({
+        prompt: "Samreet: ZTNA and SASE is fun as well",
+        playbook: { role: "Network Marketing", relationshipGoal: "Build trust before discussing an opportunity", voice: "Natural", replyRules: "Do not pitch early" },
+      }),
+    }), env);
+
+    expect(response.status).toBe(200);
+    expect(env.AI.run).toHaveBeenCalledTimes(3);
+    expect(env.AI.run.mock.calls[2][1].messages[1].content).toContain("overused follow-up questions");
+    await expect(response.json()).resolves.toMatchObject({
+      drafts: expect.arrayContaining([expect.not.stringContaining("?")]),
+    });
+  });
+
   it("automatically retries when the model copies a message from captured history", async () => {
     const env = await workerEnv();
     env.AI.run
-      .mockResolvedValueOnce({ response: { drafts: ["Candidate one", "Candidate two", "Candidate three"] } })
+      .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
       .mockResolvedValueOnce({ response: { drafts: [
         "Hi Amit, hope you're doing well. How's your work going?",
         "Hi Amit, just checking in.",

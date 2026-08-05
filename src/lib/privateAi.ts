@@ -198,7 +198,7 @@ export async function generateWithCloud(
     throw new Error("Enter the ChatHelp cloud access code. It is encrypted inside your vault.");
   }
 
-  onProgress?.("Running automatic Llama candidate generation and GPT-OSS final review...");
+  onProgress?.("Mapping the conversation and playbook with Llama, then drafting and reviewing with GPT-OSS...");
   const response = await request(cloudDraftEndpoint(), {
     method: "POST",
     cache: "no-store",

@@ -515,8 +515,6 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 .inbox-header > span { display: grid; place-items: center; min-width: 28px; height: 28px; border-radius: 999px; background: #edf2ee; color: var(--green); font-size: .72rem; font-weight: 900; }
 .search-field { padding: 0 1rem .7rem; }
 .search-field input { padding: .68rem .78rem; border-radius: 12px; background: #fff; }
-.inbox-role-select { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: .55rem; padding: 0 1rem .7rem; color: var(--muted); font-size: .68rem; font-weight: 800; }
-.inbox-role-select select { min-width: 0; padding: .48rem .55rem; border-radius: 10px; background: #fff; font-size: .7rem; }
 
 .sync-card { display: grid; gap: .55rem; margin: 0 1rem .75rem; padding: .78rem; border: 1px solid #d8ded9; border-radius: 13px; background: #f7f9f7; }
 .sync-card.sync-on { border-color: #aad2b8; background: #edf8f1; }
@@ -592,6 +590,14 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 .composer-heading h3 { margin: 0; }
 .composer-heading > span { color: var(--green); font-size: .66rem; font-weight: 800; }
 .composer-card textarea { min-height: 82px; }
+.draft-playbook-control { display: grid; grid-template-columns: minmax(180px, 220px) minmax(0, 1fr); align-items: stretch; gap: .7rem; }
+.draft-role-select { display: grid; align-content: start; gap: .35rem; margin: 0; }
+.draft-role-select > span { color: var(--muted); font-size: .68rem; font-weight: 800; }
+.draft-role-select select { min-width: 0; }
+.active-playbook-summary { display: grid; align-content: center; gap: .18rem; min-width: 0; padding: .65rem .75rem; border: 1px solid #c9ded1; border-radius: 11px; background: #f2faf5; }
+.active-playbook-summary strong { color: var(--green); font-size: .72rem; }
+.active-playbook-summary span { color: #33463b; font-size: .69rem; line-height: 1.4; overflow-wrap: anywhere; }
+.active-playbook-summary small { color: var(--muted); font-size: .63rem; }
 .field-optional { display: inline-block; margin-left: .35rem; padding: .15rem .38rem; border-radius: 999px; background: #eef3ef; color: var(--muted); font-size: .6rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; vertical-align: middle; }
 .generate-row { display: flex; align-items: center; gap: .65rem; }
 .generate-row .primary { flex: 0 0 auto; }
@@ -696,6 +702,7 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
   .conversation-header-actions button:last-child { display: none; }
   .conversation-scroll { padding: .7rem .7rem 1.5rem; }
   .message-thread .bubble { max-width: 90%; }
+  .draft-playbook-control { grid-template-columns: 1fr; }
   .generate-row { align-items: stretch; flex-direction: column; }
   .generate-row .primary { width: 100%; }
   .draft-card > div { align-items: stretch; flex-direction: column; }

@@ -261,10 +261,16 @@ describe("secure conversation workspace interaction", () => {
 
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     const inboxRole = screen.getByLabelText("Your role or team");
+    expect(inboxRole.closest(".composer-card")).toBeTruthy();
+    expect(firstRender.container.querySelector(".inbox-role-select")).toBeNull();
     await user.selectOptions(inboxRole, "Network Marketing");
+    expect(screen.getByText("Using Network Marketing playbook")).toBeTruthy();
+    expect(screen.getByText("Relationship goal: NETWORK-ONLY-GOAL")).toBeTruthy();
+    expect(screen.getByText(/rule characters loaded/)).toBeTruthy();
     await user.type(screen.getByLabelText("What should your reply accomplish?"), "Reply naturally using the selected playbook.");
     await user.click(screen.getByRole("button", { name: "Generate 3 drafts for Taylor Lee" }));
     expect(await screen.findByDisplayValue("Network draft one")).toBeTruthy();
+    expect(screen.getByText(/Generated using the Network Marketing playbook/)).toBeTruthy();
     const networkPrompt = JSON.parse(request.mock.calls[0][1]?.body as string).prompt as string;
     expect(networkPrompt).toContain("Role: Network Marketing");
     expect(networkPrompt).toContain("NETWORK-ONLY-GOAL");

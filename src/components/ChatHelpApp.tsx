@@ -707,6 +707,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   async function generate(agendaOverride?: string, contactIdOverride?: string) {
     const activeContact = workspace.contacts.find((item) => item.id === contactIdOverride) ?? contact;
     const draftingRole = workspace.inboxRole;
+    const draftingGuidance = resolveRoleGuidance(workspace.guidance, draftingRole);
     const requestAgenda = (agendaOverride ?? agenda).trim();
     if (!activeContact) return;
     if (!hasConversationContext(activeContact)) {
@@ -725,7 +726,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       const feedbackSummary = workspace.feedback.filter((item) => item.contactId === activeContact.id).slice(-20).map((item) => item.rating + ": " + item.note).join("\n");
       const nextDrafts = await generatePrivateDrafts(CLOUDFLARE_MODEL_ID, {
         contact: activeContact,
-        guidance: resolveRoleGuidance(workspace.guidance, draftingRole),
+        guidance: draftingGuidance,
         latestQuestion: requestAgenda,
         retrievedContext: relevant,
         feedbackSummary,
@@ -753,7 +754,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
           createdAt: generatedAt,
         }].slice(-1000),
       }));
-      setAiStatus("Generated in Cloudflare Workers AI. No LLM was downloaded or run on this device, and nothing was sent to LinkedIn.");
+      setAiStatus(`Generated using the ${draftingRole} playbook (${draftingGuidance.boundaries.trim().length.toLocaleString()} rule characters) in Cloudflare Workers AI. Nothing was sent to LinkedIn.`);
     } catch (error) {
       setAiStatus("");
       setDraftError(formatError(error));
@@ -855,6 +856,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const storageSummary = useMemo(() => contact ? contact.chat.length + " messages · " + contact.documents.length + " context files · " + contact.outcomes.length + " outcomes · " + (contact.draftHistory?.length ?? 0) + " draft sets" : "No contact selected", [contact]);
   const latestMeaningfulIncomingId = useMemo(() => contact?.chat.findLast((message) => message.role === "them" && (message.body.trim() || message.attachments?.length))?.id ?? "", [contact]);
   const selectedSettingsPlaybook = workspace.guidance.playbooks[workspace.guidance.selectedRole];
+  const activeDraftGuidance = resolveRoleGuidance(workspace.guidance, workspace.inboxRole);
   const handoffUrl = contact ? safePlatformUrl(contact) : null;
   const cloudReady = Boolean(workspace.cloudInference.consentedAt && cloudAccessCode.trim().length >= 20);
   const conversationReady = Boolean(contact && hasConversationContext(contact));
@@ -912,8 +914,6 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
               <span>{visibleContacts.length}</span>
             </header>
             <label className="search-field"><span className="sr-only">Search conversations</span><input aria-label="Search conversations" value={contactSearch} onChange={(event) => setContactSearch(event.target.value)} placeholder="Search conversations" /></label>
-            {inboxView === "inbox" && <label className="inbox-role-select"><span>Your role or team</span><select aria-label="Your role or team" value={workspace.inboxRole} onChange={(event) => changeInboxRole(event.target.value as MessagingRole)}>{MESSAGING_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>}
-
             {inboxView !== "settings" && <section className={"sync-card sync-" + (syncState?.enabled ? syncState.paused ? "paused" : "on" : "off")} aria-labelledby="sync-card-title">
               <div className="sync-card-heading"><span className="sync-dot" /><div><strong id="sync-card-title">{automaticSyncLabel}</strong><small role="status" aria-live="polite">{extensionStatus}</small></div></div>
               {captureEnvironment.isMobile ? <p>Automatic LinkedIn sync is desktop-only. Manual paste and import remain available.</p> : <>
@@ -982,7 +982,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 <p className="section-explainer">Type rules above, upload a plain-text or Markdown document, or use both. Uploaded text is appended to existing rules for the selected role and saved in the encrypted local vault. Download exports the current combined rules field as a text file.</p>
                 {playbookStatus && <p className="status" role="status" aria-live="polite">{playbookStatus}</p>}
               </section>
-              <section className="panel-card"><p className="eyebrow">CLOUDFLARE PRIVATE AI</p><h3>Draft-generation consent</h3><div className="provider-summary"><span>Automatic two-model review</span><strong>{CLOUDFLARE_MODEL_NAME}</strong><small>Llama prepares candidates and GPT-OSS checks them against the conversation and playbook before returning the final three. Conversation text is sent to both models only when you click Generate.</small></div><label>Cloud access code · session-only by default<input type="password" autoComplete="off" value={cloudAccessCode} onChange={(event) => { const nextCode = event.target.value.slice(0, 200); setCloudAccessCode(nextCode); if (workspace.cloudInference.rememberAccessToken) updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, accessToken: nextCode } })); }} placeholder="Enter the code yourself" /></label><label className="consent-check"><input type="checkbox" checked={workspace.cloudInference.rememberAccessToken} onChange={(event) => { const rememberAccessToken = event.target.checked; updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, rememberAccessToken, accessToken: rememberAccessToken ? cloudAccessCode : "" } })); }} /><span>Remember this access code in the encrypted vault.</span></label><label className="consent-check"><input type="checkbox" checked={Boolean(workspace.cloudInference.consentedAt)} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, consentedAt: event.target.checked ? new Date().toISOString() : "" } }))} /><span>I understand that relevant visible conversation text, my guidance, and my objective will be sent to ChatHelp&apos;s authenticated Cloudflare Worker and processed by both configured Cloudflare-hosted models only when I request drafts. Screenshots, cookies, the full vault, and access credentials are not included in the AI request.</span></label></section>
+              <section className="panel-card"><p className="eyebrow">CLOUDFLARE PRIVATE AI</p><h3>Draft-generation consent</h3><div className="provider-summary"><span>Automatic two-model planning and review</span><strong>{CLOUDFLARE_MODEL_NAME}</strong><small>Llama maps the latest message to the active relationship goal and reply rules. GPT-OSS then writes and checks the final three independently. Conversation text is sent to both models only when you click Generate.</small></div><label>Cloud access code · session-only by default<input type="password" autoComplete="off" value={cloudAccessCode} onChange={(event) => { const nextCode = event.target.value.slice(0, 200); setCloudAccessCode(nextCode); if (workspace.cloudInference.rememberAccessToken) updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, accessToken: nextCode } })); }} placeholder="Enter the code yourself" /></label><label className="consent-check"><input type="checkbox" checked={workspace.cloudInference.rememberAccessToken} onChange={(event) => { const rememberAccessToken = event.target.checked; updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, rememberAccessToken, accessToken: rememberAccessToken ? cloudAccessCode : "" } })); }} /><span>Remember this access code in the encrypted vault.</span></label><label className="consent-check"><input type="checkbox" checked={Boolean(workspace.cloudInference.consentedAt)} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, consentedAt: event.target.checked ? new Date().toISOString() : "" } }))} /><span>I understand that relevant visible conversation text, my guidance, and my objective will be sent to ChatHelp&apos;s authenticated Cloudflare Worker and processed by both configured Cloudflare-hosted models only when I request drafts. Screenshots, cookies, the full vault, and access credentials are not included in the AI request.</span></label></section>
             </div>
           </section> : <section className={"conversation-column" + (!mobileConversationOpen ? " mobile-conversation-hidden" : "")}>
             {contact ? <>
@@ -1009,6 +1009,10 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
 
                 <section className="composer-card">
                   <div className="composer-heading"><div><p className="eyebrow">PRIVATE DRAFTING</p><h3>Reply to {contact.name}</h3></div><span>Manual review and send only</span></div>
+                  <div className="draft-playbook-control">
+                    <label className="draft-role-select"><span>Your role or team</span><select aria-label="Your role or team" value={workspace.inboxRole} onChange={(event) => changeInboxRole(event.target.value as MessagingRole)}>{MESSAGING_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
+                    <div className="active-playbook-summary" role="status" aria-live="polite"><strong>Using {activeDraftGuidance.role} playbook</strong><span>Relationship goal: {activeDraftGuidance.objective.trim() || "No relationship goal configured"}</span><small>{activeDraftGuidance.boundaries.trim() ? `${activeDraftGuidance.boundaries.trim().length.toLocaleString()} rule characters loaded` : "No reply rules configured for this role"}</small></div>
+                  </div>
                   <label>What should your reply accomplish? <span className="field-optional">Optional</span><textarea aria-label="What should your reply accomplish?" ref={agendaRef} maxLength={5_000} value={agenda} onChange={(event) => setAgenda(event.target.value.slice(0, 5_000))} placeholder="Optional—leave blank to reply strictly from the existing chat, latest message, and selected-role rules." /><small>When provided, this objective is applied together with—not instead of—the conversation and playbook rules.</small></label>
                   {!cloudReady && <p className="missing-context">Finish Cloudflare draft consent in Settings before generating.</p>}
                   {!conversationReady && <p className="missing-context">Synchronize or manually import at least one relevant message first.</p>}
