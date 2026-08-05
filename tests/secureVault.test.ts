@@ -92,6 +92,48 @@ describe("encrypted device vault", () => {
     expect(workspace.contacts[0].chat[0].body).toBe("That would be great");
   });
 
+  it("normalizes and encrypts local pin, read-later, and safe sync diagnostics", async () => {
+    const legacy = normalizeWorkspace({
+      contacts: [{ id: "legacy", name: "Legacy", platform: "linkedin", chat: [] }],
+    });
+    expect(legacy.contacts[0].pinned).toBe(false);
+    expect(legacy.contacts[0].readLater).toBe(false);
+    expect(legacy.contacts[0].lastSyncDiagnostic).toBeUndefined();
+
+    const workspace = createEmptyWorkspace();
+    workspace.contacts = [{
+      id: "taylor",
+      name: "Taylor Lee",
+      headline: "Talent Partner",
+      profileNotes: "",
+      platform: "linkedin",
+      platformUrl: "",
+      chat: [],
+      documents: [],
+      outcomes: [],
+      retentionDays: 90,
+      pinned: true,
+      readLater: true,
+      lastSyncDiagnostic: {
+        action: "updated",
+        visibleMessages: 8,
+        importedMessages: 2,
+        duplicateMessages: 6,
+        restoredFromArchive: false,
+        snapshotFingerprint: "abc123",
+        synchronizedAt: "2026-08-05T12:00:00.000Z",
+      },
+    }];
+    await createDeviceVault(workspace);
+
+    const reopened = (await openDeviceVault()).workspace.contacts[0];
+    expect(reopened.pinned).toBe(true);
+    expect(reopened.readLater).toBe(true);
+    expect(reopened.lastSyncDiagnostic).toEqual(workspace.contacts[0].lastSyncDiagnostic);
+    const stored = JSON.stringify(await readVaultEnvelopeForTests());
+    expect(stored).not.toContain("abc123");
+  });
+
   it("stores no readable workspace content and opens without a passphrase", async () => {
     const workspace = createEmptyWorkspace();
     workspace.guidance.playbooks[workspace.guidance.selectedRole].objective = "CONFIDENTIAL-ACQUISITION-PLAN";

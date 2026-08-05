@@ -243,6 +243,22 @@ function normalizeLabels(value: unknown): string[] {
   return Array.from(new Set(value.filter((label): label is string => typeof label === "string").map((label) => label.trim().slice(0, 80)).filter(Boolean))).slice(0, 50);
 }
 
+function normalizeSyncDiagnostic(value: unknown): Contact["lastSyncDiagnostic"] {
+  if (!value || typeof value !== "object") return undefined;
+  const item = value as Record<string, unknown>;
+  if (item.action !== "created" && item.action !== "updated" && item.action !== "no-change") return undefined;
+  const count = (field: string) => typeof item[field] === "number" && Number.isFinite(item[field]) ? Math.max(0, Math.floor(item[field])) : 0;
+  return {
+    action: item.action,
+    visibleMessages: count("visibleMessages"),
+    importedMessages: count("importedMessages"),
+    duplicateMessages: count("duplicateMessages"),
+    restoredFromArchive: item.restoredFromArchive === true,
+    snapshotFingerprint: typeof item.snapshotFingerprint === "string" ? item.snapshotFingerprint.slice(0, 100) : "",
+    synchronizedAt: typeof item.synchronizedAt === "string" ? item.synchronizedAt.slice(0, 100) : "",
+  };
+}
+
 export function normalizeWorkspace(value: unknown): WorkspaceData {
   const source = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
   const contacts = Array.isArray(source.contacts) ? source.contacts : [];
@@ -325,6 +341,9 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
         firstSyncedAt: typeof contact.firstSyncedAt === "string" ? contact.firstSyncedAt.slice(0, 100) : "",
         lastSyncedAt: typeof contact.lastSyncedAt === "string" ? contact.lastSyncedAt.slice(0, 100) : "",
         lastSyncMessageCount: typeof contact.lastSyncMessageCount === "number" && Number.isFinite(contact.lastSyncMessageCount) ? Math.max(0, Math.floor(contact.lastSyncMessageCount)) : 0,
+        pinned: contact.pinned === true,
+        readLater: contact.readLater === true,
+        lastSyncDiagnostic: normalizeSyncDiagnostic(contact.lastSyncDiagnostic),
         draftHistory: Array.isArray(contact.draftHistory) ? contact.draftHistory.slice(-20).flatMap((draft, draftIndex) => {
           if (!draft || typeof draft !== "object") return [];
           const item = draft as Record<string, unknown>;

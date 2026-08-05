@@ -46,6 +46,16 @@ export interface Outcome {
   createdAt: string;
 }
 
+export interface ContactSyncDiagnostic {
+  action: "created" | "updated" | "no-change";
+  visibleMessages: number;
+  importedMessages: number;
+  duplicateMessages: number;
+  restoredFromArchive: boolean;
+  snapshotFingerprint: string;
+  synchronizedAt: string;
+}
+
 export interface Contact {
   id: string;
   name: string;
@@ -71,6 +81,9 @@ export interface Contact {
   firstSyncedAt?: string;
   lastSyncedAt?: string;
   lastSyncMessageCount?: number;
+  pinned?: boolean;
+  readLater?: boolean;
+  lastSyncDiagnostic?: ContactSyncDiagnostic;
   draftHistory?: DraftHistoryEntry[];
 }
 
