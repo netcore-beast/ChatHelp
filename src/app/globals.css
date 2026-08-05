@@ -516,21 +516,31 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 .search-field { padding: 0 1rem .7rem; }
 .search-field input { padding: .68rem .78rem; border-radius: 12px; background: #fff; }
 
-.sync-card { display: grid; gap: .55rem; margin: 0 1rem .75rem; padding: .78rem; border: 1px solid #d8ded9; border-radius: 13px; background: #f7f9f7; }
+.sync-card { position: relative; display: grid; gap: .35rem; margin: 0 1rem .55rem; padding: .46rem .52rem; border: 1px solid #d8ded9; border-radius: 11px; background: #f7f9f7; }
 .sync-card.sync-on { border-color: #aad2b8; background: #edf8f1; }
 .sync-card.sync-paused { border-color: #e2c27e; background: #fff8e8; }
-.sync-card-heading { align-items: flex-start; gap: .55rem; }
-.sync-card-heading .sync-dot { flex: 0 0 auto; margin-top: .25rem; }
-.sync-card-heading div { min-width: 0; display: grid; gap: .16rem; }
-.sync-card-heading strong { font-size: .76rem; }
-.sync-card-heading small { line-height: 1.35; }
-.sync-card > button.primary { width: 100%; padding: .58rem .65rem; font-size: .72rem; }
+.sync-card-row { display: grid; grid-template-columns: auto minmax(0,1fr) auto auto auto; align-items: center; gap: .42rem; min-height: 26px; }
+.sync-card-row > strong { overflow: hidden; font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
 .sync-card p { margin: 0; color: #526058; font-size: .68rem; line-height: 1.42; }
-.sync-actions { display: grid; grid-template-columns: 1fr; gap: .35rem; }
-.sync-actions button { padding: .5rem; font-size: .68rem; }
-.text-button { justify-self: start; padding: 0; border: 0; background: transparent; color: var(--green); font-size: .68rem; text-decoration: underline; }
-.sync-disclosure { padding-top: .5rem; border-top: 1px solid rgba(20,92,62,.11); }
-.manual-capture-help { padding: .5rem; border-radius: 8px; background: #fff; }
+.sync-info { position: relative; display: inline-grid; }
+.info-button { width: 19px; height: 19px; display: grid; place-items: center; padding: 0; border: 1px solid #7da88c; border-radius: 50%; background: #fff; color: var(--green); font: 800 .66rem/1 Georgia, serif; }
+.sync-tooltip { position: absolute; left: -112px; top: calc(100% + 8px); z-index: 20; width: min(260px, calc(100vw - 2rem)); padding: .58rem .65rem; border: 1px solid #c7d7cc; border-radius: 9px; background: #fff; color: #33453b; box-shadow: 0 8px 24px rgba(17,45,30,.14); font-size: .65rem; line-height: 1.42; opacity: 0; pointer-events: none; transform: translateY(-3px); transition: opacity .12s ease, transform .12s ease; }
+.sync-tooltip::before { position: absolute; left: 116px; top: -5px; width: 8px; height: 8px; border-left: 1px solid #c7d7cc; border-top: 1px solid #c7d7cc; background: #fff; content: ""; transform: rotate(45deg); }
+.sync-info:hover .sync-tooltip,
+.sync-info:focus-within .sync-tooltip { opacity: 1; transform: translateY(0); }
+.sync-switch { position: relative; width: 34px; height: 20px; padding: 2px; border: 1px solid #a5afa9; border-radius: 999px; background: #cbd2ce; }
+.sync-switch span { display: block; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(18,49,32,.24); transition: transform .15s ease; }
+.sync-switch[aria-checked="true"] { border-color: #17784e; background: #209160; }
+.sync-switch[aria-checked="true"] span { transform: translateX(14px); }
+.sync-switch:disabled { cursor: not-allowed; opacity: .52; }
+.sync-more { position: relative; }
+.sync-more summary { min-width: 43px; padding: .3rem .42rem; border: 1px solid #cbd3ce; border-radius: 7px; background: #fff; color: #425148; cursor: pointer; font-size: .62rem; font-weight: 800; list-style: none; text-align: center; }
+.sync-more summary::-webkit-details-marker { display: none; }
+.sync-more-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 19; min-width: 170px; display: grid; gap: .18rem; padding: .35rem; border: 1px solid #ced8d1; border-radius: 9px; background: #fff; box-shadow: 0 8px 24px rgba(17,45,30,.14); }
+.sync-more-menu button { justify-content: flex-start; padding: .45rem .5rem; border-color: transparent; background: transparent; font-size: .66rem; text-align: left; }
+.sync-more-menu button:hover { background: #f1f6f3; }
+.sync-more-menu .danger-link { color: var(--red); }
+.manual-capture-help { padding: .45rem .5rem; border-radius: 8px; background: #fff; }
 
 .inbox-filter-row { display: grid; grid-template-columns: 1fr 105px; gap: .4rem; padding: 0 1rem .65rem; }
 .inbox-filter-row select { padding: .5rem; font-size: .7rem; }

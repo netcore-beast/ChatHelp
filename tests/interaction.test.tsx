@@ -8,6 +8,7 @@ import ChatHelpApp from "../src/components/ChatHelpApp";
 import {
   LINKEDIN_EXTENSION_SOURCE,
   LINKEDIN_SNAPSHOT_EVENT,
+  LINKEDIN_SYNC_COMMAND_EVENT,
   LINKEDIN_SYNC_STATE_EVENT,
 } from "../src/lib/linkedinExtension";
 import { resetVaultForTests } from "../src/lib/secureVault";
@@ -147,7 +148,7 @@ describe("secure conversation workspace interaction", () => {
     const conversation = await screen.findByLabelText("Conversation with Taylor Lee");
     expect(within(conversation).getAllByText("Could you share the role brief?")).toHaveLength(1);
     expect(screen.getByText("Opened LinkedIn conversation")).toBeTruthy();
-    expect(screen.getByText(/Contact automatically added/i)).toBeTruthy();
+    expect(screen.getAllByRole("status").some((item) => /Contact automatically added/i.test(item.textContent ?? ""))).toBe(true);
 
     const secondMessage = {
       id: "urn:li:msg:2",
@@ -162,7 +163,7 @@ describe("secure conversation workspace interaction", () => {
     await deliverSnapshot({ ...automaticSnapshot([...automaticSnapshot().messages, secondMessage]), captureId: "capture-ui-3" });
     await waitFor(() => expect(within(screen.getByLabelText("Conversation with Taylor Lee")).getAllByText("Absolutely—I will send it here.")).toHaveLength(1));
     expect(within(screen.getByRole("navigation", { name: "Conversations" })).getAllByRole("button", { name: /Taylor Lee/ })).toHaveLength(1);
-    expect(screen.getByText(/Existing contact updated|No new messages/i)).toBeTruthy();
+    expect(screen.getAllByRole("status").some((item) => /Existing contact updated|No new messages/i.test(item.textContent ?? ""))).toBe(true);
   });
 
   it("generates exactly three editable drafts for a newly synchronized contact", async () => {
@@ -201,10 +202,22 @@ describe("secure conversation workspace interaction", () => {
   it("uploads, combines, saves, and downloads the selected role's rules document", async () => {
     const user = userEvent.setup();
     const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const postMessage = vi.spyOn(window, "postMessage");
     const rendered = render(<ChatHelpApp />);
     expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "Enable automatic LinkedIn conversation sync" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "About automatic LinkedIn conversation sync" })).toBeTruthy();
+    await announceExtension();
+    const syncSwitch = screen.getByRole("switch", { name: "Pause automatic sync" });
+    expect(syncSwitch.getAttribute("aria-checked")).toBe("true");
+    await user.click(syncSwitch);
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: LINKEDIN_SYNC_COMMAND_EVENT, command: "pause" }), expect.any(String));
+    await user.click(screen.getByText("More"));
     expect(screen.getByRole("button", { name: "One-time manual capture" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Disable and revoke LinkedIn permission" }));
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: LINKEDIN_SYNC_COMMAND_EVENT, command: "disable" }), expect.any(String));
     await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.queryByRole("switch")).toBeNull();
     expect(screen.queryByRole("button", { name: "One-time manual capture" })).toBeNull();
 
     const tailMarker = "FINAL-LONG-UI-RULE";

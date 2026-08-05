@@ -914,16 +914,34 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
               <span>{visibleContacts.length}</span>
             </header>
             <label className="search-field"><span className="sr-only">Search conversations</span><input aria-label="Search conversations" value={contactSearch} onChange={(event) => setContactSearch(event.target.value)} placeholder="Search conversations" /></label>
-            {inboxView !== "settings" && <section className={"sync-card sync-" + (syncState?.enabled ? syncState.paused ? "paused" : "on" : "off")} aria-labelledby="sync-card-title">
-              <div className="sync-card-heading"><span className="sync-dot" /><div><strong id="sync-card-title">{automaticSyncLabel}</strong><small role="status" aria-live="polite">{extensionStatus}</small></div></div>
-              {captureEnvironment.isMobile ? <p>Automatic LinkedIn sync is desktop-only. Manual paste and import remain available.</p> : <>
-                {!syncState?.enabled && <button className="primary" disabled={!extensionConnected} onClick={() => controlAutomaticSync("enable")}>Enable automatic LinkedIn conversation sync</button>}
-                {syncState?.enabled && !syncState.paused && <div className="sync-actions"><button onClick={() => controlAutomaticSync("pause")}>Pause automatic sync</button><button className="danger-link" onClick={() => controlAutomaticSync("disable")}>Disable and revoke LinkedIn permission</button></div>}
-                {syncState?.enabled && syncState.paused && <div className="sync-actions"><button className="primary" onClick={() => controlAutomaticSync("resume")}>Resume automatic sync</button><button className="danger-link" onClick={() => controlAutomaticSync("disable")}>Disable and revoke LinkedIn permission</button></div>}
-                <button className="text-button" onClick={() => setManualCaptureHelp((current) => !current)}>One-time manual capture</button>
-                {manualCaptureHelp && <p className="manual-capture-help">Open the conversation in LinkedIn and click the ChatHelp extension icon once. This fallback works without enabling automatic sync and never sends a message.</p>}
-              </>}
-              <p className="sync-disclosure">When automatic sync is enabled, ChatHelp reads the visible LinkedIn conversation you manually open. It does not scan the inbox, access LinkedIn cookies, open conversations, or send messages.</p>
+            {inboxView !== "settings" && <section className={"sync-card sync-" + (syncState?.enabled ? syncState.paused ? "paused" : "on" : "off")} aria-label="LinkedIn conversation synchronization">
+              <div className="sync-card-row">
+                <span className="sync-dot" aria-hidden="true" />
+                <strong>Automatic sync</strong>
+                <span className="sync-info">
+                  <button className="info-button" type="button" aria-label="About automatic LinkedIn conversation sync" aria-describedby="sync-description">i</button>
+                  <span className="sync-tooltip" id="sync-description" role="tooltip"><strong>{automaticSyncLabel}.</strong> {extensionStatus} When enabled, ChatHelp reads only the visible LinkedIn conversation you manually open. It does not scan the inbox, access LinkedIn cookies, open conversations, or send messages.</span>
+                </span>
+                <span className="sr-only" role="status" aria-live="polite">{automaticSyncLabel}. {extensionStatus}</span>
+                {!captureEnvironment.isMobile && <button
+                  className="sync-switch"
+                  type="button"
+                  role="switch"
+                  aria-checked={Boolean(syncState?.enabled && !syncState.paused)}
+                  aria-label={syncState?.enabled ? syncState.paused ? "Resume automatic sync" : "Pause automatic sync" : "Enable automatic LinkedIn conversation sync"}
+                  disabled={!syncState?.enabled && !extensionConnected}
+                  onClick={() => controlAutomaticSync(syncState?.enabled ? syncState.paused ? "resume" : "pause" : "enable")}
+                ><span aria-hidden="true" /></button>}
+                {!captureEnvironment.isMobile && <details className="sync-more">
+                  <summary aria-label="More synchronization options">More</summary>
+                  <div className="sync-more-menu">
+                    <button type="button" aria-label="One-time manual capture" onClick={() => setManualCaptureHelp((current) => !current)}>Capture once</button>
+                    {syncState?.enabled && <button type="button" className="danger-link" aria-label="Disable and revoke LinkedIn permission" onClick={() => controlAutomaticSync("disable")}>Disable &amp; revoke</button>}
+                  </div>
+                </details>}
+              </div>
+              {captureEnvironment.isMobile && <p>Automatic LinkedIn sync is desktop-only. Manual paste and import remain available.</p>}
+              {manualCaptureHelp && <p className="manual-capture-help">Open the conversation in LinkedIn and click the ChatHelp extension icon once. This fallback works without enabling automatic sync and never sends a message.</p>}
             </section>}
 
             <div className="inbox-filter-row">
