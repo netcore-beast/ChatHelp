@@ -100,8 +100,8 @@ export function buildDraftContextSummary(input: PrivateAiInput): DraftContextSum
 }
 
 export function buildPrompt(input: PrivateAiInput): string {
-  const { structuredChat, structuredMessages, latestMessage, latestMeaningfulIncoming, replyTarget, conversationCaptures, supportingContext } = selectPromptContext(input);
-  const renderMessage = (message: (typeof structuredChat)[number]) => {
+  const { structuredMessages, latestMessage, latestMeaningfulIncoming, replyTarget, conversationCaptures, supportingContext } = selectPromptContext(input);
+  const renderMessage = (message: Contact["chat"][number]) => {
     const attachments = message.attachments?.length ? ` [Visible attachments: ${message.attachments.map((attachment) => attachment.label).join(", ")}]` : "";
     return (message.role === "me" ? "USER" : input.contact.name) + ": " + clipForPrompt(message.body + attachments, 2_000);
   };

@@ -4,7 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { applyRetention } from "@/lib/retention";
 import { buildOutcomeSummary, containsLinkedInPageNoise, isConversationCapture, isLikelyFullLinkedInPageCapture, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
 import { captureVisibleScreen, cropImageToRegion, extractTextFromImage, type NormalizedCropRegion } from "@/lib/localOcr";
-import { CLOUDFLARE_MODEL_NAME, generatePrivateDrafts } from "@/lib/privateAi";
+import { buildDraftContextSummary, CLOUDFLARE_MODEL_NAME, generatePrivateDrafts, type PrivateAiInput } from "@/lib/privateAi";
+import { deriveConversationState, sortPinnedThenRecent } from "@/lib/conversationState";
 import { PLATFORM_OPTIONS, safePlatformUrl } from "@/lib/platforms";
 import { createRulesDocumentDownload, mergeRulesDocument } from "@/lib/rulesDocument";
 import {
@@ -139,6 +140,25 @@ function latestDraftsForRole(contact: Contact | null | undefined, role: Messagin
   return history.findLast((entry) => entry.role === role)?.drafts
     ?? history.findLast((entry) => !entry.role)?.drafts
     ?? [];
+}
+
+function createDraftInput(
+  activeContact: Contact,
+  guidance: ReturnType<typeof resolveRoleGuidance>,
+  requestAgenda: string,
+  workspace: WorkspaceData,
+): PrivateAiInput {
+  const query = [requestAgenda, activeContact.profileNotes, activeContact.chat.slice(-8).map((item) => item.body).join(" ")].join(" ");
+  const relevant = selectRelevantContext(activeContact.documents.filter((document) => !isConversationCapture(document) && !isLikelyFullLinkedInPageCapture(document)), query);
+  const feedbackSummary = workspace.feedback.filter((item) => item.contactId === activeContact.id).slice(-20).map((item) => item.rating + ": " + item.note).join("\n");
+  return {
+    contact: activeContact,
+    guidance,
+    latestQuestion: requestAgenda,
+    retrievedContext: relevant,
+    feedbackSummary,
+    outcomeSummary: buildOutcomeSummary(activeContact),
+  };
 }
 
 export default function ChatHelpApp() {
@@ -357,11 +377,12 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       setDrafts(latestDraftsForRole(syncedContact, workspaceRef.current.inboxRole));
       setInboxView("inbox");
       setInboxFilter("main");
-      setExtensionStatus(preview.action === "created"
+      const restoreNotice = preview.restoredFromArchive ? " The archived conversation was restored to Inbox because a genuinely new incoming message arrived." : "";
+      setExtensionStatus((preview.action === "created"
         ? `Contact automatically added: ${snapshot.contact.name}. Synchronized ${preview.importedMessages} visible message${preview.importedMessages === 1 ? "" : "s"}.`
         : preview.importedMessages
           ? `Existing contact updated: ${snapshot.contact.name}. Added ${preview.importedMessages} new visible message${preview.importedMessages === 1 ? "" : "s"}.`
-          : `No new messages for ${snapshot.contact.name}. The existing local conversation is already current.`);
+          : `No new messages for ${snapshot.contact.name}. The existing local conversation is already current.`) + restoreNotice);
       window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_ACK_EVENT, captureId: snapshot.captureId }, targetOrigin);
     };
     window.addEventListener("message", handleSnapshot);
@@ -721,17 +742,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setDraftError("");
     setDrafts([]);
     try {
-      const query = [requestAgenda, activeContact.profileNotes, activeContact.chat.slice(-8).map((item) => item.body).join(" ")].join(" ");
-      const relevant = selectRelevantContext(activeContact.documents.filter((document) => !isConversationCapture(document) && !isLikelyFullLinkedInPageCapture(document)), query);
-      const feedbackSummary = workspace.feedback.filter((item) => item.contactId === activeContact.id).slice(-20).map((item) => item.rating + ": " + item.note).join("\n");
-      const nextDrafts = await generatePrivateDrafts(CLOUDFLARE_MODEL_ID, {
-        contact: activeContact,
-        guidance: draftingGuidance,
-        latestQuestion: requestAgenda,
-        retrievedContext: relevant,
-        feedbackSummary,
-        outcomeSummary: buildOutcomeSummary(activeContact),
-      }, setAiStatus, { ...workspace.cloudInference, accessToken: cloudAccessCode });
+      const nextDrafts = await generatePrivateDrafts(CLOUDFLARE_MODEL_ID, createDraftInput(activeContact, draftingGuidance, requestAgenda, workspace), setAiStatus, { ...workspace.cloudInference, accessToken: cloudAccessCode });
       if (workspaceRef.current.inboxRole !== draftingRole) {
         setAiStatus("");
         return;
@@ -777,7 +788,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const dueReminderCount = useMemo(() => workspace.contacts.filter((item) => !item.archivedAt && isReminderDue(item, now)).length, [now, workspace.contacts]);
   const visibleContacts = useMemo(() => {
     const query = contactSearch.trim().toLowerCase();
-    return workspace.contacts.filter((item) => {
+    const filtered = workspace.contacts.filter((item) => {
       const archivedView = inboxView === "archived" || inboxFilter === "archived";
       if (archivedView ? !item.archivedAt : Boolean(item.archivedAt)) return false;
       if (inboxFilter === "main" && inboxView === "inbox" && isActivelySnoozed(item, now)) return false;
@@ -791,14 +802,15 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       if (!query) return true;
       const latest = item.chat.at(-1)?.body ?? "";
       return [item.name, item.headline, item.notes ?? "", (item.labels ?? []).join(" "), latest].join(" ").toLowerCase().includes(query);
-    }).sort((left, right) => {
-      if (inboxView === "reminders") {
+    });
+    if (inboxView === "reminders") {
+      return filtered.sort((left, right) => {
         const leftDate = Math.min(...[left.followUpAt, left.snoozedUntil].filter(Boolean).map((value) => new Date(value as string).getTime()));
         const rightDate = Math.min(...[right.followUpAt, right.snoozedUntil].filter(Boolean).map((value) => new Date(value as string).getTime()));
         return leftDate - rightDate;
-      }
-      return new Date(right.chat.at(-1)?.createdAt ?? right.lastSyncedAt ?? 0).getTime() - new Date(left.chat.at(-1)?.createdAt ?? left.lastSyncedAt ?? 0).getTime();
-    });
+      });
+    }
+    return sortPinnedThenRecent(filtered);
   }, [contactSearch, inboxFilter, inboxView, labelFilter, now, workspace.contacts]);
   const stageCounts = useMemo(() => Object.fromEntries(PIPELINE_STAGES.map((stage) => [stage.value, workspace.contacts.filter((item) => !item.archivedAt && contactStage(item) === stage.value).length])) as Record<PipelineStage, number>, [workspace.contacts]);
 
@@ -857,6 +869,10 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const latestMeaningfulIncomingId = useMemo(() => contact?.chat.findLast((message) => message.role === "them" && (message.body.trim() || message.attachments?.length))?.id ?? "", [contact]);
   const selectedSettingsPlaybook = workspace.guidance.playbooks[workspace.guidance.selectedRole];
   const activeDraftGuidance = resolveRoleGuidance(workspace.guidance, workspace.inboxRole);
+  const activeConversationState = contact ? deriveConversationState(contact, now) : null;
+  const draftContextSummary = useMemo(() => contact
+    ? buildDraftContextSummary(createDraftInput(contact, resolveRoleGuidance(workspace.guidance, workspace.inboxRole), agenda.trim(), workspace))
+    : null, [agenda, contact, workspace]);
   const handoffUrl = contact ? safePlatformUrl(contact) : null;
   const cloudReady = Boolean(workspace.cloudInference.consentedAt && cloudAccessCode.trim().length >= 20);
   const conversationReady = Boolean(contact && hasConversationContext(contact));
@@ -940,6 +956,24 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                   </div>
                 </details>}
               </div>
+              <details className="sync-diagnostics">
+                <summary>Sync diagnostics</summary>
+                <div role="region" aria-label="Sync diagnostics">
+                  <span>{syncState?.permissionGranted ? "Permission granted" : "Permission not granted"}</span>
+                  <span>{extensionConnected ? "Bridge connected" : "Bridge disconnected"}</span>
+                  <span>{syncState?.paused ? "Sync paused" : syncState?.enabled ? "Sync active" : "Sync disabled"}</span>
+                  <span>Last contact {contact?.name || syncState?.lastContactName || "Not yet available"}</span>
+                  {contact?.lastSyncDiagnostic ? <>
+                    <span>Visible messages {contact.lastSyncDiagnostic.visibleMessages}</span>
+                    <span>New messages {contact.lastSyncDiagnostic.importedMessages}</span>
+                    <span>Duplicates {contact.lastSyncDiagnostic.duplicateMessages}</span>
+                    <span>Result {contact.lastSyncDiagnostic.action[0].toUpperCase() + contact.lastSyncDiagnostic.action.slice(1)}</span>
+                    <span>{contact.lastSyncDiagnostic.restoredFromArchive ? "Restored from archive" : "Archive unchanged"}</span>
+                    <span>Last success {new Date(contact.lastSyncDiagnostic.synchronizedAt).toLocaleString()}</span>
+                    <span>Snapshot {contact.lastSyncDiagnostic.snapshotFingerprint.slice(0, 10)}</span>
+                  </> : <span>Snapshot diagnostics not yet available</span>}
+                </div>
+              </details>
               {captureEnvironment.isMobile && <p>Automatic LinkedIn sync is desktop-only. Manual paste and import remain available.</p>}
               {manualCaptureHelp && <p className="manual-capture-help">Open the conversation in LinkedIn and click the ChatHelp extension icon once. This fallback works without enabling automatic sync and never sends a message.</p>}
             </section>}
@@ -953,21 +987,28 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
               {visibleContacts.map((item) => {
                 const latest = item.chat.at(-1);
                 const reminderAt = item.followUpAt || item.snoozedUntil;
-                return <button className={item.id === contact?.id ? "conversation-row active" : "conversation-row"} key={item.id} onClick={() => {
-                  setSelectedId(item.id);
-                  setDrafts(latestDraftsForRole(item, workspace.inboxRole));
-                  setDraftError("");
-                  setMobileConversationOpen(true);
-                }}>
-                  {renderAvatar(item)}
-                  <span className="conversation-row-body">
-                    <span className="conversation-row-title"><strong>{item.name}</strong><time dateTime={latest?.createdAt || item.lastSyncedAt}>{formatRelativeTime(latest?.createdAt || item.lastSyncedAt, now)}</time></span>
-                    <span className="conversation-preview">{latest?.body || item.headline || "No conversation imported yet"}</span>
-                    <span className="conversation-row-meta"><small className={"stage-pill stage-" + contactStage(item)}>{PIPELINE_STAGES.find((stage) => stage.value === contactStage(item))?.label}</small>{item.source === "linkedin-extension" && <small className="new-chip">Synced</small>}{reminderAt && <small className={isReminderDue(item, now) ? "reminder-due" : ""}>Follow-up {formatRelativeTime(reminderAt, now)}</small>}{isActivelySnoozed(item, now) && <small>Snoozed</small>}</span>
-                    {Boolean(item.labels?.length) && <span className="label-row">{item.labels?.slice(0, 3).map((label) => <small key={label} className="label-chip">{label}</small>)}</span>}
+                const state = deriveConversationState(item, now);
+                return <div className={item.id === contact?.id ? "conversation-row-shell active" : "conversation-row-shell"} key={item.id}>
+                  <button className="conversation-row" aria-label={`Open conversation with ${item.name}`} onClick={() => {
+                    setSelectedId(item.id);
+                    setDrafts(latestDraftsForRole(item, workspace.inboxRole));
+                    setDraftError("");
+                    setMobileConversationOpen(true);
+                  }}>
+                    {renderAvatar(item)}
+                    <span className="conversation-row-body">
+                      <span className="conversation-row-title"><strong>{item.name}</strong><time dateTime={latest?.createdAt || item.lastSyncedAt}>{formatRelativeTime(latest?.createdAt || item.lastSyncedAt, now)}</time></span>
+                      <span className="conversation-preview">{latest?.body || item.headline || "No conversation imported yet"}</span>
+                      <span className="conversation-row-meta"><small className={`conversation-state-badge state-${state.code}`} title={state.explanation}>{state.label}</small><small className={"stage-pill stage-" + contactStage(item)}>{PIPELINE_STAGES.find((stage) => stage.value === contactStage(item))?.label}</small>{item.source === "linkedin-extension" && <small className="new-chip">Synced</small>}{reminderAt && <small className={isReminderDue(item, now) ? "reminder-due" : ""}>Follow-up {formatRelativeTime(reminderAt, now)}</small>}</span>
+                      {Boolean(item.labels?.length) && <span className="label-row">{item.labels?.slice(0, 3).map((label) => <small key={label} className="label-chip">{label}</small>)}</span>}
+                    </span>
+                    {item.lastSyncedAt && <span className="updated-dot" title="Synchronized conversation" aria-label="Synchronized conversation" />}
+                  </button>
+                  <span className="conversation-quick-actions">
+                    <button type="button" aria-label={item.pinned ? `Unpin ${item.name}` : `Pin ${item.name}`} aria-pressed={Boolean(item.pinned)} title={item.pinned ? "Unpin" : "Pin"} onClick={() => updateContactById(item.id, (current) => ({ ...current, pinned: !current.pinned }))}>★</button>
+                    <button type="button" aria-label={item.readLater ? `Clear read later for ${item.name}` : `Read ${item.name} later`} aria-pressed={Boolean(item.readLater)} title={item.readLater ? "Clear read later" : "Read later"} onClick={() => updateContactById(item.id, (current) => ({ ...current, readLater: !current.readLater }))}>◷</button>
                   </span>
-                  {item.lastSyncedAt && <span className="updated-dot" title="Synchronized conversation" aria-label="Synchronized conversation" />}
-                </button>;
+                </div>;
               })}
             </nav>
             {!visibleContacts.length && <div className="inbox-empty"><strong>No conversations here yet</strong><p>Open a LinkedIn conversation after enabling sync, or add one manually in Settings.</p></div>}
@@ -1008,7 +1049,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 <button className="mobile-back" onClick={() => setMobileConversationOpen(false)}>← Inbox</button>
                 {renderAvatar(contact, "conversation-avatar")}
                 <div className="conversation-identity"><h2>{contact.name}</h2><p>{[contact.headline, contact.company].filter(Boolean).join(" · ") || "LinkedIn conversation"}</p>{contact.profileUrl && <a href={contact.profileUrl} target="_blank" rel="noreferrer">View LinkedIn profile ↗</a>}</div>
-                <div className="conversation-header-actions"><span className={"sync-status-pill " + (syncState?.enabled && !syncState.paused ? "on" : "")}>{contact.lastSyncedAt ? "Synchronized " + formatRelativeTime(contact.lastSyncedAt, now) : automaticSyncLabel}</span><select aria-label={"Pipeline stage for " + contact.name} value={contactStage(contact)} onChange={(event) => moveContactToStage(contact.id, event.target.value as PipelineStage)}>{PIPELINE_STAGES.map((stage) => <option key={stage.value} value={stage.value}>{stage.label}</option>)}</select><button onClick={() => setContextCollapsed((current) => !current)}>{contextCollapsed ? "Show contact" : "Hide contact"}</button></div>
+                <div className="conversation-header-actions"><span className={"sync-status-pill " + (syncState?.enabled && !syncState.paused ? "on" : "")}>{contact.lastSyncedAt ? "Synchronized " + formatRelativeTime(contact.lastSyncedAt, now) : automaticSyncLabel}</span>{activeConversationState && <span className={`conversation-state-badge state-${activeConversationState.code}`} title={activeConversationState.explanation}>{activeConversationState.label}</span>}<button type="button" className="header-icon-action" aria-label={contact.pinned ? "Unpin selected conversation" : "Pin selected conversation"} aria-pressed={Boolean(contact.pinned)} title={contact.pinned ? "Unpin" : "Pin"} onClick={() => updateContact((current) => ({ ...current, pinned: !current.pinned }))}>★</button><button type="button" className="header-icon-action" aria-label={contact.readLater ? "Clear read later for selected conversation" : "Read selected conversation later"} aria-pressed={Boolean(contact.readLater)} title={contact.readLater ? "Clear read later" : "Read later"} onClick={() => updateContact((current) => ({ ...current, readLater: !current.readLater }))}>◷</button><select aria-label={"Pipeline stage for " + contact.name} value={contactStage(contact)} onChange={(event) => moveContactToStage(contact.id, event.target.value as PipelineStage)}>{PIPELINE_STAGES.map((stage) => <option key={stage.value} value={stage.value}>{stage.label}</option>)}</select><button onClick={() => setContextCollapsed((current) => !current)}>{contextCollapsed ? "Show contact" : "Hide contact"}</button></div>
               </header>
 
               <div className="conversation-split">
@@ -1035,6 +1076,22 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                     <label className="draft-role-select"><span>Your role or team</span><select aria-label="Your role or team" value={workspace.inboxRole} onChange={(event) => changeInboxRole(event.target.value as MessagingRole)}>{MESSAGING_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
                     <div className="active-playbook-summary" role="status" aria-live="polite"><strong>Using {activeDraftGuidance.role} playbook</strong><span className="composer-info"><button className="info-button" type="button" aria-label={`About the ${activeDraftGuidance.role} playbook`} aria-describedby="active-playbook-description">i</button><span className="composer-tooltip" id="active-playbook-description" role="tooltip">Relationship goal: {activeDraftGuidance.objective.trim() || "No relationship goal configured"}. {activeDraftGuidance.boundaries.trim() ? `${activeDraftGuidance.boundaries.trim().length.toLocaleString()} rule characters loaded.` : "No reply rules configured for this role."}</span></span></div>
                   </div>
+                  <details className="draft-context-inspector">
+                    <summary>Draft context</summary>
+                    <div role="region" aria-label="Draft context">
+                      {draftContextSummary ? <>
+                        <span>{draftContextSummary.role} playbook</span>
+                        <span>{draftContextSummary.hasRelationshipGoal ? "Relationship goal included" : "No relationship goal"}</span>
+                        <span>{draftContextSummary.replyRuleCharacters.toLocaleString()} reply-rule characters</span>
+                        <span>{draftContextSummary.hasObjective ? "Optional objective included" : "No optional objective"}</span>
+                        <span>{draftContextSummary.hasContactNotes ? "Contact notes included" : "No contact notes"}</span>
+                        <span>{draftContextSummary.structuredMessagesIncluded} conversation message{draftContextSummary.structuredMessagesIncluded === 1 ? "" : "s"} included</span>
+                        <span>{draftContextSummary.conversationCaptureCount} safe conversation capture{draftContextSummary.conversationCaptureCount === 1 ? "" : "s"} included</span>
+                        <span>Latest incoming: {draftContextSummary.latestIncomingText || "Not available"}</span>
+                        <span>Generation mode: {CLOUDFLARE_MODEL_NAME}</span>
+                      </> : <span>No draft context available</span>}
+                    </div>
+                  </details>
                   <label className="objective-field"><span>What should your reply accomplish? <span className="field-optional">Optional</span> <span className="composer-info"><button className="info-button" type="button" aria-label="About the optional reply objective" aria-describedby="objective-description">i</button><span className="composer-tooltip objective-tooltip" id="objective-description" role="tooltip">Leave blank to reply strictly from the existing chat, latest message, and selected-role rules. When provided, the objective is applied together with—not instead of—the conversation and playbook rules.</span></span></span><textarea aria-label="What should your reply accomplish?" ref={agendaRef} maxLength={5_000} value={agenda} onChange={(event) => setAgenda(event.target.value.slice(0, 5_000))} placeholder="Optional objective for this reply" /></label>
                   {!cloudReady && <p className="missing-context">Finish Cloudflare draft consent in Settings before generating.</p>}
                   {!conversationReady && <p className="missing-context">Synchronize or manually import at least one relevant message first.</p>}

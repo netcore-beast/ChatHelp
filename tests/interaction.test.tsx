@@ -128,14 +128,14 @@ describe("secure conversation workspace interaction", () => {
     await user.type(screen.getByLabelText("New contact name"), "Alex Morgan");
     await user.click(screen.getByRole("button", { name: "Add" }));
     await user.click(screen.getByRole("button", { name: "Inbox" }));
-    expect(await within(screen.getByRole("navigation", { name: "Conversations" })).findByRole("button", { name: /Alex Morgan/ })).toBeTruthy();
+    expect(await within(screen.getByRole("navigation", { name: "Conversations" })).findByRole("button", { name: "Open conversation with Alex Morgan" })).toBeTruthy();
     expect(screen.getByLabelText("Conversation with Alex Morgan")).toBeTruthy();
     await waitFor(() => expect(document.querySelector(".save-state")?.textContent).toContain("Encrypted"), { timeout: 3000 });
 
     firstRender.unmount();
     render(<ChatHelpApp />);
     await screen.findByRole("heading", { name: /private conversation studio/i });
-    expect(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: /Alex Morgan/ })).toBeTruthy();
+    expect(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Alex Morgan" })).toBeTruthy();
     expect(screen.queryByLabelText("Passphrase")).toBeNull();
   }, 20_000);
 
@@ -162,8 +162,63 @@ describe("secure conversation workspace interaction", () => {
     await deliverSnapshot({ ...automaticSnapshot([...automaticSnapshot().messages, secondMessage]), captureId: "capture-ui-2" });
     await deliverSnapshot({ ...automaticSnapshot([...automaticSnapshot().messages, secondMessage]), captureId: "capture-ui-3" });
     await waitFor(() => expect(within(screen.getByLabelText("Conversation with Taylor Lee")).getAllByText("Absolutely—I will send it here.")).toHaveLength(1));
-    expect(within(screen.getByRole("navigation", { name: "Conversations" })).getAllByRole("button", { name: /Taylor Lee/ })).toHaveLength(1);
+    expect(within(screen.getByRole("navigation", { name: "Conversations" })).getAllByRole("button", { name: "Open conversation with Taylor Lee" })).toHaveLength(1);
     expect(screen.getAllByRole("status").some((item) => /Existing contact updated|No new messages/i.test(item.textContent ?? ""))).toBe(true);
+  });
+
+  it("persists local pin and read-later choices and exposes the derived conversation state", async () => {
+    const user = userEvent.setup();
+    const firstRender = render(<ChatHelpApp />);
+    expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
+    await announceExtension();
+    await deliverSnapshot();
+
+    const inbox = screen.getByRole("navigation", { name: "Conversations" });
+    expect(within(inbox).getByText("To respond", { selector: ".conversation-state-badge" })).toBeTruthy();
+    const pin = within(inbox).getByRole("button", { name: "Pin Taylor Lee" });
+    const readLater = within(inbox).getByRole("button", { name: "Read Taylor Lee later" });
+    expect(pin.getAttribute("aria-pressed")).toBe("false");
+    expect(readLater.getAttribute("aria-pressed")).toBe("false");
+
+    await user.click(pin);
+    await user.click(readLater);
+    expect(within(inbox).getByText("Read later", { selector: ".conversation-state-badge" })).toBeTruthy();
+    expect(within(inbox).getByRole("button", { name: "Unpin Taylor Lee" }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(inbox).getByRole("button", { name: "Clear read later for Taylor Lee" }).getAttribute("aria-pressed")).toBe("true");
+    await waitFor(() => expect(document.querySelector(".save-state")?.textContent).toContain("Encrypted"), { timeout: 3_000 });
+
+    firstRender.unmount();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    const reopenedInbox = screen.getByRole("navigation", { name: "Conversations" });
+    expect(within(reopenedInbox).getByRole("button", { name: "Unpin Taylor Lee" }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(reopenedInbox).getByRole("button", { name: "Clear read later for Taylor Lee" }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(reopenedInbox).getByText("Read later", { selector: ".conversation-state-badge" })).toBeTruthy();
+  }, 20_000);
+
+  it("shows message-free sync diagnostics and the prompt-aligned draft context inspector", async () => {
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
+    await announceExtension();
+    await deliverSnapshot();
+
+    await user.click(screen.getByText("Sync diagnostics"));
+    const syncDiagnostics = screen.getByRole("region", { name: "Sync diagnostics" });
+    expect(within(syncDiagnostics).getByText("Permission granted")).toBeTruthy();
+    expect(within(syncDiagnostics).getByText("Bridge connected")).toBeTruthy();
+    expect(within(syncDiagnostics).getByText("Visible messages 1")).toBeTruthy();
+    expect(within(syncDiagnostics).getByText("New messages 1")).toBeTruthy();
+    expect(within(syncDiagnostics).getByText("Duplicates 0")).toBeTruthy();
+    expect(within(syncDiagnostics).getByText("Result Created")).toBeTruthy();
+
+    await user.click(screen.getByText("Draft context"));
+    const draftContext = screen.getByRole("region", { name: "Draft context" });
+    expect(within(draftContext).getByText(/Socializing\/Networking playbook/)).toBeTruthy();
+    expect(within(draftContext).getByText("1 conversation message included")).toBeTruthy();
+    expect(within(draftContext).getByText(/reply-rule characters/)).toBeTruthy();
+    expect(within(draftContext).getByText("No optional objective")).toBeTruthy();
+    expect(within(draftContext).getByText(/Could you share the role brief\?/)).toBeTruthy();
   });
 
   it("generates exactly three editable drafts for a newly synchronized contact", async () => {
@@ -182,7 +237,7 @@ describe("secure conversation workspace interaction", () => {
     await user.type(screen.getByLabelText(/Cloud access code/), "not-a-secret-test-placeholder");
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
     await user.click(screen.getByRole("button", { name: "Inbox" }));
-    await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: /Taylor Lee/ }));
+    await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
     expect((screen.getByLabelText("What should your reply accomplish?") as HTMLTextAreaElement).value).toBe("");
     await user.click(screen.getByRole("button", { name: "Generate 3 drafts for Taylor Lee" }));
 
@@ -327,7 +382,7 @@ describe("secure conversation workspace interaction", () => {
     await user.type(screen.getByLabelText(/Cloud access code/), "not-a-secret-test-placeholder");
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
     await user.click(screen.getByRole("button", { name: "Inbox" }));
-    await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: /Taylor Lee/ }));
+    await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
     await user.type(screen.getByLabelText("What should your reply accomplish?"), "Write a short reply.");
     await user.click(screen.getByRole("button", { name: "Generate 3 drafts for Taylor Lee" }));
     expect((await screen.findByRole("alert")).textContent).toMatch(/Drafts were not generated.*Cloudflare sign-in session could not be verified/);
