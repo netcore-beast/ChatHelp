@@ -248,9 +248,10 @@ describe("secure conversation workspace interaction", () => {
     expect(request.mock.calls[0][1]?.credentials).toBe("same-origin");
     const requestBody = JSON.parse(request.mock.calls[0][1]?.body as string);
     expect(requestBody.replyObjective).toBe("");
-    expect(requestBody.prompt).toContain("The USER supplied no additional reply objective");
-    expect(requestBody.prompt).toContain("Taylor Lee: Could you share the role brief?");
-    expect(requestBody.playbook.replyRules).toBeTruthy();
+    expect(requestBody.replyObjective).toBe("");
+    expect(requestBody.conversationContext).toContain("Could you share the role brief?");
+    expect(requestBody.playbook.rulebookFull).toBeTruthy();
+    expect(requestBody.playbook.rulebookDigest).toBeTruthy();
     expect(screen.getByRole("link", { name: /Open LinkedIn to review and paste/ })).toBeTruthy();
   }, 20_000);
 
@@ -349,21 +350,22 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("button", { name: "Generate 3 drafts for Taylor Lee" }));
     expect(await screen.findByDisplayValue("Network draft one")).toBeTruthy();
     expect(screen.getByText(/Generated using the Network Marketing playbook/)).toBeTruthy();
-    const networkPrompt = JSON.parse(request.mock.calls[0][1]?.body as string).prompt as string;
-    expect(networkPrompt).toContain("Role: Network Marketing");
-    expect(networkPrompt).toContain("NETWORK-ONLY-GOAL");
-    expect(networkPrompt).toContain("NETWORK-ONLY-RULES");
-    expect(networkPrompt).not.toContain("HR-ONLY-GOAL");
+    const networkRequest = JSON.parse(request.mock.calls[0][1]?.body as string);
+    expect(networkRequest.playbook.role).toBe("Network Marketing");
+    expect(networkRequest.playbook.relationshipGoal).toBe("NETWORK-ONLY-GOAL");
+    expect(networkRequest.playbook.rulebookFull).toContain("NETWORK-ONLY-RULES");
+    expect(networkRequest.playbook.rulebookDigest).toBe("- Always answer the newest message.\n- Never invent facts.");
+    expect(JSON.stringify(networkRequest)).not.toContain("HR-ONLY-GOAL");
 
     await user.selectOptions(inboxRole, "Human Resource");
     expect(screen.queryByLabelText("Edit draft 1")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Generate 3 drafts for Taylor Lee" }));
     expect(await screen.findByDisplayValue("HR draft one")).toBeTruthy();
-    const hrPrompt = JSON.parse(request.mock.calls[1][1]?.body as string).prompt as string;
-    expect(hrPrompt).toContain("Role: Human Resource");
-    expect(hrPrompt).toContain("HR-ONLY-GOAL");
-    expect(hrPrompt).toContain("HR-ONLY-RULES");
-    expect(hrPrompt).not.toContain("NETWORK-ONLY-GOAL");
+    const hrRequest = JSON.parse(request.mock.calls[1][1]?.body as string);
+    expect(hrRequest.playbook.role).toBe("Human Resource");
+    expect(hrRequest.playbook.relationshipGoal).toBe("HR-ONLY-GOAL");
+    expect(hrRequest.playbook.rulebookFull).toBe("HR-ONLY-RULES");
+    expect(JSON.stringify(hrRequest)).not.toContain("NETWORK-ONLY-GOAL");
     expect(request).toHaveBeenCalledTimes(2);
 
     await waitFor(() => expect(document.querySelector(".save-state")?.textContent).toContain("Encrypted"), { timeout: 3_000 });
