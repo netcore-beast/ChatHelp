@@ -270,6 +270,7 @@ describe("secure conversation workspace interaction", () => {
     expect(requestBody.playbook.rulebookFull).toBeTruthy();
     expect(requestBody.playbook.rulebookDigest).toBeTruthy();
     expect(screen.getByText(/independently reviewed against the full Socializing\/Networking rulebook/i)).toBeTruthy();
+    expect(screen.getByText("Finalizing drafts").closest("li")?.dataset.status).toBe("done");
     expect(screen.getByRole("link", { name: /Open LinkedIn to review and paste/ })).toBeTruthy();
   }, 20_000);
 

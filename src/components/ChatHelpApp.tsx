@@ -950,15 +950,18 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setDraftProgressAvailable(true);
     setDraftProgressExpanded(false);
     setDraftStageStatuses({ planning: "pending", drafting: "pending", reviewing: "pending", finalizing: "pending" });
+    let receivedStageEvent = false;
     const handleDraftProgress = (update: DraftProgressUpdate) => {
       if (update.kind === "message") {
         setAiStatus(update.message);
         return;
       }
+      receivedStageEvent = true;
       setDraftStageStatuses((current) => ({ ...current, [update.stage]: update.status }));
     };
     try {
       const nextDrafts = await generatePrivateDrafts(CLOUDFLARE_MODEL_ID, createDraftInput(activeContact, draftingGuidance, requestAgenda, workspace), handleDraftProgress, workspace.cloudInference);
+      if (!receivedStageEvent) setDraftStageStatuses({ planning: "done", drafting: "done", reviewing: "done", finalizing: "done" });
       if (workspaceRef.current.inboxRole !== draftingRole) {
         setAiStatus("");
         return;
@@ -985,7 +988,8 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     } catch (error) {
       setAiStatus("");
       setDraftStageStatuses((current) => {
-        const activeStage = (Object.keys(current) as DraftPipelineStage[]).find((stage) => current[stage] === "in-progress");
+        const stages = Object.keys(current) as DraftPipelineStage[];
+        const activeStage = stages.find((stage) => current[stage] === "in-progress") ?? stages.find((stage) => current[stage] === "pending");
         return activeStage ? { ...current, [activeStage]: "error" } : current;
       });
       setDraftError(formatError(error));
