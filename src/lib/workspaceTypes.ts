@@ -126,6 +126,22 @@ export interface CloudInferenceSettings {
   rememberAccessToken: boolean;
 }
 
+export interface CloudRecoverySettings {
+  enabled: boolean;
+  locatorHash: string;
+  etag: string;
+  lastConfirmedDigest: string;
+  lastConfirmedContacts: number;
+  lastConfirmedMessages: number;
+  lastSyncedAt: string;
+}
+
+export interface ContactDeletionTombstone {
+  contactId: string;
+  identityHashes: string[];
+  deletedAt: string;
+}
+
 export interface AiUsageEntry {
   id: string;
   contactId: string;
@@ -137,9 +153,11 @@ export interface AiUsageEntry {
 }
 
 export interface WorkspaceData {
-  version: 8;
+  version: 9;
   modelId: string;
   cloudInference: CloudInferenceSettings;
+  cloudRecovery: CloudRecoverySettings;
+  deletionTombstones: ContactDeletionTombstone[];
   contacts: Contact[];
   guidance: MessagingGuidance;
   inboxRole: MessagingRole;
@@ -220,13 +238,23 @@ export function updateRolePlaybookRules(playbook: RolePlaybook, boundaries: stri
 export function createEmptyWorkspace(): WorkspaceData {
   const guidance = createDefaultMessagingGuidance();
   return {
-    version: 8,
+    version: 9,
     modelId: DEFAULT_MODEL_ID,
     cloudInference: {
       accessToken: "",
       consentedAt: "",
       rememberAccessToken: false,
     },
+    cloudRecovery: {
+      enabled: false,
+      locatorHash: "",
+      etag: "",
+      lastConfirmedDigest: "",
+      lastConfirmedContacts: 0,
+      lastConfirmedMessages: 0,
+      lastSyncedAt: "",
+    },
+    deletionTombstones: [],
     contacts: [],
     guidance,
     inboxRole: guidance.selectedRole,

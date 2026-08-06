@@ -98,6 +98,18 @@ Happy to connect with you as well.`;
     expect(retained.contacts[0].chat.map((message) => message.id)).toEqual(["new"]);
   });
 
+  it("keeps deletion tombstones for 90 days so another device cannot resurrect a contact", () => {
+    const workspace = createEmptyWorkspace();
+    workspace.deletionTombstones = [
+      { contactId: "expired", identityHashes: ["old-hash"], deletedAt: "2026-04-01T00:00:00.000Z" },
+      { contactId: "current", identityHashes: ["new-hash"], deletedAt: "2026-07-01T00:00:00.000Z" },
+    ];
+
+    expect(applyRetention(workspace, now).deletionTombstones).toEqual([
+      { contactId: "current", identityHashes: ["new-hash"], deletedAt: "2026-07-01T00:00:00.000Z" },
+    ]);
+  });
+
   it("rejects unsupported or oversized context files", () => {
     expect(validateContextFile({ name: "context.pdf", size: 100, type: "application/pdf" })).toMatch(/Only/);
     expect(validateContextFile({ name: "context.txt", size: 3 * 1024 * 1024, type: "text/plain" })).toMatch(/2 MB/);

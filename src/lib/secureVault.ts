@@ -267,6 +267,9 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
     ? source.cloudInference as Record<string, unknown>
     : {};
   const rememberAccessToken = cloudInference.rememberAccessToken === true;
+  const cloudRecovery = source.cloudRecovery && typeof source.cloudRecovery === "object"
+    ? source.cloudRecovery as Record<string, unknown>
+    : {};
   const rawGuidance = source.guidance && typeof source.guidance === "object" ? source.guidance as Record<string, unknown> : {};
   const selectedRole = normalizeMessagingRole(rawGuidance.selectedRole ?? rawGuidance.role);
   const defaults = createDefaultMessagingGuidance();
@@ -302,13 +305,33 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
   };
   const inboxRole = isMessagingRole(source.inboxRole) ? source.inboxRole : selectedRole;
   return {
-    version: 8,
+    version: 9,
     modelId: normalizeWorkspaceModelId(),
     cloudInference: {
       accessToken: rememberAccessToken && typeof cloudInference.accessToken === "string" ? cloudInference.accessToken.slice(0, 200) : "",
       consentedAt: typeof cloudInference.consentedAt === "string" ? cloudInference.consentedAt.slice(0, 100) : "",
       rememberAccessToken,
     },
+    cloudRecovery: {
+      enabled: cloudRecovery.enabled === true,
+      locatorHash: typeof cloudRecovery.locatorHash === "string" ? cloudRecovery.locatorHash.slice(0, 100) : "",
+      etag: typeof cloudRecovery.etag === "string" ? cloudRecovery.etag.slice(0, 300) : "",
+      lastConfirmedDigest: typeof cloudRecovery.lastConfirmedDigest === "string" ? cloudRecovery.lastConfirmedDigest.slice(0, 100) : "",
+      lastConfirmedContacts: typeof cloudRecovery.lastConfirmedContacts === "number" && Number.isFinite(cloudRecovery.lastConfirmedContacts) ? Math.max(0, Math.floor(cloudRecovery.lastConfirmedContacts)) : 0,
+      lastConfirmedMessages: typeof cloudRecovery.lastConfirmedMessages === "number" && Number.isFinite(cloudRecovery.lastConfirmedMessages) ? Math.max(0, Math.floor(cloudRecovery.lastConfirmedMessages)) : 0,
+      lastSyncedAt: typeof cloudRecovery.lastSyncedAt === "string" ? cloudRecovery.lastSyncedAt.slice(0, 100) : "",
+    },
+    deletionTombstones: Array.isArray(source.deletionTombstones) ? source.deletionTombstones.slice(-1000).flatMap((raw) => {
+      if (!raw || typeof raw !== "object") return [];
+      const tombstone = raw as Record<string, unknown>;
+      const contactId = typeof tombstone.contactId === "string" ? tombstone.contactId.slice(0, 200) : "";
+      const deletedAt = typeof tombstone.deletedAt === "string" ? tombstone.deletedAt.slice(0, 100) : "";
+      if (!contactId || !deletedAt) return [];
+      const identityHashes = Array.isArray(tombstone.identityHashes)
+        ? Array.from(new Set(tombstone.identityHashes.filter((hash): hash is string => typeof hash === "string").map((hash) => hash.slice(0, 100)).filter(Boolean))).slice(0, 10)
+        : [];
+      return [{ contactId, identityHashes, deletedAt }];
+    }) : [],
     guidance,
     inboxRole,
     contacts: contacts.slice(0, 100).map((raw, index): Contact => {

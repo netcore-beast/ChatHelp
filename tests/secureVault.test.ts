@@ -41,7 +41,7 @@ describe("encrypted device vault", () => {
       },
     });
 
-    expect(workspace.version).toBe(8);
+    expect(workspace.version).toBe(9);
     expect(workspace.guidance.selectedRole).toBe("Human Resource");
     expect(workspace.inboxRole).toBe("Human Resource");
     expect(workspace.guidance.playbooks["Human Resource"]).toEqual({
@@ -51,6 +51,21 @@ describe("encrypted device vault", () => {
     });
     expect(workspace.guidance.playbooks["Network Marketing"].objective).not.toBe("LEGACY-HR-GOAL");
     expect(workspace.guidance.voice).toBe("Clear and considerate");
+  });
+
+  it("adds disabled encrypted cloud recovery state when migrating a local-only workspace", () => {
+    const workspace = normalizeWorkspace({ version: 8, contacts: [] });
+
+    expect(workspace.cloudRecovery).toEqual({
+      enabled: false,
+      locatorHash: "",
+      etag: "",
+      lastConfirmedDigest: "",
+      lastConfirmedContacts: 0,
+      lastConfirmedMessages: 0,
+      lastSyncedAt: "",
+    });
+    expect(workspace.deletionTombstones).toEqual([]);
   });
 
   it("preserves separately edited role playbooks and the Inbox role after reopening", async () => {

@@ -14,7 +14,7 @@ This feature is additive. It must not change LinkedIn DOM capture, extension per
 
 ChatHelp currently encrypts the workspace with a non-exportable AES-GCM device key stored in IndexedDB. That protects local data, but clearing site data removes both the encrypted workspace and its device key. The Worker has a shared draft access-code hash, not a stable per-user identity, so it cannot safely associate recoverable workspaces with customer accounts.
 
-The cloud-recovery design therefore cannot use the shared draft access code as a user identity. It uses an unguessable, user-held recovery bundle instead.
+The cloud-recovery design therefore does not use the shared draft access code as a user identity. It uses an unguessable, user-held recovery bundle to locate and decrypt the snapshot, while the existing session-only ChatHelp Cloud access code authorizes same-origin vault requests. The access code is never added to the snapshot or recovery file and is never newly persisted by cloud recovery.
 
 ## Selected architecture
 
@@ -38,11 +38,10 @@ ChatHelp generates the recovery bundle entirely in the browser with Web Crypto. 
 - `version`: recovery format version;
 - `locator`: 32 random bytes encoded for transport;
 - `encryptionKey`: 32 random AES-256 key bytes;
-- `syncToken`: 32 random bytes used only to authenticate R2 reads, conditional writes, and deletion.
 
 The recovery file is a small JSON document with a ChatHelp-specific file extension. The user downloads and stores it personally. ChatHelp may also accept pasting its encoded contents into a password-style recovery field.
 
-The encryption key is never transmitted to Cloudflare. The raw sync token is sent only over same-origin TLS to the vault API, is never logged, and is never stored by the Worker. R2 metadata stores only its SHA-256 verifier. The locator is hashed before it becomes an R2 object key.
+The encryption key is never transmitted to Cloudflare. The locator is hashed before it becomes an R2 object key. Every vault request uses the existing session-only ChatHelp Cloud access code through the same bearer-authentication boundary as `/api/drafts`; cloud recovery does not create or persist another authentication secret.
 
 If the recovery file is lost after all device data has been cleared, the cloud snapshot is intentionally unrecoverable. The setup flow must disclose this before enabling recovery.
 
@@ -75,24 +74,23 @@ Add a same-origin `/api/vault` boundary without changing `/api/drafts`.
 
 ### `GET /api/vault/:locatorHash`
 
-- requires the sync token header;
+- requires the existing ChatHelp Cloud access code as a bearer credential;
 - retrieves the R2 object through the selected environment binding;
-- constant-time compares the token hash with R2 custom metadata;
 - returns the encrypted envelope and quoted ETag with `Cache-Control: no-store`;
 - returns `404` for a missing or expired object without revealing whether a different locator exists.
 
 ### `PUT /api/vault/:locatorHash`
 
-- requires JSON content type, bounded content length, a valid envelope shape, and the sync token;
+- requires the existing ChatHelp Cloud access code, JSON content type, bounded content length, and a valid envelope shape;
 - limits the encrypted object to 10 MiB;
 - creates only with `If-None-Match: *` or updates only with `If-Match: <etag>`;
-- stores the token verifier and minimal format metadata as R2 custom metadata;
+- stores only minimal format metadata with the opaque ciphertext;
 - returns the new ETag and revision;
 - returns `409` on an ETag conflict so the client can merge instead of overwriting.
 
 ### `DELETE /api/vault/:locatorHash`
 
-- requires the sync token and a matching verifier;
+- requires the existing ChatHelp Cloud access code;
 - deletes the R2 object through the binding;
 - returns success only after the strongly consistent delete resolves;
 - is used only by the explicit “Delete encrypted cloud backup” control.
@@ -121,7 +119,7 @@ No test, preview, or project storage is created in the `netcore.beast@gmail.com`
 3. The user downloads the recovery file and confirms that losing it makes restoration impossible.
 4. ChatHelp encrypts and conditionally creates the first cloud snapshot.
 5. Only after R2 confirms the write does the UI show recovery as enabled.
-6. The raw recovery bundle is not stored as plaintext. The active device stores the imported encryption key as a non-exportable IndexedDB CryptoKey, the non-secret locator, and the sync token only inside the existing encrypted local device vault.
+6. The raw recovery bundle is not stored as plaintext. The active device stores the imported encryption key as a non-exportable IndexedDB CryptoKey and the non-secret locator hash inside the existing encrypted local device vault. The Cloud access code remains session-only unless the user separately chooses the existing remember-code option.
 
 ### Normal startup
 
@@ -133,7 +131,8 @@ No test, preview, or project storage is created in the `netcore.beast@gmail.com`
 
 - ChatHelp starts with an empty local vault and offers “Restore from recovery file.”
 - The user selects or pastes the recovery bundle.
-- ChatHelp derives the locator hash, authenticates the request with the sync token, downloads ciphertext, and decrypts locally.
+- The user enters the existing ChatHelp Cloud access code through the trusted application field and selects the recovery file.
+- ChatHelp derives the locator hash, authenticates the request with that session-only access code, downloads ciphertext, and decrypts locally.
 - On success it creates a new device-bound local vault, imports non-exportable CryptoKeys for future automatic sync, and displays the restored conversations.
 - Wrong keys, corrupted files, expired objects, and deleted objects produce distinct safe guidance without exposing stored metadata.
 
@@ -172,6 +171,7 @@ The delete UI changes from “Delete local contact” to “Delete contact every
 Add a compact “Encrypted cloud recovery” section with:
 
 - recovery status: Off, Preparing, Protected, Syncing, Synced, Retry needed, Expired, or Deleted;
+- `Cloud access code required` when a recovery configuration exists but the session has no authorization code;
 - a compact Inbox status that says `All <count> conversations backed up` only when the digest and conversation/message counts of the current cloud-safe workspace match the last R2-confirmed upload;
 - `Backing up <count> conversations`, `Local changes waiting for backup`, or `Cloud backup needs attention` when the current workspace is not fully confirmed;
 - “Enable encrypted 90-day recovery”;
@@ -194,7 +194,7 @@ The existing privacy dialog and contact retention summary are updated precisely.
 - Local IndexedDB failure: preserve the current secure-storage recovery screen.
 - R2 unavailable: continue locally, show Retry needed, and never discard local changes.
 - Wrong recovery file or AES authentication failure: do not modify local or cloud data.
-- Token verification failure: return a generic authorization error and do not reveal object existence.
+- Cloud access-code verification failure: return a generic authorization error and do not reveal object existence.
 - ETag conflict: merge once, retry once, then stop to avoid feedback loops.
 - Oversized cloud snapshot: preserve local data, stop upload, and explain which imported documents or old context must be removed.
 - Expired cloud object: explain that the 90-day cloud recovery window elapsed; do not erase an existing local vault.
@@ -203,7 +203,7 @@ The existing privacy dialog and contact retention summary are updated precisely.
 ## Security and privacy invariants
 
 - No raw recovery encryption key is transmitted, logged, stored in R2 metadata, embedded in URLs, or committed.
-- No raw sync token is stored or logged; only its SHA-256 verifier is stored.
+- Cloud recovery creates no additional authentication secret and never stores the ChatHelp Cloud access code in R2 or the recovery file.
 - No R2 bucket is public and no S3/API credential is introduced.
 - Worker access uses an R2 binding, not Cloudflare REST or S3 network requests.
 - Vault requests are same-origin, TLS-only, bounded, and `no-store`.
@@ -233,7 +233,7 @@ Add tests proving:
 15. conversation material older than 90 days is excluded from cloud snapshots;
 16. R2 testing and production bindings are selected only for exact allowed hosts;
 17. preview and unknown hosts cannot access vault storage;
-18. vault endpoints reject cross-origin, malformed, oversized, unauthenticated, and stale writes;
+18. vault endpoints reject cross-origin, malformed, oversized, unauthenticated, and stale writes using the existing constant-time access-code verification;
 19. `/api/drafts`, Cloudflare model behavior, authentication, and rate limiting remain unchanged;
 20. extension permission, cookie, network, inbox-scan, and send boundaries remain unchanged;
 21. the full Vitest, lint, Next.js, Cloudflare static/native, CSP, extension-boundary, and Wrangler dry-run checks pass.

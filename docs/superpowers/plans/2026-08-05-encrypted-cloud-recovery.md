@@ -12,7 +12,8 @@
 
 - Preserve LinkedIn visible-thread capture, contact matching, message deduplication, extension permissions, role playbooks, draft generation, AI consent, and manual-send behavior.
 - Never upload a recovery encryption key, draft access code, cookie, browser credential, screenshot, or extension session state.
-- Store only ciphertext plus format, revision, timestamp, byte count, and sync-token verifier metadata in R2.
+- Store only ciphertext plus format, revision, timestamp, and byte-count metadata in R2.
+- Reuse the existing session-only ChatHelp Cloud access code to authorize vault requests; do not create or persist a new sync credential.
 - Cloud snapshots contain no dated conversation material older than 90 days and expire after 90 days without a successful replacement upload.
 - Never report “All conversations backed up” until the current cloud-safe workspace digest and counts match an R2-confirmed upload.
 - Testing and existing private production remain in Cloudflare account `8c9e063cdf6a3f83f474a7535845cbb2`; do not create resources in the netcore account.
@@ -43,7 +44,6 @@ Add literal expectations proving a version-8 workspace normalizes to:
 cloudRecovery: {
   enabled: false,
   locatorHash: "",
-  syncToken: "",
   etag: "",
   lastConfirmedDigest: "",
   lastConfirmedContacts: 0,
@@ -73,7 +73,6 @@ Add:
 export interface CloudRecoverySettings {
   enabled: boolean;
   locatorHash: string;
-  syncToken: string;
   etag: string;
   lastConfirmedDigest: string;
   lastConfirmedContacts: number;
@@ -119,13 +118,12 @@ Tests must prove:
 const bundle = await createRecoveryBundle();
 expect(bundle.locator).toMatch(/^[A-Za-z0-9_-]{43}$/);
 expect(bundle.encryptionKey).toMatch(/^[A-Za-z0-9_-]{43}$/);
-expect(bundle.syncToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
-expect(new Set([bundle.locator, bundle.encryptionKey, bundle.syncToken]).size).toBe(3);
+expect(new Set([bundle.locator, bundle.encryptionKey]).size).toBe(2);
 ```
 
 Use a workspace fixture containing a unique contact name, message, profile URL, rule, and draft access code. Assert none occurs in `JSON.stringify(envelope)`. Assert correct-key decryption restores the cloud-safe fixture and a different key rejects with the safe recovery error.
 
-Assert the cloud-safe copy clears `cloudInference.accessToken`, `cloudRecovery.syncToken`, ETag/status metadata, and material older than 90 days.
+Assert the cloud-safe copy clears `cloudInference.accessToken`, recovery ETag/status metadata, and material older than 90 days.
 
 - [ ] **Step 2: Run `tests/cloudRecovery.test.ts` and verify RED**
 
@@ -195,15 +193,15 @@ git commit -m "feat: merge recovered conversations safely"
 - Test: `tests/cloudRecoverySync.test.ts`
 
 **Interfaces:**
-- `readCloudVault(locatorHash, syncToken, fetchImpl?) -> { envelope, etag } | null`
-- `writeCloudVault(locatorHash, syncToken, envelope, etag, fetchImpl?) -> { etag }`
-- `deleteCloudVault(locatorHash, syncToken, fetchImpl?) -> void`
+- `readCloudVault(locatorHash, accessCode, fetchImpl?) -> { envelope, etag } | null`
+- `writeCloudVault(locatorHash, accessCode, envelope, etag, fetchImpl?) -> { etag }`
+- `deleteCloudVault(locatorHash, accessCode, fetchImpl?) -> void`
 - `synchronizeCloudWorkspace({ workspace, key, fetchImpl }) -> { workspace, state }`
 - `CloudSyncState` includes `off | preparing | pending | encrypting | syncing | synced | needs-attention | expired | deleted` and exact confirmed counts.
 
 - [ ] **Step 1: Write failing transport tests**
 
-Assert same-origin `/api/vault/<64-hex>` URLs, `X-ChatHelp-Vault-Token`, `If-None-Match` on create, `If-Match` on update, `credentials: "same-origin"`, `Cache-Control: no-store`, and safe mappings for 401/404/409/413/5xx.
+Assert same-origin `/api/vault/<64-hex>` URLs, `Authorization: Bearer <session access code>`, `If-None-Match` on create, `If-Match` on update, `credentials: "same-origin"`, `Cache-Control: no-store`, and safe mappings for 401/404/409/413/5xx. Tests use synthetic placeholders only.
 
 - [ ] **Step 2: Write failing synchronization tests**
 
@@ -219,7 +217,7 @@ Prove any workspace mutation immediately yields `pending`, R2 success yields `sy
 
 - [ ] **Step 4: Implement transport and synchronizer**
 
-Never put the sync token in a URL or error. Use dependency-injected `fetch` for real behavioral tests. Return safe typed errors without response bodies that could contain Access HTML.
+Never put the access code in a URL, persisted recovery state, backup payload, or error. Use dependency-injected `fetch` for real behavioral tests. Return safe typed errors without response bodies that could contain Access HTML.
 
 - [ ] **Step 5: Run focused tests and verify GREEN**
 
@@ -252,9 +250,9 @@ Build an in-memory R2 double with complete `head/get/put/delete` behavior, ETags
 - exact testing host selects only `VAULT_TESTING`;
 - exact private production host selects only `VAULT_PRODUCTION`;
 - versioned preview and unknown hosts receive 404 for vault routes;
-- create stores ciphertext and only the SHA-256 token verifier;
-- reads/writes/deletes require the matching token;
-- wrong tokens do not reveal object existence;
+- create stores ciphertext and minimal non-sensitive format metadata only;
+- reads/writes/deletes require the existing bearer access code and its current constant-time verification;
+- invalid authorization does not reveal object existence;
 - `If-Match` conflicts return 409;
 - oversized and malformed requests fail before R2 write;
 - successful delete is immediately unreadable;
@@ -304,6 +302,7 @@ Prove:
 
 - an empty workspace offers `Restore from recovery file`;
 - OTP/MFA and Draft-generation access-code copy does not claim backup;
+- a configured backup without a session access code shows `Cloud access code required` and performs no request;
 - enabling recovery downloads a recovery file before the first upload;
 - before upload confirmation the Inbox shows `Local changes waiting for backup`;
 - after confirmed upload it shows `All 6 conversations backed up · 42 messages`;
