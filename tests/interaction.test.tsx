@@ -5,13 +5,15 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ChatHelpApp from "../src/components/ChatHelpApp";
+import { createRecoveryBundle, importRecoveryKey } from "../src/lib/cloudRecovery";
 import {
   LINKEDIN_EXTENSION_SOURCE,
   LINKEDIN_SNAPSHOT_EVENT,
   LINKEDIN_SYNC_COMMAND_EVENT,
   LINKEDIN_SYNC_STATE_EVENT,
 } from "../src/lib/linkedinExtension";
-import { openDeviceVault, resetVaultForTests } from "../src/lib/secureVault";
+import { createDeviceVault, openDeviceVault, resetVaultForTests, saveCloudRecoveryKey } from "../src/lib/secureVault";
+import { createEmptyWorkspace } from "../src/lib/workspaceTypes";
 
 vi.mock("@/lib/localOcr", () => ({
   captureVisibleScreen: vi.fn().mockResolvedValue(new Blob(["screen"])),
@@ -165,6 +167,22 @@ describe("secure conversation workspace interaction", () => {
     expect(within(screen.getByRole("navigation", { name: "Conversations" })).getAllByRole("button", { name: "Open conversation with Taylor Lee" })).toHaveLength(1);
     expect(screen.getAllByRole("status").some((item) => /Existing contact updated|No new messages/i.test(item.textContent ?? ""))).toBe(true);
   });
+
+  it("marks an in-flight encrypted backup pending when automatic sync changes the workspace", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.cloudRecovery.enabled = true;
+    await createDeviceVault(workspace);
+    const key = await importRecoveryKey((await createRecoveryBundle()).encryptionKey);
+    await saveCloudRecoveryKey(key);
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    render(<ChatHelpApp />);
+    expect(await screen.findByText("Syncing encrypted backup", {}, { timeout: 8_000 })).toBeTruthy();
+    await announceExtension();
+    await deliverSnapshot();
+
+    expect(await screen.findAllByText("Encrypted backup pending")).not.toHaveLength(0);
+  }, 15_000);
 
   it("persists local pin and read-later choices and exposes the derived conversation state", async () => {
     const user = userEvent.setup();

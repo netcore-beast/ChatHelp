@@ -402,10 +402,16 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_ACK_EVENT, captureId: snapshot.captureId }, targetOrigin);
         return;
       }
-      setWorkspace((current) => {
-        const merged = upsertLinkedInSnapshot(current.contacts, snapshot);
-        return merged.action === "ambiguous" ? current : { ...current, contacts: merged.contacts };
-      });
+      if (preview.action !== "no-change") {
+        setSaveStatus("Unsaved changes");
+        if (workspaceRef.current.cloudRecovery.enabled) {
+          setCloudSyncState(baseCloudSyncState("pending", workspaceRef.current.cloudRecovery.revision));
+        }
+        setWorkspace((current) => {
+          const merged = upsertLinkedInSnapshot(current.contacts, snapshot);
+          return merged.action === "ambiguous" ? current : { ...current, contacts: merged.contacts };
+        });
+      }
       const syncedContact = preview.contacts.find((item) => item.id === preview.contactId);
       setSelectedId(preview.contactId);
       setMobileConversationOpen(true);
