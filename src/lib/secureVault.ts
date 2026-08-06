@@ -61,7 +61,7 @@ function openDatabase(): Promise<IDBDatabase> {
       globalThis.clearTimeout(timer);
       action();
     };
-    const timer = globalThis.setTimeout(() => finish(() => reject(new Error("Secure browser storage did not respond. Close other ChatHelp tabs and retry."))), 8_000);
+    const timer = globalThis.setTimeout(() => finish(() => reject(new Error("Secure browser storage did not respond. Close other DialogMint tabs and retry."))), 8_000);
 
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(STORE_NAME)) {
@@ -76,7 +76,7 @@ function openDatabase(): Promise<IDBDatabase> {
       finish(() => resolve(request.result));
     };
     request.onerror = () => finish(() => reject(request.error ?? new Error("Unable to open secure storage")));
-    request.onblocked = () => finish(() => reject(new Error("Secure storage is blocked by another ChatHelp tab. Close other ChatHelp windows and retry.")));
+    request.onblocked = () => finish(() => reject(new Error("Secure storage is blocked by another DialogMint tab. Close other DialogMint windows and retry.")));
   });
 }
 
@@ -118,7 +118,7 @@ function assertLegacyEnvelope(value: unknown): asserts value is LegacyVaultEnvel
       item.kdf.hash !== "SHA-256" || item.cipher?.name !== "AES-GCM" ||
       typeof item.kdf.salt !== "string" || typeof item.cipher.iv !== "string" ||
       typeof item.cipher.ciphertext !== "string" || !Number.isSafeInteger(item.kdf.iterations)) {
-    throw new Error("This is not a valid ChatHelp encrypted backup.");
+    throw new Error("This is not a valid DialogMint encrypted backup.");
   }
 }
 

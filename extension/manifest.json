@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "ChatHelp LinkedIn Conversation Reader",
-  "description": "With your permission, reads only the visible LinkedIn conversation you manually open and hands it to your encrypted local ChatHelp vault. It never scans or sends.",
-  "version": "0.4.2",
+  "name": "DialogMint LinkedIn Conversation Reader",
+  "description": "With your permission, reads only the visible LinkedIn conversation you manually open and hands it to your encrypted local DialogMint vault. It never scans or sends.",
+  "version": "0.5.0",
   "minimum_chrome_version": "120",
   "action": {
-    "default_title": "Capture the open LinkedIn conversation for ChatHelp"
+    "default_title": "Capture the open LinkedIn conversation for DialogMint"
   },
   "background": {
     "service_worker": "background.js"

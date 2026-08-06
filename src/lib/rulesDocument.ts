@@ -38,7 +38,7 @@ export function createRulesDocumentDownload(role: MessagingRole, rules: string):
   if (!text) throw new Error("Add or upload reply rules before downloading them.");
   const roleSlug = role.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   return {
-    filename: `chathelp-${roleSlug || "role"}-reply-rules.txt`,
+    filename: `dialogmint-${roleSlug || "role"}-reply-rules.txt`,
     text,
   };
 }

@@ -21,7 +21,7 @@ describe("ChatHelp extension app bridge", () => {
       configurable: true,
       value: {
         runtime: {
-          getManifest: () => ({ version: "0.4.2" }),
+          getManifest: () => ({ version: "0.5.0" }),
           sendMessage,
           onMessage: { addListener: (listener: (message: unknown) => void) => runtimeListeners.push(listener) },
         },
@@ -33,7 +33,7 @@ describe("ChatHelp extension app bridge", () => {
       posted.push(data);
     });
     runInThisContext(readFileSync("extension/app-bridge.js", "utf8"), { filename: "extension/app-bridge.js" });
-    expect(posted).toContainEqual({ source: "chathelp-linkedin-extension", type: "CHATHELP_EXTENSION_READY", version: "0.4.2" });
+    expect(posted).toContainEqual({ source: "chathelp-linkedin-extension", type: "CHATHELP_EXTENSION_READY", version: "0.5.0" });
 
     window.dispatchEvent(new MessageEvent("message", {
       source: window,

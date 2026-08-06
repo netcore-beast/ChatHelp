@@ -94,7 +94,7 @@ describe("cloud AI client boundary", () => {
 
   it("tells the model which person is the sender and requires paste-ready text", () => {
     const prompt = buildPrompt(input());
-    expect(prompt).toContain("USER is the person operating ChatHelp");
+    expect(prompt).toContain("USER is the person operating DialogMint");
     expect(prompt).toContain("CONTACT is the selected recipient");
     expect(prompt).toContain("paste-ready message text only");
     expect(prompt).toContain("do not claim one exists");

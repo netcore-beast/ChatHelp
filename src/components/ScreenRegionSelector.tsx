@@ -72,7 +72,7 @@ export function ScreenRegionSelector({ image, contactName, purpose, onConfirm, o
         <div><p className="eyebrow">LOCAL PRIVACY CROP</p><h2 id="crop-title">Select only {subject}</h2></div>
         <button aria-label="Cancel screen-area selection" onClick={onCancel}>×</button>
       </div>
-      <p className="crop-instructions">Drag a box around only the {purpose === "chat" ? "central message column, including speaker names, dates, and messages" : "main profile details you want ChatHelp to use"}. Exclude LinkedIn navigation, other conversations, job suggestions, and side panels. The screenshot and crop remain on this device.</p>
+      <p className="crop-instructions">Drag a box around only the {purpose === "chat" ? "central message column, including speaker names, dates, and messages" : "main profile details you want DialogMint to use"}. Exclude LinkedIn navigation, other conversations, job suggestions, and side panels. The screenshot and crop remain on this device.</p>
       <div className="crop-image-shell">
         <div className="crop-surface" data-testid="crop-surface" onPointerDown={startSelection} onPointerMove={moveSelection} onPointerUp={endSelection} onPointerCancel={endSelection}>
           {/* A private blob preview cannot be optimized by next/image. */}

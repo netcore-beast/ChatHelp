@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "ChatHelp Private Conversation Studio",
-  "short_name": "ChatHelp",
+  "name": "DialogMint Private Conversation Studio",
+  "short_name": "DialogMint",
   "description": "On-device, encrypted assistance for thoughtful professional conversations.",
   "start_url": "/",
   "scope": "/",

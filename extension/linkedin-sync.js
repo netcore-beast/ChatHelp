@@ -66,7 +66,7 @@
       lastSnapshotSignature = signature;
       await chrome.runtime.sendMessage({ type: AUTO_SNAPSHOT, snapshot: extraction.snapshot });
     } catch {
-      await sendStatus("sync_unavailable", "Automatic sync is waiting for the ChatHelp extension connection.");
+      await sendStatus("sync_unavailable", "Automatic sync is waiting for the DialogMint extension connection.");
     } finally {
       captureInProgress = false;
     }

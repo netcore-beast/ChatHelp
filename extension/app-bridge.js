@@ -36,7 +36,7 @@ function reportBridgeError(error) {
     occurredAt: new Date().toISOString(),
     kind: "error",
     code: "extension_bridge_error",
-    message: error instanceof Error ? error.message : "The ChatHelp extension bridge could not reach its background service. Reload the extension and this ChatHelp tab.",
+    message: error instanceof Error ? error.message : "The DialogMint extension bridge could not reach its background service. Reload the extension and this DialogMint tab.",
     observedContact: null,
   });
 }

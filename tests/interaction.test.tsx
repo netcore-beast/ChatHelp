@@ -62,7 +62,7 @@ async function announceExtension() {
     window.dispatchEvent(new MessageEvent("message", {
       source: window,
       origin: window.location.origin,
-      data: { source: LINKEDIN_EXTENSION_SOURCE, type: "CHATHELP_EXTENSION_READY", version: "0.4.2" },
+      data: { source: LINKEDIN_EXTENSION_SOURCE, type: "CHATHELP_EXTENSION_READY", version: "0.5.0" },
     }));
     window.dispatchEvent(new MessageEvent("message", {
       source: window,

@@ -27,7 +27,7 @@ describe("role reply-rules documents", () => {
 
   it("downloads exactly the current role's combined rules text", () => {
     expect(createRulesDocumentDownload("Network Marketing", "Typed rule.\n\nUploaded rule.")).toEqual({
-      filename: "chathelp-network-marketing-reply-rules.txt",
+      filename: "dialogmint-network-marketing-reply-rules.txt",
       text: "Typed rule.\n\nUploaded rule.",
     });
   });

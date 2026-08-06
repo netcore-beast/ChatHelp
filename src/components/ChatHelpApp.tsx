@@ -262,18 +262,18 @@ export default function ChatHelpApp() {
   }
 
   if (checking) return <main className="vault-shell"><section className="vault-card"><p>Opening this browser&apos;s encrypted workspace…</p></section></main>;
-  if (startupError) return <main className="vault-shell"><section className="vault-card" aria-labelledby="storage-error-title"><div className="brand-mark" aria-hidden="true">!</div><p className="eyebrow">SECURE STORAGE UNAVAILABLE</p><h1 id="storage-error-title">ChatHelp could not open the encrypted workspace.</h1><p className="lede">Close other ChatHelp tabs or installed-app windows, confirm this site is allowed to store data, then retry. Your existing encrypted data has not been erased.</p><p className="error" role="alert">{startupError}</p><button className="primary" onClick={() => window.location.reload()}>Retry secure storage</button><p className="fine-print">Do not clear site data if you need an existing vault. If this continues, copy the browser console error for support.</p></section></main>;
+  if (startupError) return <main className="vault-shell"><section className="vault-card" aria-labelledby="storage-error-title"><div className="brand-mark" aria-hidden="true">!</div><p className="eyebrow">SECURE STORAGE UNAVAILABLE</p><h1 id="storage-error-title">DialogMint could not open the encrypted workspace.</h1><p className="lede">Close other DialogMint tabs or installed-app windows, confirm this site is allowed to store data, then retry. Your existing encrypted data has not been erased.</p><p className="error" role="alert">{startupError}</p><button className="primary" onClick={() => window.location.reload()}>Retry secure storage</button><p className="fine-print">Do not clear site data if you need an existing vault. If this continues, copy the browser console error for support.</p></section></main>;
   if (unlocked) return <UnlockedWorkspace initial={unlocked.workspace} session={unlocked.session} />;
 
   if (legacyMigrationRequired) return (
     <main className="vault-shell">
       <section className="vault-card" aria-labelledby="vault-title">
-        <div className="brand-mark" aria-hidden="true">CH</div>
+        <div className="brand-mark" aria-hidden="true">DM</div>
         <p className="eyebrow">ONE-TIME PRIVACY UPGRADE</p>
         <h1 id="vault-title">Unlock your existing workspace once.</h1>
-        <p className="lede">This browser contains a vault created before Cloudflare email and MFA access was enabled. Enter its old passphrase once to convert it to automatic device encryption. ChatHelp will not ask for it again.</p>
+        <p className="lede">This browser contains a vault created before Cloudflare email and MFA access was enabled. Enter its old passphrase once to convert it to automatic device encryption. DialogMint will not ask for it again.</p>
         <label>Existing vault passphrase
-          <input type="password" autoComplete="current-password" value={legacyPassphrase} onChange={(event) => setLegacyPassphrase(event.target.value)} minLength={12} placeholder="Your previous ChatHelp passphrase" />
+          <input type="password" autoComplete="current-password" value={legacyPassphrase} onChange={(event) => setLegacyPassphrase(event.target.value)} minLength={12} placeholder="Your previous DialogMint passphrase" />
         </label>
         {error && <p className="error" role="alert">{error}</p>}
         <button className="primary" disabled={busy || legacyPassphrase.length < 12} onClick={() => void migrateExistingWorkspace()}>
@@ -367,7 +367,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         setExtensionConnected(currentVersion);
         setExtensionStatus(currentVersion
           ? `Chrome extension ${version} connected. Automatic sync is opt-in and currently checking its permission state.`
-          : `An older ChatHelp extension${version ? ` (${version})` : ""} is installed. In chrome://extensions, reload the current ChatHelp extension folder, then reload this tab.`);
+          : `An older DialogMint extension${version ? ` (${version})` : ""} is installed. In chrome://extensions, reload the current DialogMint extension folder, then reload this tab.`);
         return;
       }
       if (data.type === LINKEDIN_SYNC_STATE_EVENT) {
@@ -398,7 +398,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       setExtensionConnected(true);
       const preview = upsertLinkedInSnapshot(workspaceRef.current.contacts, snapshot);
       if (preview.action === "ambiguous") {
-        setExtensionStatus(`Ambiguous identity for ${snapshot.contact.name}. ChatHelp did not merge or create a duplicate. Add a profile or conversation URL to disambiguate this local contact.`);
+        setExtensionStatus(`Ambiguous identity for ${snapshot.contact.name}. DialogMint did not merge or create a duplicate. Add a profile or conversation URL to disambiguate this local contact.`);
         window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_ACK_EVENT, captureId: snapshot.captureId }, targetOrigin);
         return;
       }
@@ -423,7 +423,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     window.addEventListener("message", handleSnapshot);
     window.postMessage({ source: "chathelp-app", type: LINKEDIN_SNAPSHOT_REQUEST_EVENT }, targetOrigin);
     const extensionTimer = window.setTimeout(() => {
-      if (!extensionConnectedRef.current) setExtensionStatus("No extension bridge was detected on this ChatHelp tab. Open ChatHelp in regular desktop Chrome, reload the ChatHelp extension in chrome://extensions, allow site access for this app, then reload this tab.");
+      if (!extensionConnectedRef.current) setExtensionStatus("No extension bridge was detected on this DialogMint tab. Open DialogMint in regular desktop Chrome, reload the DialogMint extension in chrome://extensions, allow site access for this app, then reload this tab.");
     }, 2_500);
     return () => {
       window.clearInterval(timer);
@@ -524,7 +524,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       return;
     }
     if (!extensionConnected) {
-      setExtensionStatus("The current ChatHelp Chrome extension is not connected. Reload version 0.4.2 in chrome://extensions, then reload this tab.");
+      setExtensionStatus("The current DialogMint Chrome extension is not connected. Reload version 0.5.0 in chrome://extensions, then reload this tab.");
       return;
     }
     if (command === "enable") setExtensionStatus("Waiting for Chrome's LinkedIn permission decision…");
@@ -670,7 +670,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       snoozedUntil: "",
       followUpAt: "",
     }));
-    setExtensionStatus(`Marked as manually sent to ${contact.name}. ChatHelp did not type or send anything on LinkedIn.`);
+    setExtensionStatus(`Marked as manually sent to ${contact.name}. DialogMint did not type or send anything on LinkedIn.`);
   }
 
   function saveWizardProfile(profile: { name: string; headline: string; notes: string }): string {
@@ -928,7 +928,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     if (!hasConversationContext(activeContact)) {
       const rejectedFullPage = activeContact.documents.some((document) => isConversationCapture(document) && isLikelyFullLinkedInPageCapture(document));
       setAppError(rejectedFullPage
-        ? `The saved capture for ${activeContact.name} contains LinkedIn navigation, other chats, or job suggestions, so ChatHelp will not send it to AI. Remove it and capture only the central message column.`
+        ? `The saved capture for ${activeContact.name} contains LinkedIn navigation, other chats, or job suggestions, so DialogMint will not send it to AI. Remove it and capture only the central message column.`
         : `Add recent chat history with ${activeContact.name} before generating. Capture only the LinkedIn message area or add at least one message.`);
       return;
     }
@@ -968,7 +968,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
 
   function rateDraft(draft: string, rating: "useful" | "not-useful") {
     if (!contact) return;
-    const note = window.prompt("Optional: what should ChatHelp learn from this draft?", "") ?? "";
+    const note = window.prompt("Optional: what should DialogMint learn from this draft?", "") ?? "";
     updateWorkspace((current) => ({ ...current, feedback: [...current.feedback, { id: newId("feedback"), contactId: contact.id, draft: draft.slice(0, 2000), rating, note: note.slice(0, 1000), createdAt: new Date().toISOString() }].slice(-1000) }));
   }
 
@@ -1090,7 +1090,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     return (
       <main className="app-shell">
         <header className="topbar">
-          <div className="topbar-brand"><div className="brand-mark" aria-hidden="true">CH</div><div><p className="eyebrow">CHATHELP</p><h1>Private conversation studio</h1></div></div>
+          <div className="topbar-brand"><div className="brand-mark" aria-hidden="true">DM</div><div><p className="eyebrow">DIALOGMINT</p><h1>Private conversation studio</h1></div></div>
           <div className="top-actions">
             {dueReminderCount > 0 && <button className="reminder-badge" onClick={() => { setInboxView("reminders"); setInboxFilter("follow-up-due"); }}>{dueReminderCount} due</button>}
             <button onClick={() => shortcutDialogRef.current?.showModal()} aria-label="Show keyboard shortcuts">Shortcuts</button>
@@ -1100,13 +1100,13 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
           </div>
         </header>
         <div className="privacy-strip">
-          <strong>Local-first workspace.</strong> ChatHelp reads only the visible LinkedIn conversation you manually open after you opt in. It never accesses cookies, scans the inbox, opens chats, clicks, types, scrolls, or sends. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Privacy details</button>
+          <strong>Local-first workspace.</strong> DialogMint reads only the visible LinkedIn conversation you manually open after you opt in. It never accesses cookies, scans the inbox, opens chats, clicks, types, scrolls, or sends. <button onClick={() => (document.getElementById("privacy-details") as HTMLDialogElement | null)?.showModal()}>Privacy details</button>
         </div>
         {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
 
         <div className={"workspace-frame" + (navCollapsed ? " nav-is-collapsed" : "") + (contextCollapsed ? " context-is-collapsed" : "")}>
           <aside className="workspace-nav" aria-label="Workspace navigation">
-            <div className="nav-brand"><div className="brand-mark" aria-hidden="true">CH</div><strong>ChatHelp</strong><button aria-label={navCollapsed ? "Expand navigation" : "Collapse navigation"} onClick={() => setNavCollapsed((current) => !current)}>{navCollapsed ? "›" : "‹"}</button></div>
+            <div className="nav-brand"><div className="brand-mark" aria-hidden="true">DM</div><strong>DialogMint</strong><button aria-label={navCollapsed ? "Expand navigation" : "Collapse navigation"} onClick={() => setNavCollapsed((current) => !current)}>{navCollapsed ? "›" : "‹"}</button></div>
             <nav>
               {NAV_ITEMS.map((item) => <button key={item.value} className={inboxView === item.value ? "active" : ""} aria-current={inboxView === item.value ? "page" : undefined} onClick={() => {
                 setInboxView(item.value);
@@ -1130,7 +1130,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 <strong>Automatic sync</strong>
                 <span className="sync-info">
                   <button className="info-button" type="button" aria-label="About automatic LinkedIn conversation sync" aria-describedby="sync-description">i</button>
-                  <span className="sync-tooltip" id="sync-description" role="tooltip"><strong>{automaticSyncLabel}.</strong> {extensionStatus} When enabled, ChatHelp reads only the visible LinkedIn conversation you manually open. It does not scan the inbox, access LinkedIn cookies, open conversations, or send messages.</span>
+                  <span className="sync-tooltip" id="sync-description" role="tooltip"><strong>{automaticSyncLabel}.</strong> {extensionStatus} When enabled, DialogMint reads only the visible LinkedIn conversation you manually open. It does not scan the inbox, access LinkedIn cookies, open conversations, or send messages.</span>
                 </span>
                 <span className="sr-only" role="status" aria-live="polite">{automaticSyncLabel}. {extensionStatus}</span>
                 {!captureEnvironment.isMobile && <button
@@ -1169,7 +1169,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 </div>
               </details>
               {captureEnvironment.isMobile && <p>Automatic LinkedIn sync is desktop-only. Manual paste and import remain available.</p>}
-              {manualCaptureHelp && <p className="manual-capture-help">Open the conversation in LinkedIn and click the ChatHelp extension icon once. This fallback works without enabling automatic sync and never sends a message.</p>}
+              {manualCaptureHelp && <p className="manual-capture-help">Open the conversation in LinkedIn and click the DialogMint extension icon once. This fallback works without enabling automatic sync and never sends a message.</p>}
             </section>}
 
             <div className={"cloud-backup-status backup-" + cloudSyncState.status} role="status" aria-live="polite">
@@ -1286,7 +1286,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
               <div className="conversation-split">
                 <div className="conversation-scroll" aria-label="Conversation history">
                   <div className="message-thread" aria-label={"Conversation with " + contact.name}>
-                  {contact.chat.length ? contact.chat.map((message) => <article className={"bubble " + (message.role === "me" ? "mine " : "") + (message.id === latestMeaningfulIncomingId ? "latest-incoming" : "")} key={message.id}><span className="message-meta"><strong>{message.role === "me" ? "You" : message.speaker || contact.name}</strong><time dateTime={message.createdAt}>{formatRelativeTime(message.createdAt, now)}</time></span>{message.body && <p>{message.body}</p>}{Boolean(message.attachments?.length) && <span className="attachment-row">{message.attachments?.map((attachment) => <small className="attachment-chip" key={attachment.id}>{attachment.kind}: {attachment.label}</small>)}</span>}{message.id === latestMeaningfulIncomingId && <small className="latest-marker">Latest meaningful incoming message</small>}</article>) : <div className="thread-empty"><strong>No messages synchronized yet</strong><p>Enable automatic sync, then manually open this conversation on LinkedIn. ChatHelp will never open or scroll it for you.</p></div>}
+                  {contact.chat.length ? contact.chat.map((message) => <article className={"bubble " + (message.role === "me" ? "mine " : "") + (message.id === latestMeaningfulIncomingId ? "latest-incoming" : "")} key={message.id}><span className="message-meta"><strong>{message.role === "me" ? "You" : message.speaker || contact.name}</strong><time dateTime={message.createdAt}>{formatRelativeTime(message.createdAt, now)}</time></span>{message.body && <p>{message.body}</p>}{Boolean(message.attachments?.length) && <span className="attachment-row">{message.attachments?.map((attachment) => <small className="attachment-chip" key={attachment.id}>{attachment.kind}: {attachment.label}</small>)}</span>}{message.id === latestMeaningfulIncomingId && <small className="latest-marker">Latest meaningful incoming message</small>}</article>) : <div className="thread-empty"><strong>No messages synchronized yet</strong><p>Enable automatic sync, then manually open this conversation on LinkedIn. DialogMint will never open or scroll it for you.</p></div>}
                 </div>
 
                 <details className="import-fallback">
@@ -1334,7 +1334,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 {handoffUrl && <a className="platform-link" href={handoffUrl} target="_blank" rel="noreferrer">Open LinkedIn to review and paste ↗</a>}
                 </div>
               </div>
-            </> : <div className="empty-state"><div className="brand-mark">CH</div><h2>Open your first conversation</h2><p>Enable automatic sync, then manually open a LinkedIn conversation. Unknown contacts are added locally without inbox crawling.</p></div>}
+            </> : <div className="empty-state"><div className="brand-mark">DM</div><h2>Open your first conversation</h2><p>Enable automatic sync, then manually open a LinkedIn conversation. Unknown contacts are added locally without inbox crawling.</p></div>}
           </section>}
 
           <aside className="contact-context" aria-label="Contact context">
@@ -1352,11 +1352,11 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
           </aside>
         </div>
 
-        <footer><span>ChatHelp never sends platform messages or email automatically.</span><button className="danger-link" onClick={() => void eraseEverything()}>Erase all local data</button></footer>
+        <footer><span>DialogMint never sends platform messages or email automatically.</span><button className="danger-link" onClick={() => void eraseEverything()}>Erase all local data</button></footer>
         {wizardOpen && <LinkedInTestWizard initialContact={contact} guidance={resolveRoleGuidance(workspace.guidance, workspace.inboxRole)} drafts={drafts} aiStatus={draftError ? "Drafts were not generated. " + draftError : aiStatus} onClose={() => setWizardOpen(false)} onSaveProfile={saveWizardProfile} onCapture={captureContextFor} onImportChat={importChatFor} onGuidanceChange={(field, value) => { if (field === "role") changeInboxRole(value as MessagingRole); else if (field === "voice") updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: value.slice(0, PLAYBOOK_VOICE_MAX_CHARS) } })); else updateRolePlaybook(workspace.inboxRole, field, value); }} onGenerate={async (contactId, nextAgenda) => { setActiveContactId(contactId); setAgenda(nextAgenda); await generate(nextAgenda, contactId); }} />}
         {cropRequest && <ScreenRegionSelector image={cropRequest.image} contactName={cropRequest.contactName} purpose={cropRequest.purpose} onCancel={() => { const request = cropRequest; setCropRequest(null); request.resolve(null); }} onConfirm={(region) => { const request = cropRequest; setCropRequest(null); request.resolve(region); }} />}
         <dialog ref={shortcutDialogRef} className="privacy-dialog shortcut-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">KEYBOARD-FIRST INBOX</p><h2>Shortcuts</h2><dl><div><dt>J / K</dt><dd>Next / previous conversation</dd></div><div><dt>E</dt><dd>Archive or restore</dd></div><div><dt>R</dt><dd>Focus reply objective</dd></div><div><dt>S</dt><dd>Focus snooze</dd></div><div><dt>L</dt><dd>Focus labels</dd></div><div><dt>Ctrl/⌘ + J</dt><dd>Focus draft composer</dd></div><div><dt>G then I</dt><dd>Go to inbox</dd></div><div><dt>?</dt><dd>Show help</dd></div></dl><button className="primary">Done</button></form></dialog>
-        <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Automatic sync:</strong> after explicit optional host permission, an isolated content script reads only the visible central LinkedIn conversation you manually open. It never reads cookies, scans the inbox, opens chats, clicks, types, scrolls, or sends.</li><li><strong>Local handoff:</strong> synchronized snapshots pass through the existing extension bridge into this authenticated app and are encrypted in the local vault. Automatic snapshots are not retained in extension storage.</li><li><strong>One-time fallback:</strong> a manual toolbar capture may remain only in extension session storage until this app acknowledges it.</li><li><strong>Cloud AI:</strong> relevant recent conversation text, guidance, and your objective are sent to the authenticated same-origin /api/drafts endpoint only when you click Generate.</li><li><strong>Never uploaded:</strong> screenshots, cookies, session tokens, access credentials, the full vault, navigation, job cards, side panels, and unrelated conversations are excluded.</li><li><strong>Sending:</strong> every draft requires manual review, copy, paste, and sending.</li></ul><button className="primary">Understood</button></form></dialog>
+        <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Automatic sync:</strong> after explicit optional host permission, an isolated content script reads only the visible central LinkedIn conversation you manually open. It never reads cookies, scans the inbox, opens chats, clicks, types, scrolls, or sends.</li><li><strong>Local handoff:</strong> synchronized snapshots pass through the existing extension bridge into this authenticated app and are encrypted in the local vault. Automatic snapshots are not retained in extension storage.</li><li><strong>One-time fallback:</strong> a manual toolbar capture may remain only in extension session storage until this app acknowledges it.</li><li><strong>Encrypted recovery:</strong> only after you enable it, DialogMint uploads an AES-256-GCM encrypted, 90-day workspace snapshot to the authenticated vault endpoint. The recovery key stays with you and is never sent to Cloudflare or Neon.</li><li><strong>Cloud AI:</strong> relevant recent conversation text, guidance, and your objective are sent to the authenticated same-origin /api/drafts endpoint only when you click Generate.</li><li><strong>Never uploaded:</strong> plaintext vault data, screenshots, cookies, session tokens, access credentials, navigation, job cards, side panels, and unrelated conversations are excluded.</li><li><strong>Sending:</strong> every draft requires manual review, copy, paste, and sending.</li></ul><button className="primary">Understood</button></form></dialog>
       </main>
     );
   }

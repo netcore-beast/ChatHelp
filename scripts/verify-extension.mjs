@@ -19,7 +19,7 @@ if (JSON.stringify(manifest.optional_host_permissions) !== JSON.stringify(expect
   throw new Error("Automatic sync must request only the optional LinkedIn host permission.");
 }
 if (JSON.stringify(manifest.host_permissions) !== JSON.stringify(expectedAppHosts)) {
-  throw new Error("The local app bridge must be limited to the exact production and testing ChatHelp hosts.");
+  throw new Error("The local app bridge must be limited to the exact production and testing DialogMint hosts.");
 }
 if ((manifest.host_permissions ?? []).some((permission) => /linkedin\.com/i.test(permission))) {
   throw new Error("LinkedIn must remain optional and cannot be a required host permission.");
@@ -51,7 +51,7 @@ if (!extractor.includes("thread.querySelectorAll")) {
   throw new Error("Message extraction must remain scoped to the visible central thread.");
 }
 if (!background.includes("sendSnapshotToApp(snapshot)") || background.includes("[AUTO_SNAPSHOT]")) {
-  throw new Error("Automatic snapshots must be handed directly to ChatHelp and not retained in extension storage.");
+  throw new Error("Automatic snapshots must be handed directly to DialogMint and not retained in extension storage.");
 }
 for (const [name, source] of [["background", background], ["extractor", extractor], ["sync content script", syncScript], ["app bridge", bridge]]) {
   for (const forbidden of [/\.click\s*\(/, /fetch\s*\(/, /XMLHttpRequest/, /chrome\.cookies/, /chrome\.webRequest/, /chrome\.debugger/]) {

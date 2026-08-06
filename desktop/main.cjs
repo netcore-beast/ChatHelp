@@ -80,7 +80,7 @@ app.whenReady().then(async () => {
     if (!sources.length) return callback({});
     const buttons = sources.map((source) => source.name.slice(0, 80));
     buttons.push("Cancel");
-    const choice = await dialog.showMessageBox({ type: "question", title: "Choose what ChatHelp may read", message: "Select one screen or window. ChatHelp processes the captured image locally.", buttons, cancelId: buttons.length - 1, defaultId: buttons.length - 1, noLink: true });
+    const choice = await dialog.showMessageBox({ type: "question", title: "Choose what DialogMint may read", message: "Select one screen or window. DialogMint processes the captured image locally.", buttons, cancelId: buttons.length - 1, defaultId: buttons.length - 1, noLink: true });
     callback(choice.response < sources.length ? { video: sources[choice.response] } : {});
   });
 
