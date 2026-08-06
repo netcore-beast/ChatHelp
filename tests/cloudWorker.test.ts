@@ -94,7 +94,7 @@ function draftRequest(body: unknown, origin = TESTING_ORIGIN) {
 }
 
 describe("Cloudflare private inference Worker", () => {
-  it("reports the storage-free three-stage model boundary", async () => {
+  it("reports the encrypted storage, Access, and three-stage model boundary without configuration values", async () => {
     const response = await runWorker(new Request(`${TESTING_ORIGIN}/health`), await workerEnv());
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
@@ -102,6 +102,8 @@ describe("Cloudflare private inference Worker", () => {
       model: WORKERS_AI_MODEL,
       models: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
       mode: "rulebook-plan-write-review",
+      authentication: "cloudflare-access-jwt",
+      accessBindings: { teamDomain: true, testingAudience: true, productionAudience: true },
       persistentStorage: "client-encrypted-neon",
       retentionDays: 90,
       vaultBindings: { testing: true, production: true },

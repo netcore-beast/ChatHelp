@@ -244,6 +244,12 @@ export async function handleRequest(request, env, options = {}) {
       model: WORKERS_AI_MODEL,
       models: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
       mode: PIPELINE_MODE,
+      authentication: "cloudflare-access-jwt",
+      accessBindings: {
+        teamDomain: Boolean(String(env.ACCESS_TEAM_DOMAIN ?? "").trim()),
+        testingAudience: Boolean(String(env.ACCESS_AUD_TESTING ?? "").trim()),
+        productionAudience: Boolean(String(env.ACCESS_AUD_PRODUCTION ?? "").trim()),
+      },
       persistentStorage: "client-encrypted-neon",
       retentionDays: 90,
       vaultBindings: {
