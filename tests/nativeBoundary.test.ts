@@ -40,6 +40,7 @@ describe("installable client boundaries", () => {
     expect(wrangler).toContain('"id": "69eb149ad82d40cba7e729279294d521"');
     expect(wrangler).toContain('"binding": "NEON_PRODUCTION"');
     expect(wrangler).toContain('"id": "0df56a4e086547eb9e15d1d964556676"');
+    expect(wrangler).toContain('"required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD_TESTING", "ACCESS_AUD_PRODUCTION"]');
     expect(wrangler).not.toContain("CHATHELP_ACCESS_TOKEN_HASH");
     expect(wrangler).not.toMatch(/postgres(?:ql)?:\/\//i);
     expect(wrangler).not.toMatch(/connectionString/i);

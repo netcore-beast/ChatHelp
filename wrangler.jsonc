@@ -11,6 +11,9 @@
   "ai": {
     "binding": "AI"
   },
+  "secrets": {
+    "required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD_TESTING", "ACCESS_AUD_PRODUCTION"]
+  },
   "hyperdrive": [
     {
       "binding": "NEON_TESTING",
