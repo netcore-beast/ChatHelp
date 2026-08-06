@@ -1,7 +1,7 @@
 # Encrypted Cloud Recovery for ChatHelp
 
 Date: 2026-08-05
-Status: Approved conversational design; written specification pending user review
+Status: Approved for implementation
 Target: Existing ChatHelp testing preview first, then the existing private production Worker
 
 ## Objective
@@ -172,12 +172,16 @@ The delete UI changes from “Delete local contact” to “Delete contact every
 Add a compact “Encrypted cloud recovery” section with:
 
 - recovery status: Off, Preparing, Protected, Syncing, Synced, Retry needed, Expired, or Deleted;
+- a compact Inbox status that says `All <count> conversations backed up` only when the digest and conversation/message counts of the current cloud-safe workspace match the last R2-confirmed upload;
+- `Backing up <count> conversations`, `Local changes waiting for backup`, or `Cloud backup needs attention` when the current workspace is not fully confirmed;
 - “Enable encrypted 90-day recovery”;
 - “Download recovery file again” only while the active device can export the in-memory recovery material during the setup session; otherwise instruct the user to use the originally saved file;
 - “Restore from recovery file”;
 - last successful cloud synchronization time;
 - Retry;
 - “Delete encrypted cloud backup.”
+
+The confirmed backup status is computed locally and stored only inside the encrypted device vault. It contains the last successfully uploaded cloud-safe workspace digest, contact count, message count, ETag, and timestamp. Counts are never stored in R2 plaintext metadata. OTP/MFA website authentication and the Draft-generation consent access code must be described separately: neither is a recovery key and neither proves that conversations are backed up.
 
 The disclosure states:
 
@@ -233,6 +237,8 @@ Add tests proving:
 19. `/api/drafts`, Cloudflare model behavior, authentication, and rate limiting remain unchanged;
 20. extension permission, cookie, network, inbox-scan, and send boundaries remain unchanged;
 21. the full Vitest, lint, Next.js, Cloudflare static/native, CSP, extension-boundary, and Wrangler dry-run checks pass.
+22. the UI never shows “All conversations backed up” before R2 confirms the matching encrypted snapshot;
+23. changing or importing a conversation immediately changes the status to pending and a successful conditional upload changes it to the exact backed-up contact/message counts;
 
 ## Release plan
 
