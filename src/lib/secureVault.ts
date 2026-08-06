@@ -8,6 +8,7 @@ const DB_VERSION = 1;
 const STORE_NAME = "vault";
 const RECORD_KEY = "primary";
 const DEVICE_KEY_RECORD = "device-key-v2";
+const CLOUD_RECOVERY_KEY_RECORD = "cloud-recovery-key-v1";
 const LEGACY_AAD = new TextEncoder().encode("ChatHelp vault v1");
 const DEVICE_AAD = new TextEncoder().encode("ChatHelp device vault v2");
 export const KDF_ITERATIONS = 600_000;
@@ -211,9 +212,30 @@ export async function saveVault(workspace: WorkspaceData, session: VaultSession)
   await withStore("readwrite", (store) => store.put(envelope, RECORD_KEY));
 }
 
+export async function saveCloudRecoveryKey(key: CryptoKey): Promise<void> {
+  if (key.type !== "secret" || key.extractable || key.algorithm.name !== "AES-GCM") {
+    throw new Error("DialogMint recovery requires a non-extractable AES key.");
+  }
+  await withStore("readwrite", (store) => store.put(key, CLOUD_RECOVERY_KEY_RECORD));
+}
+
+export async function openCloudRecoveryKey(): Promise<CryptoKey | null> {
+  const key = await withStore<CryptoKey | undefined>("readonly", (store) => store.get(CLOUD_RECOVERY_KEY_RECORD));
+  if (!key) return null;
+  if (key.type !== "secret" || key.extractable || key.algorithm.name !== "AES-GCM") {
+    throw new Error("This browser's DialogMint recovery key is not valid.");
+  }
+  return key;
+}
+
+export async function removeCloudRecoveryKey(): Promise<void> {
+  await withStore("readwrite", (store) => store.delete(CLOUD_RECOVERY_KEY_RECORD));
+}
+
 export async function eraseVault(): Promise<void> {
   await withStore("readwrite", (store) => store.delete(RECORD_KEY));
   await withStore("readwrite", (store) => store.delete(DEVICE_KEY_RECORD));
+  await withStore("readwrite", (store) => store.delete(CLOUD_RECOVERY_KEY_RECORD));
 }
 
 function normalizeMessage(value: Partial<Message>, index: number): Message {
