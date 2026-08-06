@@ -266,7 +266,6 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
   const cloudInference = source.cloudInference && typeof source.cloudInference === "object"
     ? source.cloudInference as Record<string, unknown>
     : {};
-  const rememberAccessToken = cloudInference.rememberAccessToken === true;
   const cloudRecovery = source.cloudRecovery && typeof source.cloudRecovery === "object"
     ? source.cloudRecovery as Record<string, unknown>
     : {};
@@ -305,18 +304,16 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
   };
   const inboxRole = isMessagingRole(source.inboxRole) ? source.inboxRole : selectedRole;
   return {
-    version: 9,
+    version: 10,
     modelId: normalizeWorkspaceModelId(),
     cloudInference: {
-      accessToken: rememberAccessToken && typeof cloudInference.accessToken === "string" ? cloudInference.accessToken.slice(0, 200) : "",
       consentedAt: typeof cloudInference.consentedAt === "string" ? cloudInference.consentedAt.slice(0, 100) : "",
-      rememberAccessToken,
     },
     cloudRecovery: {
       enabled: cloudRecovery.enabled === true,
-      locatorHash: typeof cloudRecovery.locatorHash === "string" ? cloudRecovery.locatorHash.slice(0, 100) : "",
-      etag: typeof cloudRecovery.etag === "string" ? cloudRecovery.etag.slice(0, 300) : "",
+      revision: typeof cloudRecovery.revision === "number" && Number.isFinite(cloudRecovery.revision) ? Math.max(0, Math.floor(cloudRecovery.revision)) : 0,
       lastConfirmedDigest: typeof cloudRecovery.lastConfirmedDigest === "string" ? cloudRecovery.lastConfirmedDigest.slice(0, 100) : "",
+      lastConfirmedCiphertextDigest: typeof cloudRecovery.lastConfirmedCiphertextDigest === "string" ? cloudRecovery.lastConfirmedCiphertextDigest.slice(0, 100) : "",
       lastConfirmedContacts: typeof cloudRecovery.lastConfirmedContacts === "number" && Number.isFinite(cloudRecovery.lastConfirmedContacts) ? Math.max(0, Math.floor(cloudRecovery.lastConfirmedContacts)) : 0,
       lastConfirmedMessages: typeof cloudRecovery.lastConfirmedMessages === "number" && Number.isFinite(cloudRecovery.lastConfirmedMessages) ? Math.max(0, Math.floor(cloudRecovery.lastConfirmedMessages)) : 0,
       lastSyncedAt: typeof cloudRecovery.lastSyncedAt === "string" ? cloudRecovery.lastSyncedAt.slice(0, 100) : "",

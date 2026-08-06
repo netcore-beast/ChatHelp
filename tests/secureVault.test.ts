@@ -17,18 +17,16 @@ import { CLOUDFLARE_MODEL_ID, createEmptyWorkspace } from "../src/lib/workspaceT
 describe("encrypted device vault", () => {
   beforeEach(async () => { await resetVaultForTests(); });
 
-  it("migrates old browser models to cloud and discards access codes stored without explicit permission", () => {
+  it("migrates old browser models to cloud consent without retaining a separate access code", () => {
     const workspace = normalizeWorkspace({
       modelId: "retired-browser-model",
-      cloudInference: { accessToken: "placeholder-code", consentedAt: "2026-08-01T00:00:00.000Z" },
+      cloudInference: { accessToken: "SYNTHETIC-RETIRED-CODE", consentedAt: "2026-08-01T00:00:00.000Z", rememberAccessToken: true },
     });
 
     expect(workspace.modelId).toBe(CLOUDFLARE_MODEL_ID);
-    expect(workspace.cloudInference).toEqual({
-      accessToken: "",
-      consentedAt: "2026-08-01T00:00:00.000Z",
-      rememberAccessToken: false,
-    });
+    expect(workspace.cloudInference).toEqual({ consentedAt: "2026-08-01T00:00:00.000Z" });
+    expect(workspace).not.toHaveProperty("cloudInference.accessToken");
+    expect(workspace).not.toHaveProperty("cloudInference.rememberAccessToken");
   });
 
   it("migrates one legacy playbook into the closest role without overwriting other role defaults", () => {
@@ -41,7 +39,7 @@ describe("encrypted device vault", () => {
       },
     });
 
-    expect(workspace.version).toBe(9);
+    expect(workspace.version).toBe(10);
     expect(workspace.guidance.selectedRole).toBe("Human Resource");
     expect(workspace.inboxRole).toBe("Human Resource");
     expect(workspace.guidance.playbooks["Human Resource"]).toEqual({
@@ -53,18 +51,32 @@ describe("encrypted device vault", () => {
     expect(workspace.guidance.voice).toBe("Clear and considerate");
   });
 
-  it("adds disabled encrypted cloud recovery state when migrating a local-only workspace", () => {
-    const workspace = normalizeWorkspace({ version: 8, contacts: [] });
+  it("migrates retired R2 confirmation fields to disabled Neon recovery state", () => {
+    const workspace = normalizeWorkspace({
+      version: 9,
+      contacts: [],
+      cloudRecovery: {
+        enabled: true,
+        locatorHash: "retired-locator",
+        etag: "retired-etag",
+        lastConfirmedDigest: "logical-digest",
+        lastConfirmedContacts: 4.8,
+        lastConfirmedMessages: -3,
+        lastSyncedAt: "2026-08-01T00:00:00.000Z",
+      },
+    });
 
     expect(workspace.cloudRecovery).toEqual({
-      enabled: false,
-      locatorHash: "",
-      etag: "",
-      lastConfirmedDigest: "",
-      lastConfirmedContacts: 0,
+      enabled: true,
+      revision: 0,
+      lastConfirmedDigest: "logical-digest",
+      lastConfirmedCiphertextDigest: "",
+      lastConfirmedContacts: 4,
       lastConfirmedMessages: 0,
-      lastSyncedAt: "",
+      lastSyncedAt: "2026-08-01T00:00:00.000Z",
     });
+    expect(workspace).not.toHaveProperty("cloudRecovery.locatorHash");
+    expect(workspace).not.toHaveProperty("cloudRecovery.etag");
     expect(workspace.deletionTombstones).toEqual([]);
   });
 

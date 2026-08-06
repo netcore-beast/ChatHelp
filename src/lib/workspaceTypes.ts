@@ -121,16 +121,14 @@ export interface Feedback {
 }
 
 export interface CloudInferenceSettings {
-  accessToken: string;
   consentedAt: string;
-  rememberAccessToken: boolean;
 }
 
 export interface CloudRecoverySettings {
   enabled: boolean;
-  locatorHash: string;
-  etag: string;
+  revision: number;
   lastConfirmedDigest: string;
+  lastConfirmedCiphertextDigest: string;
   lastConfirmedContacts: number;
   lastConfirmedMessages: number;
   lastSyncedAt: string;
@@ -153,7 +151,7 @@ export interface AiUsageEntry {
 }
 
 export interface WorkspaceData {
-  version: 9;
+  version: 10;
   modelId: string;
   cloudInference: CloudInferenceSettings;
   cloudRecovery: CloudRecoverySettings;
@@ -238,18 +236,16 @@ export function updateRolePlaybookRules(playbook: RolePlaybook, boundaries: stri
 export function createEmptyWorkspace(): WorkspaceData {
   const guidance = createDefaultMessagingGuidance();
   return {
-    version: 9,
+    version: 10,
     modelId: DEFAULT_MODEL_ID,
     cloudInference: {
-      accessToken: "",
       consentedAt: "",
-      rememberAccessToken: false,
     },
     cloudRecovery: {
       enabled: false,
-      locatorHash: "",
-      etag: "",
+      revision: 0,
       lastConfirmedDigest: "",
+      lastConfirmedCiphertextDigest: "",
       lastConfirmedContacts: 0,
       lastConfirmedMessages: 0,
       lastSyncedAt: "",
