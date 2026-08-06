@@ -93,6 +93,22 @@ function draftRequest(body: unknown, origin = TESTING_ORIGIN) {
   });
 }
 
+function streamingDraftRequest(body: unknown) {
+  const request = draftRequest(body);
+  request.headers.set("Accept", "text/event-stream, application/json");
+  return request;
+}
+
+function parseSseEvents(text: string) {
+  return text.trim().split(/\n\n+/).map((frame) => {
+    const lines = frame.split("\n");
+    return {
+      event: lines.find((line) => line.startsWith("event:"))?.slice(6).trim(),
+      data: JSON.parse(lines.find((line) => line.startsWith("data:"))?.slice(5).trim() ?? "null"),
+    };
+  });
+}
+
 describe("Cloudflare private inference Worker", () => {
   it("reports the encrypted storage, Access, and three-stage model boundary without configuration values", async () => {
     const response = await runWorker(new Request(`${TESTING_ORIGIN}/health`), await workerEnv());
@@ -172,6 +188,58 @@ describe("Cloudflare private inference Worker", () => {
     expect(writerInput.response_format.type).toBe("json_schema");
     expect(reviewerInput.response_format.type).toBe("json_schema");
     expect(JSON.stringify(env.AI.run.mock.calls)).not.toContain(SYNTHETIC_ASSERTION);
+  });
+
+  it("streams real pipeline stages in order and preserves the final result", async () => {
+    const response = await runWorker(streamingDraftRequest(structuredPayload()), await workerEnv());
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/event-stream");
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    const events = parseSseEvents(await response.text());
+    expect(events.map(({ event, data }) => [event, data.stage, data.status])).toEqual([
+      ["stage", "planning", "in-progress"],
+      ["stage", "planning", "done"],
+      ["stage", "drafting", "in-progress"],
+      ["stage", "drafting", "done"],
+      ["stage", "reviewing", "in-progress"],
+      ["stage", "reviewing", "done"],
+      ["stage", "finalizing", "in-progress"],
+      ["stage", "finalizing", "done"],
+      ["result", undefined, undefined],
+    ]);
+    expect(events.at(-1)?.data).toMatchObject({ drafts: ["Reviewed reply one", "Reviewed reply two", "Reviewed reply three"] });
+  });
+
+  it("does not mark review done until bounded compliance correction finishes", async () => {
+    const env = await workerEnv();
+    const questionDrafts = { drafts: [
+      { angle: "one", text: "Are you focused on Sentinel?" },
+      { angle: "two", text: "Do you spend more time on ZTNA?" },
+      { angle: "three", text: "Which part of SASE do you enjoy?" },
+    ] };
+    env.AI.run
+      .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
+      .mockResolvedValueOnce({ response: WRITER_DRAFTS })
+      .mockResolvedValueOnce({ response: questionDrafts })
+      .mockResolvedValueOnce({ response: REVIEWED_DRAFTS });
+
+    const response = await runWorker(streamingDraftRequest(structuredPayload()), env);
+    const events = parseSseEvents(await response.text());
+    expect(env.AI.run).toHaveBeenCalledTimes(4);
+    expect(events.filter(({ event, data }) => event === "stage" && data.stage === "reviewing").map(({ data }) => data.status)).toEqual(["in-progress", "done"]);
+    expect(events.findIndex(({ event, data }) => event === "stage" && data.stage === "reviewing" && data.status === "done")).toBeGreaterThan(-1);
+  });
+
+  it("streams only the safe generic error when model processing fails", async () => {
+    const env = await workerEnv();
+    env.AI.run.mockRejectedValue(new Error("provider detail that must not escape"));
+    const response = await runWorker(streamingDraftRequest(structuredPayload()), env);
+
+    const body = await response.text();
+    expect(body).toContain('event: error');
+    expect(body).toContain("Cloud AI could not produce three safe drafts. Please try again.");
+    expect(body).not.toContain("provider detail");
   });
 
   it("keeps an optional objective additive and out of system instructions", async () => {
