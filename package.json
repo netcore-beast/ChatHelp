@@ -29,7 +29,9 @@
     "@huggingface/transformers": "^3.8.1",
     "@mlc-ai/web-llm": "0.2.84",
     "@tesseract.js-data/eng": "^1.0.0",
+    "jose": "^6.2.8",
     "next": "16.2.12",
+    "pg": "^8.22.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "tesseract.js": "7.0.0"
@@ -41,6 +43,7 @@
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@types/node": "^20",
+    "@types/pg": "^8.20.4",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitest/coverage-v8": "^4.1.10",

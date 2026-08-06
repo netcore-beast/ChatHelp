@@ -12,7 +12,7 @@ async function load() {
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
   }
-  throw new Error(`ChatHelp did not become ready: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+  throw new Error(`DialogMint did not become ready: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
 }
 
 function inspect({ response, html }) {

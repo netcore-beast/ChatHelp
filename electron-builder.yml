@@ -1,6 +1,6 @@
 appId: com.chathelp.app
-productName: ChatHelp
-copyright: Copyright © 2026 ChatHelp contributors
+productName: DialogMint
+copyright: Copyright © 2026 DialogMint contributors
 asar: true
 directories:
   output: dist/windows
@@ -21,7 +21,7 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
-  artifactName: ChatHelp-Setup-${version}-${arch}.${ext}
+  artifactName: DialogMint-Setup-${version}-${arch}.${ext}
 portable:
-  artifactName: ChatHelp-Portable-${version}-${arch}.${ext}
+  artifactName: DialogMint-Portable-${version}-${arch}.${ext}
 publish: null

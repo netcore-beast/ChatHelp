@@ -60,7 +60,7 @@ export function PwaInstall() {
         setPromptEvent(null);
       }}
     >
-      Install ChatHelp
+      Install DialogMint
     </button>
   );
 }

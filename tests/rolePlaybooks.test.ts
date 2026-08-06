@@ -1,26 +1,37 @@
 import { describe, expect, it } from "vitest";
 import { buildPrompt } from "../src/lib/privateAi";
-import { MESSAGING_ROLES, createEmptyWorkspace, resolveRoleGuidance } from "../src/lib/workspaceTypes";
+import { MESSAGING_ROLES, createEmptyWorkspace, resolveRoleGuidance, updateRolePlaybookRules } from "../src/lib/workspaceTypes";
 
 describe("role-based messaging playbooks", () => {
+  it("refreshes the cached digest in the same update as edited rules", () => {
+    const playbook = createEmptyWorkspace().guidance.playbooks["Network Marketing"];
+    const updated = updateRolePlaybookRules(playbook, "Always answer the newest message.\nNever invent facts.");
+
+    expect(updated.objective).toBe(playbook.objective);
+    expect(updated.boundaries).toBe("Always answer the newest message.\nNever invent facts.");
+    expect(updated.rulebookDigest).toBe("- Always answer the newest message.\n- Never invent facts.");
+    expect(playbook.boundaries).not.toBe(updated.boundaries);
+  });
+
   it("creates every supported role and resolves only the requested playbook", () => {
     const workspace = createEmptyWorkspace();
     expect(Object.keys(workspace.guidance.playbooks)).toEqual([...MESSAGING_ROLES]);
-    workspace.guidance.playbooks["Human Resource"] = { objective: "HR-ONLY-GOAL", boundaries: "HR-ONLY-RULES" };
-    workspace.guidance.playbooks["Network Marketing"] = { objective: "NETWORK-ONLY-GOAL", boundaries: "NETWORK-ONLY-RULES" };
+    workspace.guidance.playbooks["Human Resource"] = { objective: "HR-ONLY-GOAL", boundaries: "HR-ONLY-RULES", rulebookDigest: "- HR-ONLY-RULES" };
+    workspace.guidance.playbooks["Network Marketing"] = { objective: "NETWORK-ONLY-GOAL", boundaries: "NETWORK-ONLY-RULES", rulebookDigest: "- NETWORK-ONLY-RULES" };
 
     expect(resolveRoleGuidance(workspace.guidance, "Network Marketing")).toEqual({
       role: "Network Marketing",
       objective: "NETWORK-ONLY-GOAL",
       voice: workspace.guidance.voice,
       boundaries: "NETWORK-ONLY-RULES",
+      rulebookDigest: "- NETWORK-ONLY-RULES",
     });
   });
 
   it("puts one selected role into the three-draft prompt without mixing another role", () => {
     const workspace = createEmptyWorkspace();
-    workspace.guidance.playbooks["Human Resource"] = { objective: "HR-ONLY-GOAL", boundaries: "HR-ONLY-RULES" };
-    workspace.guidance.playbooks["Network Marketing"] = { objective: "NETWORK-ONLY-GOAL", boundaries: "NETWORK-ONLY-RULES" };
+    workspace.guidance.playbooks["Human Resource"] = { objective: "HR-ONLY-GOAL", boundaries: "HR-ONLY-RULES", rulebookDigest: "- HR-ONLY-RULES" };
+    workspace.guidance.playbooks["Network Marketing"] = { objective: "NETWORK-ONLY-GOAL", boundaries: "NETWORK-ONLY-RULES", rulebookDigest: "- NETWORK-ONLY-RULES" };
     const prompt = buildPrompt({
       contact: {
         id: "role-contact",

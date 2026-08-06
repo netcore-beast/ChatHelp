@@ -1,331 +1,273 @@
 import { describe, expect, it, vi } from "vitest";
-import { GPT_REVIEW_MODEL, LLAMA_CANDIDATE_MODEL, handleRequest, sha256Hex, WORKERS_AI_MODEL } from "../cloudflare/worker/src/index.js";
+import { GPT_REVIEW_MODEL, LLAMA_CANDIDATE_MODEL, handleRequest, WORKERS_AI_MODEL } from "../cloudflare/worker/src/index.js";
 
-const ACCESS_CODE = "test-access-code-with-more-than-twenty-characters";
+const TESTING_HOST = "testing-chathelp-private-cloud.project-mission-ai.workers.dev";
+const TESTING_ORIGIN = `https://${TESTING_HOST}`;
+const SYNTHETIC_ASSERTION = "synthetic.assertion.value";
 const PLAYBOOK_PLAN = {
-  latestMessageIntent: "The contact is sharing an adjacent professional interest.",
+  objective: "Continue the actual conversation while building trust.",
+  conversationStage: "The contact shared an adjacent professional interest.",
+  keyFactsToReference: ["The contact mentioned ZTNA and SASE."],
+  toneDirectives: ["Warm", "Concise"],
+  thingsToAvoid: ["Do not pitch", "Do not invent facts"],
+  replyLengthHint: "One or two short sentences.",
   directions: [
     { move: "Respond directly", goalStep: "Build relevance", applicableRules: "Stay factual", avoid: "Do not pitch" },
     { move: "Bridge naturally", goalStep: "Build trust", applicableRules: "Keep it concise", avoid: "Do not invent familiarity" },
     { move: "Offer a low-pressure step", goalStep: "Explore mutual value", applicableRules: "Stay conversational", avoid: "Do not force a meeting" },
   ],
 };
+const WRITER_DRAFTS = {
+  drafts: [
+    { angle: "direct", text: "Writer draft one" },
+    { angle: "warm", text: "Writer draft two" },
+    { angle: "low-pressure", text: "Writer draft three" },
+  ],
+};
+const REVIEWED_DRAFTS = {
+  drafts: [
+    { angle: "direct", text: "Reviewed reply one" },
+    { angle: "warm", text: "Reviewed reply two" },
+    { angle: "low-pressure", text: "Reviewed reply three" },
+  ],
+};
+
+function structuredPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    conversationContext: "<conversation_context>\n{\"contact\":{\"name\":\"Alex\"},\"recentMessages\":[{\"sender\":\"CONTACT\",\"text\":\"Can you share more?\"}]}\n</conversation_context>",
+    playbook: {
+      role: "Network Marketing",
+      relationshipGoal: "Build genuine trust",
+      voice: "Warm and concise",
+      rulebookFull: "Do not pitch early. FULL-RULEBOOK-TAIL",
+      rulebookDigest: "DIGEST-ONLY-RULE",
+    },
+    replyObjective: "",
+    ...overrides,
+  };
+}
 
 async function workerEnv() {
+  let gptCalls = 0;
   return {
-    CHATHELP_ACCESS_TOKEN_HASH: await sha256Hex(ACCESS_CODE),
+    ACCESS_TEAM_DOMAIN: "https://dialogmint.cloudflareaccess.com",
+    ACCESS_AUD_TESTING: "testing-audience",
+    ACCESS_AUD_PRODUCTION: "production-audience",
+    NEON_TESTING: { connectionString: "synthetic-testing-binding" },
+    NEON_PRODUCTION: { connectionString: "synthetic-production-binding" },
     DRAFT_RATE_LIMITER: {
       limit: vi.fn().mockResolvedValue({ success: true }),
     },
     AI: {
-      run: vi.fn().mockImplementation(async (model: string) => model === LLAMA_CANDIDATE_MODEL
-        ? { response: PLAYBOOK_PLAN }
-        : { response: { drafts: ["First professional reply", "Second professional reply", "Third professional reply"] } }),
+      run: vi.fn().mockImplementation(async (model: string) => {
+        if (model === LLAMA_CANDIDATE_MODEL) return { response: PLAYBOOK_PLAN };
+        gptCalls += 1;
+        return { response: gptCalls === 1 ? WRITER_DRAFTS : REVIEWED_DRAFTS };
+      }),
     },
   };
 }
 
-describe("Cloudflare private inference Worker", () => {
-  it("uses Llama playbook planning plus GPT-OSS drafting and review in automatic mode", () => {
-    expect(LLAMA_CANDIDATE_MODEL).toBe("@cf/meta/llama-3.1-8b-instruct-fast");
-    expect(GPT_REVIEW_MODEL).toBe("@cf/openai/gpt-oss-120b");
-    expect(WORKERS_AI_MODEL).toBe("auto:llama-3.1-8b+gpt-oss-120b");
-  });
+const verifyAccess = vi.fn(async (_assertion: string, options: { issuer: string; audience: string }) => ({
+  payload: {
+    iss: options.issuer,
+    aud: [options.audience],
+    sub: "synthetic-subject",
+    exp: 2_000_000_000,
+  },
+}));
 
-  it("reports a storage-free health boundary without authentication", async () => {
-    const response = await handleRequest(new Request("https://chathelp.example/health"), await workerEnv());
+function runWorker(request: Request, env: Awaited<ReturnType<typeof workerEnv>>) {
+  return handleRequest(request, env, { verifyAccess });
+}
+
+function draftRequest(body: unknown, origin = TESTING_ORIGIN) {
+  return new Request(`${TESTING_ORIGIN}/api/drafts`, {
+    method: "POST",
+    headers: {
+      "Cf-Access-Jwt-Assertion": SYNTHETIC_ASSERTION,
+      "Content-Type": "application/json",
+      Origin: origin,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+describe("Cloudflare private inference Worker", () => {
+  it("reports the encrypted storage, Access, and three-stage model boundary without configuration values", async () => {
+    const response = await runWorker(new Request(`${TESTING_ORIGIN}/health`), await workerEnv());
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
       model: WORKERS_AI_MODEL,
       models: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
-      mode: "automatic-playbook-plan-and-draft",
-      persistentStorage: false,
+      mode: "rulebook-plan-write-review",
+      authentication: "cloudflare-access-jwt",
+      accessBindings: { teamDomain: true, testingAudience: true, productionAudience: true },
+      persistentStorage: "client-encrypted-neon",
+      retentionDays: 90,
+      vaultBindings: { testing: true, production: true },
       aiGateway: false,
       observability: false,
     });
     expect(response.headers.get("Cache-Control")).toBe("no-store");
   });
 
-  it("rejects unauthenticated draft requests before inference", async () => {
+  it("rejects unauthenticated requests before rate limiting or inference", async () => {
     const env = await workerEnv();
-    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
+    const response = await runWorker(new Request(`${TESTING_ORIGIN}/api/drafts`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "Draft a reply" }),
+      headers: { "Content-Type": "application/json", "Cf-Access-Authenticated-User-Email": "ignored@example.test" },
+      body: JSON.stringify(structuredPayload()),
     }), env);
 
     expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ error: "DialogMint authentication is required." });
     expect(env.AI.run).not.toHaveBeenCalled();
     expect(env.DRAFT_RATE_LIMITER.limit).not.toHaveBeenCalled();
   });
 
-  it("rate-limits an authenticated code and returns exactly three drafts", async () => {
+  it("rejects an unauthenticated vault write before parsing or querying", async () => {
+    const env = { ...await workerEnv(), NEON_TESTING: { connectionString: "synthetic-testing-binding" } };
+    const query = vi.fn();
+    const response = await handleRequest(new Request(`${TESTING_ORIGIN}/api/vault`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: "not-json",
+    }), env, { verifyAccess, query });
+
+    expect(response.status).toBe(401);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it("routes digest-only planning, full-rulebook writing, and full-rulebook review as three isolated calls", async () => {
     const env = await workerEnv();
-    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + ACCESS_CODE,
-        "Content-Type": "application/json",
-        Origin: "https://chathelp.example",
-      },
-      body: JSON.stringify({ prompt: "Relevant conversation text only" }),
-    }), env);
+    const response = await runWorker(draftRequest(structuredPayload()), env);
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
-      drafts: ["First professional reply", "Second professional reply", "Third professional reply"],
+      drafts: ["Reviewed reply one", "Reviewed reply two", "Reviewed reply three"],
       model: WORKERS_AI_MODEL,
       models: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
-      mode: "automatic-playbook-plan-and-draft",
+      mode: "rulebook-plan-write-review",
     });
     expect(env.DRAFT_RATE_LIMITER.limit).toHaveBeenCalledTimes(1);
-    expect(env.AI.run).toHaveBeenCalledTimes(2);
-    const [candidateModel, candidateInput] = env.AI.run.mock.calls[0];
-    const [reviewModel, reviewInput] = env.AI.run.mock.calls[1];
-    expect(candidateModel).toBe(LLAMA_CANDIDATE_MODEL);
-    expect(reviewModel).toBe(GPT_REVIEW_MODEL);
-    expect(candidateInput.response_format.type).toBe("json_schema");
-    expect(reviewInput.response_format).toBeUndefined();
-    expect(reviewInput.messages[0].content).toContain("conversation-list previews");
-    expect(reviewInput.messages[0].content).toContain("job cards");
-    expect(reviewInput.messages[0].content).toContain("HIGHEST PRIORITY REPLY TARGET");
-    expect(reviewInput.messages[0].content).toContain("previous local draft suggestions");
-    expect(reviewInput.messages[1].content).toContain("Relevant conversation text only");
-    expect(candidateInput.messages[0].content).toContain("conversation and playbook planner");
-    expect(candidateInput.response_format.json_schema.properties.directions).toBeTruthy();
-    expect(reviewInput.messages[1].content).toContain("LLAMA 3.1 8B PLAYBOOK DIRECTIONS");
-    expect(reviewInput.messages[1].content).toContain("At most one of the three drafts may contain a question");
-    expect(reviewInput.messages[1].content).not.toContain(ACCESS_CODE);
+    expect(env.DRAFT_RATE_LIMITER.limit).toHaveBeenCalledWith({ key: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(env.AI.run).toHaveBeenCalledTimes(3);
+
+    const [plannerModel, plannerInput] = env.AI.run.mock.calls[0];
+    const [writerModel, writerInput] = env.AI.run.mock.calls[1];
+    const [reviewerModel, reviewerInput] = env.AI.run.mock.calls[2];
+    expect([plannerModel, writerModel, reviewerModel]).toEqual([LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL, GPT_REVIEW_MODEL]);
+    expect(plannerInput.messages[0].content).toContain("DIGEST-ONLY-RULE");
+    expect(plannerInput.messages[0].content).not.toContain("FULL-RULEBOOK-TAIL");
+    expect(plannerInput.messages[1].content).toContain("<conversation_context>");
+    expect(writerInput.messages[0].content).toContain("FULL-RULEBOOK-TAIL");
+    expect(reviewerInput.messages[0].content).toContain("FULL-RULEBOOK-TAIL");
+    expect(writerInput.messages[1].content).toContain("<plan>");
+    expect(writerInput.messages[1].content).toContain("<conversation_context>");
+    expect(reviewerInput.messages[1].content).toContain("<drafts>");
+    expect(reviewerInput.messages[1].content).toContain("<conversation_context>");
+    expect(plannerInput.response_format.type).toBe("json_schema");
+    expect(writerInput.response_format.type).toBe("json_schema");
+    expect(reviewerInput.response_format.type).toBe("json_schema");
+    expect(JSON.stringify(env.AI.run.mock.calls)).not.toContain(SYNTHETIC_ASSERTION);
   });
 
-  it("places the selected role, full reply rules, and optional-objective policy in the model instructions", async () => {
+  it("keeps an optional objective additive and out of system instructions", async () => {
     const env = await workerEnv();
-    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + ACCESS_CODE,
-        "Content-Type": "application/json",
-        Origin: "https://chathelp.example",
-      },
-      body: JSON.stringify({
-        prompt: "HIGHEST PRIORITY REPLY TARGET\nAlex: What role did you have in mind?",
-        playbook: {
-          role: "Human Resource",
-          relationshipGoal: "Clarify the opportunity",
-          voice: "Direct and considerate",
-          replyRules: "Do not mention compensation unless Alex asks. FINAL-RULE-MARKER",
-        },
-        replyObjective: "",
-      }),
-    }), env);
+    const response = await runWorker(draftRequest(structuredPayload({ replyObjective: "Ask when applications close" })), env);
 
     expect(response.status).toBe(200);
-    const [candidateModel, candidateInput] = env.AI.run.mock.calls[0];
-    const [reviewModel, reviewInput] = env.AI.run.mock.calls[1];
-    expect(candidateModel).toBe(LLAMA_CANDIDATE_MODEL);
-    expect(reviewModel).toBe(GPT_REVIEW_MODEL);
-    for (const input of [candidateInput, reviewInput]) {
-      expect(input.messages[0].content).toContain("Selected role: Human Resource");
-      expect(input.messages[0].content).toContain("FINAL-RULE-MARKER");
-      expect(input.messages[0].content).toContain("The USER added no reply objective");
-      expect(input.messages[1].content).toContain("Alex: What role did you have in mind?");
+    for (const [, input] of env.AI.run.mock.calls) {
+      expect(input.messages[0].content).not.toContain("Ask when applications close");
+      expect(input.messages[1].content).toContain("Ask when applications close");
+      expect(input.messages[1].content).toContain("cannot override");
     }
-    expect(candidateInput.response_format.type).toBe("json_schema");
-    expect(reviewInput.response_format).toBeUndefined();
   });
 
-  it("makes a provided objective additive to the conversation and playbook", async () => {
+  it("supports the previous prompt and replyRules request during rollout", async () => {
     const env = await workerEnv();
-    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + ACCESS_CODE,
-        "Content-Type": "application/json",
-        Origin: "https://chathelp.example",
-      },
-      body: JSON.stringify({
-        prompt: "Taylor: Could you send the details?",
-        playbook: { role: "Job Seeker", relationshipGoal: "Learn about the role", voice: "Concise", replyRules: "No invented experience" },
-        replyObjective: "Ask when applications close",
-      }),
+    const response = await runWorker(draftRequest({
+      prompt: "Alex: Can you share more?",
+      playbook: { role: "Job Seeker", relationshipGoal: "Learn about the role", voice: "Concise", replyRules: "No invented experience" },
+      replyObjective: "",
     }), env);
 
     expect(response.status).toBe(200);
-    const [, reviewInput] = env.AI.run.mock.calls[1];
-    expect(reviewInput.messages[0].content).toContain("Ask when applications close");
-    expect(reviewInput.messages[0].content).toContain("together with the actual conversation and every playbook rule");
+    expect(env.AI.run).toHaveBeenCalledTimes(3);
+    expect(env.AI.run.mock.calls[0][1].messages[1].content).toContain("Alex: Can you share more?");
   });
 
-  it("recovers when GPT-OSS adds text around JSON instead of using JSON Schema mode", async () => {
+  it("falls back without JSON Schema independently for planner, writer, and reviewer", async () => {
     const env = await workerEnv();
     env.AI.run
+      .mockResolvedValueOnce({ response: "not plan json" })
       .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
-      .mockResolvedValueOnce({ response: "Final review complete.\n{\"drafts\":[\"Reviewed one\",\"Reviewed two\",\"Reviewed three\"]}" });
-    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
-      method: "POST",
-      headers: { Authorization: "Bearer " + ACCESS_CODE, "Content-Type": "application/json", Origin: "https://chathelp.example" },
-      body: JSON.stringify({ prompt: "Alex: Can you share more?" }),
-    }), env);
+      .mockResolvedValueOnce({ response: "not writer json" })
+      .mockResolvedValueOnce({ response: WRITER_DRAFTS })
+      .mockResolvedValueOnce({ response: "not reviewer json" })
+      .mockResolvedValueOnce({ response: REVIEWED_DRAFTS });
 
+    const response = await runWorker(draftRequest(structuredPayload()), env);
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ drafts: ["Reviewed one", "Reviewed two", "Reviewed three"] });
+    expect(env.AI.run).toHaveBeenCalledTimes(6);
+    expect(env.AI.run.mock.calls[0][1].response_format.type).toBe("json_schema");
     expect(env.AI.run.mock.calls[1][1].response_format).toBeUndefined();
+    expect(env.AI.run.mock.calls[2][1].response_format.type).toBe("json_schema");
+    expect(env.AI.run.mock.calls[3][1].response_format).toBeUndefined();
+    expect(env.AI.run.mock.calls[4][1].response_format.type).toBe("json_schema");
+    expect(env.AI.run.mock.calls[5][1].response_format).toBeUndefined();
   });
 
-  it("parses the OpenAI-compatible choices response returned by Cloudflare GPT-OSS", async () => {
+  it("parses OpenAI-compatible GPT-OSS choices and returns only reviewed text", async () => {
     const env = await workerEnv();
     env.AI.run
       .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
-      .mockResolvedValueOnce({
-        choices: [{
-          finish_reason: "stop",
-          message: {
-            content: "{\"drafts\":[\"Cloudflare one\",\"Cloudflare two\",\"Cloudflare three\"]}",
-            reasoning: "Synthetic reasoning metadata",
-            role: "assistant",
-          },
-        }],
-      });
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(WRITER_DRAFTS), role: "assistant" }, finish_reason: "stop" }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(REVIEWED_DRAFTS), role: "assistant" }, finish_reason: "stop" }] });
 
-    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
-      method: "POST",
-      headers: { Authorization: "Bearer " + ACCESS_CODE, "Content-Type": "application/json", Origin: "https://chathelp.example" },
-      body: JSON.stringify({ prompt: "Alex: Can you share more?" }),
-    }), env);
-
+    const response = await runWorker(draftRequest(structuredPayload()), env);
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      drafts: ["Cloudflare one", "Cloudflare two", "Cloudflare three"],
-    });
-    expect(env.AI.run).toHaveBeenCalledTimes(2);
+    await expect(response.json()).resolves.toMatchObject({ drafts: ["Reviewed reply one", "Reviewed reply two", "Reviewed reply three"] });
   });
 
-  it("retries GPT-OSS once when its first final review is not parseable JSON", async () => {
+  it("routes an all-question reviewed set through a bounded compliance correction", async () => {
     const env = await workerEnv();
+    const questionDrafts = { drafts: [
+      { angle: "one", text: "Are you focused on Sentinel?" },
+      { angle: "two", text: "Do you spend more time on ZTNA?" },
+      { angle: "three", text: "Which part of SASE do you enjoy?" },
+    ] };
     env.AI.run
       .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
-      .mockResolvedValueOnce({ response: "not valid JSON" })
-      .mockResolvedValueOnce({ response: "{\"drafts\":[\"Recovered one\",\"Recovered two\",\"Recovered three\"]}" });
-    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
-      method: "POST",
-      headers: { Authorization: "Bearer " + ACCESS_CODE, "Content-Type": "application/json", Origin: "https://chathelp.example" },
-      body: JSON.stringify({ prompt: "Alex: Can you share more?" }),
-    }), env);
+      .mockResolvedValueOnce({ response: WRITER_DRAFTS })
+      .mockResolvedValueOnce({ response: questionDrafts })
+      .mockResolvedValueOnce({ response: REVIEWED_DRAFTS });
 
+    const response = await runWorker(draftRequest(structuredPayload()), env);
     expect(response.status).toBe(200);
-    expect(env.AI.run).toHaveBeenCalledTimes(3);
-    expect(env.AI.run.mock.calls[2][1].messages[1].content).toContain("FORMAT CORRECTION");
+    expect(env.AI.run).toHaveBeenCalledTimes(4);
+    expect(env.AI.run.mock.calls[3][1].messages[1].content).toContain("overused follow-up questions");
   });
 
-  it("replaces a generic all-question set with more varied playbook-grounded replies", async () => {
+  it("rejects invented personal histories after bounded review attempts", async () => {
     const env = await workerEnv();
-    env.AI.run
-      .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
-      .mockResolvedValueOnce({ response: { drafts: [
-        "Are you focused on Sentinel?",
-        "Do you spend more time on ZTNA?",
-        "Which part of SASE do you enjoy?",
-      ] } })
-      .mockResolvedValueOnce({ response: { drafts: [
-        "That mix of Sentinel, ZTNA, and SASE gives you a useful view across detection and access.",
-        "It sounds like you enjoy working across both monitoring and access security. I would be interested in comparing how those priorities connect in practice.",
-        "There is a lot of overlap between those areas. Which side are you exploring most right now?",
-      ] } });
+    const invented = { drafts: [
+      { angle: "one", text: "Honestly, I got into zero trust after seeing perimeter defenses bypassed." },
+      { angle: "two", text: "My motivation came from watching breaches exploit trust." },
+      { angle: "three", text: "The principle of explicit verification is relevant here." },
+    ] };
+    env.AI.run.mockResolvedValueOnce({ response: PLAYBOOK_PLAN }).mockResolvedValue({ response: invented });
 
-    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
-      method: "POST",
-      headers: { Authorization: "Bearer " + ACCESS_CODE, "Content-Type": "application/json", Origin: "https://chathelp.example" },
-      body: JSON.stringify({
-        prompt: "Samreet: ZTNA and SASE is fun as well",
-        playbook: { role: "Network Marketing", relationshipGoal: "Build trust before discussing an opportunity", voice: "Natural", replyRules: "Do not pitch early" },
-      }),
-    }), env);
-
-    expect(response.status).toBe(200);
-    expect(env.AI.run).toHaveBeenCalledTimes(3);
-    expect(env.AI.run.mock.calls[2][1].messages[1].content).toContain("overused follow-up questions");
-    await expect(response.json()).resolves.toMatchObject({
-      drafts: expect.arrayContaining([expect.not.stringContaining("?")]),
-    });
+    const response = await runWorker(draftRequest(structuredPayload()), env);
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({ error: "Cloud AI could not produce three safe drafts. Please try again." });
   });
 
-  it("rejects invented personal origin stories and rewrites them as evidence-safe replies", async () => {
+  it("blocks cross-origin requests even with a valid Access assertion", async () => {
     const env = await workerEnv();
-    env.AI.run
-      .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
-      .mockResolvedValueOnce({ response: { drafts: [
-        "Honestly, I got into zero trust after seeing perimeter defenses bypassed as work moved to the cloud.",
-        "My motivation came from watching breaches exploit implicit trust inside networks.",
-        "The appeal of zero trust is its focus on verifying access instead of assuming trust.",
-      ] } })
-      .mockResolvedValueOnce({ response: { drafts: [
-        "What appeals to me about zero trust is the move from assumed trust to continuous verification.",
-        "The principle resonates with me because access decisions stay explicit and contextual rather than relying on network location.",
-        "I find the shift toward verification at each access decision especially relevant to modern cloud environments.",
-      ] } });
-
-    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
-      method: "POST",
-      headers: { Authorization: "Bearer " + ACCESS_CODE, "Content-Type": "application/json", Origin: "https://chathelp.example" },
-      body: JSON.stringify({
-        prompt: "Amit: What inspired you to go for zero trust networks?",
-        playbook: { role: "Network Marketing", relationshipGoal: "Build genuine trust", voice: "Natural", replyRules: "Do not invent facts" },
-      }),
-    }), env);
-
-    expect(response.status).toBe(200);
-    expect(env.AI.run).toHaveBeenCalledTimes(3);
-    expect(env.AI.run.mock.calls[2][1].messages[1].content).toContain("invented unsupported personal history or origin stories");
-    const body = await response.json();
-    expect(body.drafts.join(" ")).not.toContain("got into zero trust");
-    expect(body.drafts.join(" ")).not.toContain("My motivation came from");
-  });
-
-  it("automatically retries when the model copies a message from captured history", async () => {
-    const env = await workerEnv();
-    env.AI.run
-      .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
-      .mockResolvedValueOnce({ response: { drafts: [
-        "Hi Amit, hope you're doing well. How's your work going?",
-        "Hi Amit, just checking in.",
-        "Hi Amit, what have you been working on lately?",
-      ] } })
-      .mockResolvedValueOnce({ response: { drafts: [
-        "Hi Amit, thanks again for the kind words about my recent work. What have you been focused on lately?",
-        "Hi Amit, I appreciated your thoughtful note about my recent work. I’d enjoy hearing what you’re building these days.",
-        "Hi Amit, it’s been a while since we connected. I’d be glad to catch up here and hear what’s new with you.",
-      ] } });
-    const prompt = "CAPTURED LINKEDIN CONVERSATION TEXT\nHi Amit, hope you're doing well. How's your work going?";
-
-    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + ACCESS_CODE,
-        "Content-Type": "application/json",
-        Origin: "https://chathelp.example",
-      },
-      body: JSON.stringify({ prompt }),
-    }), env);
-
-    expect(response.status).toBe(200);
-    expect(env.AI.run).toHaveBeenCalledTimes(3);
-    const body = await response.json();
-    expect(body.drafts[0]).toContain("kind words about my recent work");
-    expect(env.AI.run.mock.calls[2][1].messages[1].content).toContain("QUALITY CORRECTION");
-  });
-
-  it("blocks cross-origin requests even with a valid access code", async () => {
-    const env = await workerEnv();
-    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + ACCESS_CODE,
-        "Content-Type": "application/json",
-        Origin: "https://attacker.example",
-      },
-      body: JSON.stringify({ prompt: "Draft a reply" }),
-    }), env);
+    const response = await runWorker(draftRequest(structuredPayload(), "https://attacker.example"), env);
     expect(response.status).toBe(403);
     expect(env.AI.run).not.toHaveBeenCalled();
   });

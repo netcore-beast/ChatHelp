@@ -2,11 +2,28 @@
   "name": "chathelp-private-cloud",
   "main": "./cloudflare/worker/src/index.js",
   "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": true,
+  "triggers": {
+    "crons": ["0 3 * * *"]
+  },
   "ai": {
     "binding": "AI"
   },
+  "secrets": {
+    "required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD_TESTING", "ACCESS_AUD_PRODUCTION"]
+  },
+  "hyperdrive": [
+    {
+      "binding": "NEON_TESTING",
+      "id": "69eb149ad82d40cba7e729279294d521"
+    },
+    {
+      "binding": "NEON_PRODUCTION",
+      "id": "0df56a4e086547eb9e15d1d964556676"
+    }
+  ],
   "assets": {
     "directory": "./out",
     "binding": "ASSETS",
@@ -25,8 +42,5 @@
   ],
   "observability": {
     "enabled": false
-  },
-  "secrets": {
-    "required": ["CHATHELP_ACCESS_TOKEN_HASH"]
   }
 }

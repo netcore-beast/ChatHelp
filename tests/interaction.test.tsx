@@ -5,13 +5,15 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ChatHelpApp from "../src/components/ChatHelpApp";
+import { createRecoveryBundle, importRecoveryKey } from "../src/lib/cloudRecovery";
 import {
   LINKEDIN_EXTENSION_SOURCE,
   LINKEDIN_SNAPSHOT_EVENT,
   LINKEDIN_SYNC_COMMAND_EVENT,
   LINKEDIN_SYNC_STATE_EVENT,
 } from "../src/lib/linkedinExtension";
-import { resetVaultForTests } from "../src/lib/secureVault";
+import { createDeviceVault, openDeviceVault, resetVaultForTests, saveCloudRecoveryKey } from "../src/lib/secureVault";
+import { createEmptyWorkspace } from "../src/lib/workspaceTypes";
 
 vi.mock("@/lib/localOcr", () => ({
   captureVisibleScreen: vi.fn().mockResolvedValue(new Blob(["screen"])),
@@ -62,7 +64,7 @@ async function announceExtension() {
     window.dispatchEvent(new MessageEvent("message", {
       source: window,
       origin: window.location.origin,
-      data: { source: LINKEDIN_EXTENSION_SOURCE, type: "CHATHELP_EXTENSION_READY", version: "0.4.2" },
+      data: { source: LINKEDIN_EXTENSION_SOURCE, type: "CHATHELP_EXTENSION_READY", version: "0.5.0" },
     }));
     window.dispatchEvent(new MessageEvent("message", {
       source: window,
@@ -130,12 +132,12 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     expect(await within(screen.getByRole("navigation", { name: "Conversations" })).findByRole("button", { name: "Open conversation with Alex Morgan" })).toBeTruthy();
     expect(screen.getByLabelText("Conversation with Alex Morgan")).toBeTruthy();
-    await waitFor(() => expect(document.querySelector(".save-state")?.textContent).toContain("Encrypted"), { timeout: 3000 });
+    await waitFor(async () => expect((await openDeviceVault()).workspace.contacts.some((contact) => contact.name === "Alex Morgan")).toBe(true), { timeout: 3000 });
 
     firstRender.unmount();
     render(<ChatHelpApp />);
     await screen.findByRole("heading", { name: /private conversation studio/i });
-    expect(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Alex Morgan" })).toBeTruthy();
+    expect(await within(screen.getByRole("navigation", { name: "Conversations" })).findByRole("button", { name: "Open conversation with Alex Morgan" })).toBeTruthy();
     expect(screen.queryByLabelText("Passphrase")).toBeNull();
   }, 20_000);
 
@@ -165,6 +167,22 @@ describe("secure conversation workspace interaction", () => {
     expect(within(screen.getByRole("navigation", { name: "Conversations" })).getAllByRole("button", { name: "Open conversation with Taylor Lee" })).toHaveLength(1);
     expect(screen.getAllByRole("status").some((item) => /Existing contact updated|No new messages/i.test(item.textContent ?? ""))).toBe(true);
   });
+
+  it("marks an in-flight encrypted backup pending when automatic sync changes the workspace", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.cloudRecovery.enabled = true;
+    await createDeviceVault(workspace);
+    const key = await importRecoveryKey((await createRecoveryBundle()).encryptionKey);
+    await saveCloudRecoveryKey(key);
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    render(<ChatHelpApp />);
+    expect(await screen.findByText("Syncing encrypted backup", {}, { timeout: 8_000 })).toBeTruthy();
+    await announceExtension();
+    await deliverSnapshot();
+
+    expect(await screen.findAllByText("Encrypted backup pending")).not.toHaveLength(0);
+  }, 15_000);
 
   it("persists local pin and read-later choices and exposes the derived conversation state", async () => {
     const user = userEvent.setup();
@@ -234,7 +252,7 @@ describe("secure conversation workspace interaction", () => {
     expect(await screen.findByLabelText("Conversation with Taylor Lee")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.type(screen.getByLabelText(/Cloud access code/), "not-a-secret-test-placeholder");
+    expect(screen.queryByLabelText(/Cloud access code/)).toBeNull();
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
@@ -248,9 +266,10 @@ describe("secure conversation workspace interaction", () => {
     expect(request.mock.calls[0][1]?.credentials).toBe("same-origin");
     const requestBody = JSON.parse(request.mock.calls[0][1]?.body as string);
     expect(requestBody.replyObjective).toBe("");
-    expect(requestBody.prompt).toContain("The USER supplied no additional reply objective");
-    expect(requestBody.prompt).toContain("Taylor Lee: Could you share the role brief?");
-    expect(requestBody.playbook.replyRules).toBeTruthy();
+    expect(requestBody.conversationContext).toContain("Could you share the role brief?");
+    expect(requestBody.playbook.rulebookFull).toBeTruthy();
+    expect(requestBody.playbook.rulebookDigest).toBeTruthy();
+    expect(screen.getByText(/independently reviewed against the full Socializing\/Networking rulebook/i)).toBeTruthy();
     expect(screen.getByRole("link", { name: /Open LinkedIn to review and paste/ })).toBeTruthy();
   }, 20_000);
 
@@ -315,7 +334,7 @@ describe("secure conversation workspace interaction", () => {
     await user.clear(screen.getByLabelText("Your relationship goal"));
     await user.type(screen.getByLabelText("Your relationship goal"), "NETWORK-ONLY-GOAL");
     await user.clear(screen.getByLabelText("Rules every reply must follow"));
-    await user.type(screen.getByLabelText("Rules every reply must follow"), "NETWORK-ONLY-RULES");
+    await user.type(screen.getByLabelText("Rules every reply must follow"), "Always answer the newest message.\nNever invent facts.\nNETWORK-ONLY-RULES");
     await user.selectOptions(settingsRole, "Human Resource");
     await user.clear(screen.getByLabelText("Your relationship goal"));
     await user.type(screen.getByLabelText("Your relationship goal"), "HR-ONLY-GOAL");
@@ -323,8 +342,14 @@ describe("secure conversation workspace interaction", () => {
     await user.type(screen.getByLabelText("Rules every reply must follow"), "HR-ONLY-RULES");
     await user.selectOptions(settingsRole, "Network Marketing");
     expect((screen.getByLabelText("Your relationship goal") as HTMLTextAreaElement).value).toBe("NETWORK-ONLY-GOAL");
-    expect((screen.getByLabelText("Rules every reply must follow") as HTMLTextAreaElement).value).toBe("NETWORK-ONLY-RULES");
-    await user.type(screen.getByLabelText(/Cloud access code/), "not-a-secret-test-placeholder");
+    expect((screen.getByLabelText("Rules every reply must follow") as HTMLTextAreaElement).value).toContain("NETWORK-ONLY-RULES");
+    await user.click(screen.getByRole("button", { name: "Save playbook settings" }));
+    expect(await screen.findByText(/All four messaging playbooks were saved/)).toBeTruthy();
+    expect((await openDeviceVault()).workspace.guidance.playbooks["Network Marketing"].rulebookDigest).toBe([
+      "- Always answer the newest message.",
+      "- Never invent facts.",
+    ].join("\n"));
+    expect(screen.queryByLabelText(/Cloud access code/)).toBeNull();
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
 
     await user.click(screen.getByRole("button", { name: "Inbox" }));
@@ -342,22 +367,23 @@ describe("secure conversation workspace interaction", () => {
     await user.type(screen.getByLabelText("What should your reply accomplish?"), "Reply naturally using the selected playbook.");
     await user.click(screen.getByRole("button", { name: "Generate 3 drafts for Taylor Lee" }));
     expect(await screen.findByDisplayValue("Network draft one")).toBeTruthy();
-    expect(screen.getByText(/Generated using the Network Marketing playbook/)).toBeTruthy();
-    const networkPrompt = JSON.parse(request.mock.calls[0][1]?.body as string).prompt as string;
-    expect(networkPrompt).toContain("Role: Network Marketing");
-    expect(networkPrompt).toContain("NETWORK-ONLY-GOAL");
-    expect(networkPrompt).toContain("NETWORK-ONLY-RULES");
-    expect(networkPrompt).not.toContain("HR-ONLY-GOAL");
+    expect(screen.getByText(/independently reviewed against the full Network Marketing rulebook/)).toBeTruthy();
+    const networkRequest = JSON.parse(request.mock.calls[0][1]?.body as string);
+    expect(networkRequest.playbook.role).toBe("Network Marketing");
+    expect(networkRequest.playbook.relationshipGoal).toBe("NETWORK-ONLY-GOAL");
+    expect(networkRequest.playbook.rulebookFull).toContain("NETWORK-ONLY-RULES");
+    expect(networkRequest.playbook.rulebookDigest).toBe("- Always answer the newest message.\n- Never invent facts.");
+    expect(JSON.stringify(networkRequest)).not.toContain("HR-ONLY-GOAL");
 
     await user.selectOptions(inboxRole, "Human Resource");
     expect(screen.queryByLabelText("Edit draft 1")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Generate 3 drafts for Taylor Lee" }));
     expect(await screen.findByDisplayValue("HR draft one")).toBeTruthy();
-    const hrPrompt = JSON.parse(request.mock.calls[1][1]?.body as string).prompt as string;
-    expect(hrPrompt).toContain("Role: Human Resource");
-    expect(hrPrompt).toContain("HR-ONLY-GOAL");
-    expect(hrPrompt).toContain("HR-ONLY-RULES");
-    expect(hrPrompt).not.toContain("NETWORK-ONLY-GOAL");
+    const hrRequest = JSON.parse(request.mock.calls[1][1]?.body as string);
+    expect(hrRequest.playbook.role).toBe("Human Resource");
+    expect(hrRequest.playbook.relationshipGoal).toBe("HR-ONLY-GOAL");
+    expect(hrRequest.playbook.rulebookFull).toBe("HR-ONLY-RULES");
+    expect(JSON.stringify(hrRequest)).not.toContain("NETWORK-ONLY-GOAL");
     expect(request).toHaveBeenCalledTimes(2);
 
     await waitFor(() => expect(document.querySelector(".save-state")?.textContent).toContain("Encrypted"), { timeout: 3_000 });
@@ -379,7 +405,7 @@ describe("secure conversation workspace interaction", () => {
     await announceExtension();
     await deliverSnapshot();
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.type(screen.getByLabelText(/Cloud access code/), "not-a-secret-test-placeholder");
+    expect(screen.queryByLabelText(/Cloud access code/)).toBeNull();
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));

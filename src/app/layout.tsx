@@ -2,10 +2,10 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ChatHelp — Private cloud conversation copilot",
+  title: "DialogMint — Private cloud conversation copilot",
   description: "Organize selected LinkedIn conversations locally and generate reviewed replies with Cloudflare Workers AI.",
-  applicationName: "ChatHelp",
-  appleWebApp: { capable: true, title: "ChatHelp", statusBarStyle: "default" },
+  applicationName: "DialogMint",
+  appleWebApp: { capable: true, title: "DialogMint", statusBarStyle: "default" },
   formatDetection: { telephone: false },
 };
 

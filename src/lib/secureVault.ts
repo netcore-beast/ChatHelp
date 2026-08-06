@@ -1,12 +1,14 @@
 import { MESSAGING_ROLES, PLAYBOOK_GOAL_MAX_CHARS, PLAYBOOK_RULES_MAX_CHARS, PLAYBOOK_VOICE_MAX_CHARS, createDefaultMessagingGuidance, createEmptyWorkspace, isMessagingRole, normalizeMessagingRole, normalizeWorkspaceModelId, type Contact, type ConversationAttachment, type Message, type PipelineStage, type RolePlaybooks, type WorkspaceData } from "./workspaceTypes";
 import { PIPELINE_STAGES } from "./linkedinExtension";
 import { repairLegacyLinkedInMessages } from "./messageDedup";
+import { buildRulebookDigest } from "./rulebookDigest";
 
 const DB_NAME = "chathelp-secure";
 const DB_VERSION = 1;
 const STORE_NAME = "vault";
 const RECORD_KEY = "primary";
 const DEVICE_KEY_RECORD = "device-key-v2";
+const CLOUD_RECOVERY_KEY_RECORD = "cloud-recovery-key-v1";
 const LEGACY_AAD = new TextEncoder().encode("ChatHelp vault v1");
 const DEVICE_AAD = new TextEncoder().encode("ChatHelp device vault v2");
 export const KDF_ITERATIONS = 600_000;
@@ -59,7 +61,7 @@ function openDatabase(): Promise<IDBDatabase> {
       globalThis.clearTimeout(timer);
       action();
     };
-    const timer = globalThis.setTimeout(() => finish(() => reject(new Error("Secure browser storage did not respond. Close other ChatHelp tabs and retry."))), 8_000);
+    const timer = globalThis.setTimeout(() => finish(() => reject(new Error("Secure browser storage did not respond. Close other DialogMint tabs and retry."))), 8_000);
 
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(STORE_NAME)) {
@@ -74,7 +76,7 @@ function openDatabase(): Promise<IDBDatabase> {
       finish(() => resolve(request.result));
     };
     request.onerror = () => finish(() => reject(request.error ?? new Error("Unable to open secure storage")));
-    request.onblocked = () => finish(() => reject(new Error("Secure storage is blocked by another ChatHelp tab. Close other ChatHelp windows and retry.")));
+    request.onblocked = () => finish(() => reject(new Error("Secure storage is blocked by another DialogMint tab. Close other DialogMint windows and retry.")));
   });
 }
 
@@ -116,7 +118,7 @@ function assertLegacyEnvelope(value: unknown): asserts value is LegacyVaultEnvel
       item.kdf.hash !== "SHA-256" || item.cipher?.name !== "AES-GCM" ||
       typeof item.kdf.salt !== "string" || typeof item.cipher.iv !== "string" ||
       typeof item.cipher.ciphertext !== "string" || !Number.isSafeInteger(item.kdf.iterations)) {
-    throw new Error("This is not a valid ChatHelp encrypted backup.");
+    throw new Error("This is not a valid DialogMint encrypted backup.");
   }
 }
 
@@ -210,9 +212,30 @@ export async function saveVault(workspace: WorkspaceData, session: VaultSession)
   await withStore("readwrite", (store) => store.put(envelope, RECORD_KEY));
 }
 
+export async function saveCloudRecoveryKey(key: CryptoKey): Promise<void> {
+  if (key.type !== "secret" || key.extractable || key.algorithm.name !== "AES-GCM") {
+    throw new Error("DialogMint recovery requires a non-extractable AES key.");
+  }
+  await withStore("readwrite", (store) => store.put(key, CLOUD_RECOVERY_KEY_RECORD));
+}
+
+export async function openCloudRecoveryKey(): Promise<CryptoKey | null> {
+  const key = await withStore<CryptoKey | undefined>("readonly", (store) => store.get(CLOUD_RECOVERY_KEY_RECORD));
+  if (!key) return null;
+  if (key.type !== "secret" || key.extractable || key.algorithm.name !== "AES-GCM") {
+    throw new Error("This browser's DialogMint recovery key is not valid.");
+  }
+  return key;
+}
+
+export async function removeCloudRecoveryKey(): Promise<void> {
+  await withStore("readwrite", (store) => store.delete(CLOUD_RECOVERY_KEY_RECORD));
+}
+
 export async function eraseVault(): Promise<void> {
   await withStore("readwrite", (store) => store.delete(RECORD_KEY));
   await withStore("readwrite", (store) => store.delete(DEVICE_KEY_RECORD));
+  await withStore("readwrite", (store) => store.delete(CLOUD_RECOVERY_KEY_RECORD));
 }
 
 function normalizeMessage(value: Partial<Message>, index: number): Message {
@@ -265,7 +288,9 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
   const cloudInference = source.cloudInference && typeof source.cloudInference === "object"
     ? source.cloudInference as Record<string, unknown>
     : {};
-  const rememberAccessToken = cloudInference.rememberAccessToken === true;
+  const cloudRecovery = source.cloudRecovery && typeof source.cloudRecovery === "object"
+    ? source.cloudRecovery as Record<string, unknown>
+    : {};
   const rawGuidance = source.guidance && typeof source.guidance === "object" ? source.guidance as Record<string, unknown> : {};
   const selectedRole = normalizeMessagingRole(rawGuidance.selectedRole ?? rawGuidance.role);
   const defaults = createDefaultMessagingGuidance();
@@ -282,13 +307,17 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
       playbooks[role] = {
         objective: typeof rawPlaybook.objective === "string" ? rawPlaybook.objective.slice(0, PLAYBOOK_GOAL_MAX_CHARS) : playbooks[role].objective,
         boundaries: typeof rawPlaybook.boundaries === "string" ? rawPlaybook.boundaries.slice(0, PLAYBOOK_RULES_MAX_CHARS) : playbooks[role].boundaries,
+        rulebookDigest: "",
       };
+      playbooks[role].rulebookDigest = buildRulebookDigest(playbooks[role].boundaries);
     }
   } else {
     playbooks[selectedRole] = {
       objective: typeof rawGuidance.objective === "string" ? rawGuidance.objective.slice(0, PLAYBOOK_GOAL_MAX_CHARS) : playbooks[selectedRole].objective,
       boundaries: typeof rawGuidance.boundaries === "string" ? rawGuidance.boundaries.slice(0, PLAYBOOK_RULES_MAX_CHARS) : playbooks[selectedRole].boundaries,
+      rulebookDigest: "",
     };
+    playbooks[selectedRole].rulebookDigest = buildRulebookDigest(playbooks[selectedRole].boundaries);
   }
   const guidance = {
     selectedRole,
@@ -297,13 +326,31 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
   };
   const inboxRole = isMessagingRole(source.inboxRole) ? source.inboxRole : selectedRole;
   return {
-    version: 7,
+    version: 10,
     modelId: normalizeWorkspaceModelId(),
     cloudInference: {
-      accessToken: rememberAccessToken && typeof cloudInference.accessToken === "string" ? cloudInference.accessToken.slice(0, 200) : "",
       consentedAt: typeof cloudInference.consentedAt === "string" ? cloudInference.consentedAt.slice(0, 100) : "",
-      rememberAccessToken,
     },
+    cloudRecovery: {
+      enabled: cloudRecovery.enabled === true,
+      revision: typeof cloudRecovery.revision === "number" && Number.isFinite(cloudRecovery.revision) ? Math.max(0, Math.floor(cloudRecovery.revision)) : 0,
+      lastConfirmedDigest: typeof cloudRecovery.lastConfirmedDigest === "string" ? cloudRecovery.lastConfirmedDigest.slice(0, 100) : "",
+      lastConfirmedCiphertextDigest: typeof cloudRecovery.lastConfirmedCiphertextDigest === "string" ? cloudRecovery.lastConfirmedCiphertextDigest.slice(0, 100) : "",
+      lastConfirmedContacts: typeof cloudRecovery.lastConfirmedContacts === "number" && Number.isFinite(cloudRecovery.lastConfirmedContacts) ? Math.max(0, Math.floor(cloudRecovery.lastConfirmedContacts)) : 0,
+      lastConfirmedMessages: typeof cloudRecovery.lastConfirmedMessages === "number" && Number.isFinite(cloudRecovery.lastConfirmedMessages) ? Math.max(0, Math.floor(cloudRecovery.lastConfirmedMessages)) : 0,
+      lastSyncedAt: typeof cloudRecovery.lastSyncedAt === "string" ? cloudRecovery.lastSyncedAt.slice(0, 100) : "",
+    },
+    deletionTombstones: Array.isArray(source.deletionTombstones) ? source.deletionTombstones.slice(-1000).flatMap((raw) => {
+      if (!raw || typeof raw !== "object") return [];
+      const tombstone = raw as Record<string, unknown>;
+      const contactId = typeof tombstone.contactId === "string" ? tombstone.contactId.slice(0, 200) : "";
+      const deletedAt = typeof tombstone.deletedAt === "string" ? tombstone.deletedAt.slice(0, 100) : "";
+      if (!contactId || !deletedAt) return [];
+      const identityHashes = Array.isArray(tombstone.identityHashes)
+        ? Array.from(new Set(tombstone.identityHashes.filter((hash): hash is string => typeof hash === "string").map((hash) => hash.slice(0, 100)).filter(Boolean))).slice(0, 10)
+        : [];
+      return [{ contactId, identityHashes, deletedAt }];
+    }) : [],
     guidance,
     inboxRole,
     contacts: contacts.slice(0, 100).map((raw, index): Contact => {

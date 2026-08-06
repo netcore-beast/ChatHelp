@@ -94,7 +94,7 @@ globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConvers
     "[data-view-name='conversation-header']",
     ".msg-entity-lockup",
   ]);
-  if (!header) return failure("contact_header_not_found", "LinkedIn layout unsupported. ChatHelp could not find the open conversation header.");
+  if (!header) return failure("contact_header_not_found", "LinkedIn layout unsupported. DialogMint could not find the open conversation header.");
 
   // Identity is read and validated before any message node is queried.
   const profileAnchor = firstElement(header, ["a[href*='/in/']", ".msg-thread__link-to-profile"]);
@@ -108,7 +108,7 @@ globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConvers
     "h2",
   ], 300) || profileAnchor?.getAttribute("aria-label") || profileAnchor?.getAttribute("title") || "";
   const name = personName(rawName);
-  if (!name) return failure("contact_name_not_found", "LinkedIn layout unsupported. ChatHelp could not identify the open conversation contact.");
+  if (!name) return failure("contact_name_not_found", "LinkedIn layout unsupported. DialogMint could not identify the open conversation contact.");
 
   const headline = firstText(header, [
     ".msg-entity-lockup__entity-subtitle",

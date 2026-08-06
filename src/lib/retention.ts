@@ -20,5 +20,6 @@ export function applyRetention(workspace: WorkspaceData, now = Date.now()): Work
     })),
     feedback: workspace.feedback.filter((item) => isRetained(item.createdAt, retentionByContact.get(item.contactId) ?? 90, now)),
     aiUsage: (workspace.aiUsage ?? []).filter((item) => isRetained(item.createdAt, retentionByContact.get(item.contactId) ?? 90, now)),
+    deletionTombstones: (workspace.deletionTombstones ?? []).filter((item) => isRetained(item.deletedAt, 90, now)),
   };
 }

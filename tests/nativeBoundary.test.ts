@@ -32,6 +32,20 @@ describe("installable client boundaries", () => {
     expect(worker).not.toContain("localStorage");
   });
 
+  it("enables the Worker database runtime and daily expiry cleanup without embedding credentials", () => {
+    const wrangler = read("wrangler.jsonc");
+    expect(wrangler).toContain('"nodejs_compat"');
+    expect(wrangler).toContain('"crons": ["0 3 * * *"]');
+    expect(wrangler).toContain('"binding": "NEON_TESTING"');
+    expect(wrangler).toContain('"id": "69eb149ad82d40cba7e729279294d521"');
+    expect(wrangler).toContain('"binding": "NEON_PRODUCTION"');
+    expect(wrangler).toContain('"id": "0df56a4e086547eb9e15d1d964556676"');
+    expect(wrangler).toContain('"required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD_TESTING", "ACCESS_AUD_PRODUCTION"]');
+    expect(wrangler).not.toContain("CHATHELP_ACCESS_TOKEN_HASH");
+    expect(wrangler).not.toMatch(/postgres(?:ql)?:\/\//i);
+    expect(wrangler).not.toMatch(/connectionString/i);
+  });
+
   it("hash-authorizes static bootstrap scripts without unsafe-inline", () => {
     const source = "self.__next_f.push(['test'])";
     const hash = createHash("sha256").update(source, "utf8").digest("base64");

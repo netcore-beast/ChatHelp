@@ -48,7 +48,7 @@ function createStatus(kind, code, message, observedContact = null) {
     occurredAt: new Date().toISOString(),
     kind: kind === "success" ? "success" : kind === "error" ? "error" : "info",
     code: String(code || "sync_status").slice(0, 100),
-    message: String(message || "ChatHelp automatic sync status changed.").replace(/\s+/g, " ").trim().slice(0, 1_000),
+    message: String(message || "DialogMint automatic sync status changed.").replace(/\s+/g, " ").trim().slice(0, 1_000),
     observedContact: normalizeObservedContact(observedContact),
   };
 }
@@ -265,7 +265,7 @@ async function reportManualFailure(code, message, observedContact = null) {
 chrome.action.onClicked.addListener(async (tab) => {
   try {
     if (!tab.id || !isLinkedInConversation(tab.url)) {
-      await reportManualFailure("not_linkedin_conversation", "Open a LinkedIn Messaging conversation, then click ChatHelp for a one-time capture.");
+      await reportManualFailure("not_linkedin_conversation", "Open a LinkedIn Messaging conversation, then click DialogMint for a one-time capture.");
       return;
     }
     const results = await chrome.scripting.executeScript({
@@ -275,7 +275,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     });
     const extraction = results[0]?.result;
     if (!extraction?.ok) {
-      await reportManualFailure(extraction?.error?.code || "capture_error", extraction?.error?.message || "ChatHelp could not capture this conversation.", extraction?.error?.observedContact || null);
+      await reportManualFailure(extraction?.error?.code || "capture_error", extraction?.error?.message || "DialogMint could not capture this conversation.", extraction?.error?.observedContact || null);
       return;
     }
     const snapshot = extraction.snapshot;
@@ -284,7 +284,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     await showBadge("OK", "#245f47", status.message);
     await openOrFocusChatHelp(snapshot, status);
   } catch (error) {
-    await reportManualFailure("unexpected_capture_error", error instanceof Error ? error.message : "ChatHelp could not capture this conversation.");
+    await reportManualFailure("unexpected_capture_error", error instanceof Error ? error.message : "DialogMint could not capture this conversation.");
   }
 });
 
@@ -345,7 +345,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const snapshot = message.snapshot;
       const delivered = await sendSnapshotToApp(snapshot);
       if (!delivered) {
-        await showBadge("APP", "#8a6417", "Open ChatHelp to receive synchronized conversations.");
+        await showBadge("APP", "#8a6417", "Open DialogMint to receive synchronized conversations.");
         sendResponse({ ok: false, delivered: false });
         return;
       }
