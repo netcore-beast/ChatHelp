@@ -123,9 +123,10 @@ export async function encryptCloudWorkspace(workspace: WorkspaceData, key: Crypt
   };
 }
 
-function isCloudVaultEnvelope(value: unknown): value is CloudVaultEnvelopeV1 {
+export function isCloudVaultEnvelope(value: unknown): value is CloudVaultEnvelopeV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const item = value as Partial<CloudVaultEnvelopeV1>;
+  if (Object.keys(value).sort().join(",") !== "ciphertext,encryptedBytes,format,iv,savedAt,schemaVersion") return false;
   return item.format === "dialogmint-cloud-v1" && item.schemaVersion === 10 &&
     typeof item.iv === "string" && /^[A-Za-z0-9_-]{16}$/.test(item.iv) &&
     typeof item.ciphertext === "string" && /^[A-Za-z0-9_-]+$/.test(item.ciphertext) &&
