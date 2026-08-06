@@ -11,6 +11,16 @@
   "ai": {
     "binding": "AI"
   },
+  "hyperdrive": [
+    {
+      "binding": "NEON_TESTING",
+      "id": "69eb149ad82d40cba7e729279294d521"
+    },
+    {
+      "binding": "NEON_PRODUCTION",
+      "id": "0df56a4e086547eb9e15d1d964556676"
+    }
+  ],
   "assets": {
     "directory": "./out",
     "binding": "ASSETS",

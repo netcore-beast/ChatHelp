@@ -36,6 +36,10 @@ describe("installable client boundaries", () => {
     const wrangler = read("wrangler.jsonc");
     expect(wrangler).toContain('"nodejs_compat"');
     expect(wrangler).toContain('"crons": ["0 3 * * *"]');
+    expect(wrangler).toContain('"binding": "NEON_TESTING"');
+    expect(wrangler).toContain('"id": "69eb149ad82d40cba7e729279294d521"');
+    expect(wrangler).toContain('"binding": "NEON_PRODUCTION"');
+    expect(wrangler).toContain('"id": "0df56a4e086547eb9e15d1d964556676"');
     expect(wrangler).not.toContain("CHATHELP_ACCESS_TOKEN_HASH");
     expect(wrangler).not.toMatch(/postgres(?:ql)?:\/\//i);
     expect(wrangler).not.toMatch(/connectionString/i);
