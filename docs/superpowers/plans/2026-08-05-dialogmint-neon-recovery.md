@@ -122,7 +122,7 @@ git commit -m "feat: encrypt DialogMint recovery snapshots"
 - Test: `tests/cloudWorkspaceMerge.test.ts`
 
 **Interfaces:**
-- Produces `mergeCloudWorkspaces(local, remote): WorkspaceData`.
+- Produces `mergeCloudWorkspaces(local, remote): Promise<WorkspaceData>` so tombstone identity comparisons use SHA-256 rather than a weak synchronous hash.
 - Produces `deleteContactEverywhere(workspace, contactId, now): Promise<WorkspaceData>`.
 
 - [ ] **Step 1: Write failing merge and tombstone tests**
@@ -421,4 +421,3 @@ After testing passes, deploy the exact version to `chathelp-private-cloud` in Pr
 - [ ] **Step 8: Final read-only verification**
 
 Confirm testing and production health, Access-protected drafts, vault host isolation, CI success, extension boundaries, no plaintext storage, and a clean worktree. State clearly that pre-backup data erased earlier was not recoverable.
-
