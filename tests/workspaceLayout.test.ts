@@ -12,7 +12,7 @@ describe("desktop conversation workspace layout", () => {
     for (const filter of ["Main inbox", "To respond", "Awaiting reply", "Follow-up due", "Snoozed", "New contacts", "Archived"]) {
       expect(app).toContain(`label: "${filter}"`);
     }
-    expect(app).toContain("Generate 3 drafts for {contact.name}");
+    expect(app).toContain('"Generate 3 Drafts"');
     expect(app).toContain("Open LinkedIn to review and paste");
     expect(app).toContain('aria-label="Contact context"');
     for (const excluded of ["Add members", "Export to HubSpot", "Enrich now", "Find business email", "Find phone number"]) {
