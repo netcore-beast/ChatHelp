@@ -165,6 +165,10 @@ function formatError(error: unknown): string {
   return error instanceof Error ? error.message : "Something unexpected happened.";
 }
 
+function isAbortError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
+}
+
 function hasConversationContext(contact: Contact): boolean {
   return contact.chat.length > 0 || contact.documents.some((document) => isConversationCapture(document) && !isLikelyFullLinkedInPageCapture(document));
 }
@@ -316,6 +320,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [drafts, setDrafts] = useState<string[]>(() => latestDraftsForRole(initial.contacts[0], initial.inboxRole));
   const [aiStatus, setAiStatus] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [draftAbortController, setDraftAbortController] = useState<AbortController | null>(null);
   const [draftProgressAvailable, setDraftProgressAvailable] = useState(false);
   const [draftProgressExpanded, setDraftProgressExpanded] = useState(false);
   const [draftStageStatuses, setDraftStageStatuses] = useState<Record<DraftPipelineStage, DraftStageStatus>>({ planning: "pending", drafting: "pending", reviewing: "pending", finalizing: "pending" });
@@ -350,6 +355,8 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const contact = workspace.contacts.find((item) => item.id === selectedId) ?? workspace.contacts[0] ?? null;
 
   useEffect(() => { workspaceRef.current = workspace; }, [workspace]);
+
+  useEffect(() => () => draftAbortController?.abort(), [draftAbortController]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
@@ -929,6 +936,10 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setMessageBody("");
   }
 
+  function stopGenerating() {
+    draftAbortController?.abort();
+  }
+
   async function generate(agendaOverride?: string, contactIdOverride?: string) {
     const activeContact = workspace.contacts.find((item) => item.id === contactIdOverride) ?? contact;
     const draftingRole = workspace.inboxRole;
@@ -950,6 +961,8 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setDraftProgressAvailable(true);
     setDraftProgressExpanded(false);
     setDraftStageStatuses({ planning: "pending", drafting: "pending", reviewing: "pending", finalizing: "pending" });
+    const abortController = new AbortController();
+    setDraftAbortController(abortController);
     let receivedStageEvent = false;
     const handleDraftProgress = (update: DraftProgressUpdate) => {
       if (update.kind === "message") {
@@ -960,7 +973,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       setDraftStageStatuses((current) => ({ ...current, [update.stage]: update.status }));
     };
     try {
-      const nextDrafts = await generatePrivateDrafts(CLOUDFLARE_MODEL_ID, createDraftInput(activeContact, draftingGuidance, requestAgenda, workspace), handleDraftProgress, workspace.cloudInference);
+      const nextDrafts = await generatePrivateDrafts(CLOUDFLARE_MODEL_ID, createDraftInput(activeContact, draftingGuidance, requestAgenda, workspace), handleDraftProgress, workspace.cloudInference, abortController.signal);
       if (!receivedStageEvent) setDraftStageStatuses({ planning: "done", drafting: "done", reviewing: "done", finalizing: "done" });
       if (workspaceRef.current.inboxRole !== draftingRole) {
         setAiStatus("");
@@ -987,6 +1000,12 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       setAiStatus(`Generated and independently reviewed against the full ${draftingRole} rulebook (${draftingGuidance.boundaries.trim().length.toLocaleString()} rule characters) in Cloudflare Workers AI. Nothing was sent to LinkedIn.`);
     } catch (error) {
       setAiStatus("");
+      if (isAbortError(error)) {
+        setDraftError("");
+        setDraftProgressAvailable(false);
+        setDraftProgressExpanded(false);
+        return;
+      }
       setDraftStageStatuses((current) => {
         const stages = Object.keys(current) as DraftPipelineStage[];
         const activeStage = stages.find((stage) => current[stage] === "in-progress") ?? stages.find((stage) => current[stage] === "pending");
@@ -994,6 +1013,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       });
       setDraftError(formatError(error));
     } finally {
+      setDraftAbortController((current) => current === abortController ? null : current);
       setIsGenerating(false);
     }
   }
@@ -1359,7 +1379,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                     <div className="objective-field-label"><label htmlFor="reply-objective">What should your reply accomplish? <span className="field-optional">Optional</span></label><span className="composer-info"><button className="info-button" type="button" aria-label="About the optional reply objective" aria-describedby="objective-description">i</button><span className="composer-tooltip objective-tooltip" id="objective-description" role="tooltip">Leave blank to reply strictly from the existing chat, latest message, and selected-role rules. When provided, the objective is applied together with—not instead of—the conversation and playbook rules.</span></span></div>
                     <div className="prompt-composer">
                       <textarea id="reply-objective" aria-label="What should your reply accomplish?" ref={agendaRef} maxLength={5_000} value={agenda} onChange={(event) => setAgenda(event.target.value.slice(0, 5_000))} placeholder="Optional objective for this reply" />
-                      <div className="prompt-composer-actions">{aiStatus && <span className="status" aria-live="polite">{aiStatus}</span>}<button className={`primary draft-generate-button${isGenerating ? " is-loading" : ""}`} disabled={!conversationReady || !cloudReady || isGenerating || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("processed locally"))} aria-busy={isGenerating} onClick={() => void generate()}>{isGenerating && <span className="draft-button-spinner" aria-hidden="true" />}<span>{isGenerating ? "Generating Drafts" : "Generate 3 Drafts"}</span></button></div>
+                      <div className="prompt-composer-actions">{aiStatus && <span className="status" aria-live="polite">{aiStatus}</span>}<button className={`primary draft-generate-button${isGenerating ? " is-loading" : ""}`} disabled={!isGenerating && (!conversationReady || !cloudReady || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("processed locally")))} aria-label={isGenerating ? "Stop generating drafts" : "Generate 3 Drafts"} title={isGenerating ? "Stop generating drafts" : undefined} aria-busy={isGenerating} onClick={() => isGenerating ? stopGenerating() : void generate()}>{isGenerating ? <span className="draft-processing-symbols" aria-hidden="true"><span className="draft-button-spinner" /><span className="draft-stop-symbol">■</span></span> : <span>Generate 3 Drafts</span>}</button></div>
                     </div>
                   </div>
                   {!cloudReady && <p className="missing-context">Finish Cloudflare draft consent in Settings before generating.</p>}

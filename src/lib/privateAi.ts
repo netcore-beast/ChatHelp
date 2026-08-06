@@ -276,6 +276,7 @@ export async function generateWithCloud(
   config: CloudInferenceSettings | undefined,
   onProgress?: (update: DraftProgressUpdate) => void,
   request: typeof fetch = fetch,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   if (!config?.consentedAt) {
     throw new Error("Confirm the cloud privacy notice before using Cloudflare AI.");
@@ -289,6 +290,7 @@ export async function generateWithCloud(
     // credentials to any third-party origin.
     credentials: "same-origin",
     referrerPolicy: "no-referrer",
+    signal,
     headers: {
       Accept: "text/event-stream, application/json",
       "Content-Type": "application/json",
@@ -406,9 +408,10 @@ export async function generatePrivateDrafts(
   input: PrivateAiInput,
   onProgress?: (update: DraftProgressUpdate) => void,
   cloudConfig?: CloudInferenceSettings,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   if (modelId === CLOUDFLARE_MODEL_ID) {
-    return generateWithCloud(input, cloudConfig, onProgress);
+    return generateWithCloud(input, cloudConfig, onProgress, fetch, signal);
   }
 
   const forceCpu = modelId.startsWith("cpu:");

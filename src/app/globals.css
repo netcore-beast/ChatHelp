@@ -664,8 +664,10 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 .prompt-composer-actions .draft-generate-button { flex: 0 0 auto; padding: .48rem .68rem; font-size: .72rem; }
 .draft-generate-button { min-width: 142px; justify-content: center; transition: transform .2s ease-out, opacity .2s ease-out, background-color .2s ease-out; }
 .draft-generate-button:active:not(:disabled) { transform: scale(.975); }
-.draft-generate-button.is-loading { opacity: .88; }
+.draft-generate-button.is-loading { opacity: .94; cursor: pointer; }
+.draft-processing-symbols { width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: .55rem; }
 .draft-button-spinner { width: .78rem; height: .78rem; flex: 0 0 auto; border: 2px solid rgba(255,255,255,.45); border-top-color: #fff; border-radius: 50%; animation: draft-button-spin .7s linear infinite; }
+.draft-stop-symbol { color: #fff; font-size: .72rem; line-height: 1; animation: draft-stop-pulse 1.15s ease-in-out infinite; }
 .draft-progress-panel { border: 1px solid #d7e1da; border-radius: 8px; background: #f8faf8; }
 .draft-progress-toggle { width: 100%; min-height: 26px; display: flex; align-items: center; justify-content: space-between; gap: .35rem; padding: .24rem .44rem; border: 0; background: transparent; color: var(--green); font-size: .63rem; font-weight: 850; text-align: left; }
 .draft-progress-arrow { display: inline-block; font-size: 1rem; line-height: 1; transform: rotate(0); transform-origin: center; transition: transform .2s ease-out; }
@@ -683,11 +685,13 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 .draft-progress-content li[data-status="error"] .draft-step-icon { border-color: var(--danger); background: var(--danger); }
 .draft-progress-content > p { margin: 0; padding: 0 .44rem .42rem; color: var(--muted); font-size: .61rem; line-height: 1.4; }
 @keyframes draft-button-spin { to { transform: rotate(360deg); } }
+@keyframes draft-stop-pulse { 0%, 100% { opacity: .55; transform: scale(.82); } 50% { opacity: 1; transform: scale(1); } }
 @media (prefers-reduced-motion: reduce) {
   .draft-generate-button,
   .draft-progress-arrow,
   .draft-progress-collapse { transition-duration: .01ms; }
   .draft-button-spinner,
+  .draft-stop-symbol,
   .draft-progress-content li[data-status="in-progress"] .draft-step-icon { animation-duration: 1.5s; }
 }
 .drafting-scroll .draft-stack { margin-top: .6rem; }

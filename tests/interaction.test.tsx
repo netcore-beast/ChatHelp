@@ -298,8 +298,12 @@ describe("secure conversation workspace interaction", () => {
     expect(promptComposer?.querySelector(".prompt-composer-actions")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Generate 3 Drafts" }));
-    const loadingButton = screen.getByRole("button", { name: "Generating Drafts" });
-    expect((loadingButton as HTMLButtonElement).disabled).toBe(true);
+    const stopButton = screen.getByRole("button", { name: "Stop generating drafts" });
+    expect((stopButton as HTMLButtonElement).disabled).toBe(false);
+    expect(stopButton.getAttribute("aria-busy")).toBe("true");
+    expect(stopButton.querySelector(".draft-button-spinner")).toBeTruthy();
+    expect(stopButton.querySelector(".draft-stop-symbol")).toBeTruthy();
+    expect(stopButton.textContent).not.toContain("Generating");
     const progressToggle = screen.getByRole("button", { name: "Show AI steps" });
     expect(progressToggle.getAttribute("aria-expanded")).toBe("false");
     await user.click(progressToggle);
@@ -316,6 +320,39 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.getByRole("button", { name: "Hide AI steps" }).getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText("Finalizing drafts").closest("li")?.dataset.status).toBe("done");
     expect(screen.getByLabelText("Edit draft 1")).toBeTruthy();
+  }, 20_000);
+
+  it("lets the user stop an in-flight draft request from the animated symbol control", async () => {
+    let requestSignal: AbortSignal | undefined;
+    const request = vi.fn().mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestSignal = init?.signal ?? undefined;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          requestSignal?.addEventListener("abort", () => controller.error(new DOMException("Stopped", "AbortError")), { once: true });
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream; charset=utf-8" } });
+    });
+    vi.stubGlobal("fetch", request);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await announceExtension();
+    await deliverSnapshot();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
+    await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
+
+    await user.click(screen.getByRole("button", { name: "Generate 3 Drafts" }));
+    const stopButton = screen.getByRole("button", { name: "Stop generating drafts" });
+    expect(stopButton.textContent).not.toContain("Generating");
+    await user.click(stopButton);
+
+    await waitFor(() => expect(requestSignal?.aborted).toBe(true));
+    expect(await screen.findByRole("button", { name: "Generate 3 Drafts" })).toBeTruthy();
+    expect(screen.queryByText("Drafts were not generated.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show AI steps" })).toBeNull();
   }, 20_000);
 
   it("uploads, combines, saves, and downloads the selected role's rules document", async () => {
