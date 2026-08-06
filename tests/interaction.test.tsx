@@ -130,12 +130,12 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     expect(await within(screen.getByRole("navigation", { name: "Conversations" })).findByRole("button", { name: "Open conversation with Alex Morgan" })).toBeTruthy();
     expect(screen.getByLabelText("Conversation with Alex Morgan")).toBeTruthy();
-    await waitFor(() => expect(document.querySelector(".save-state")?.textContent).toContain("Encrypted"), { timeout: 3000 });
+    await waitFor(async () => expect((await openDeviceVault()).workspace.contacts.some((contact) => contact.name === "Alex Morgan")).toBe(true), { timeout: 3000 });
 
     firstRender.unmount();
     render(<ChatHelpApp />);
     await screen.findByRole("heading", { name: /private conversation studio/i });
-    expect(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Alex Morgan" })).toBeTruthy();
+    expect(await within(screen.getByRole("navigation", { name: "Conversations" })).findByRole("button", { name: "Open conversation with Alex Morgan" })).toBeTruthy();
     expect(screen.queryByLabelText("Passphrase")).toBeNull();
   }, 20_000);
 
@@ -234,7 +234,7 @@ describe("secure conversation workspace interaction", () => {
     expect(await screen.findByLabelText("Conversation with Taylor Lee")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.type(screen.getByLabelText(/Cloud access code/), "not-a-secret-test-placeholder");
+    expect(screen.queryByLabelText(/Cloud access code/)).toBeNull();
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
@@ -331,7 +331,7 @@ describe("secure conversation workspace interaction", () => {
       "- Always answer the newest message.",
       "- Never invent facts.",
     ].join("\n"));
-    await user.type(screen.getByLabelText(/Cloud access code/), "not-a-secret-test-placeholder");
+    expect(screen.queryByLabelText(/Cloud access code/)).toBeNull();
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
 
     await user.click(screen.getByRole("button", { name: "Inbox" }));
@@ -387,7 +387,7 @@ describe("secure conversation workspace interaction", () => {
     await announceExtension();
     await deliverSnapshot();
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.type(screen.getByLabelText(/Cloud access code/), "not-a-secret-test-placeholder");
+    expect(screen.queryByLabelText(/Cloud access code/)).toBeNull();
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));

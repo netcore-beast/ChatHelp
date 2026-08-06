@@ -1,3 +1,5 @@
+import { authenticateAccessRequest } from "./accessAuth.js";
+
 export const LLAMA_CANDIDATE_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 export const GPT_REVIEW_MODEL = "@cf/openai/gpt-oss-120b";
 export const WORKERS_AI_MODEL = "auto:llama-3.1-8b+gpt-oss-120b";
@@ -25,24 +27,6 @@ function json(body, status = 200, extraHeaders = {}) {
     status,
     headers: { ...RESPONSE_HEADERS, ...extraHeaders },
   });
-}
-
-export async function sha256Hex(value) {
-  const bytes = new TextEncoder().encode(value);
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function constantTimeEqual(left, right) {
-  if (typeof left !== "string" || typeof right !== "string" || left.length !== right.length) return false;
-  let difference = 0;
-  for (let index = 0; index < left.length; index += 1) difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
-  return difference === 0;
-}
-
-function bearerToken(request) {
-  const match = request.headers.get("Authorization")?.match(/^Bearer\s+([^\s]+)$/i);
-  return match?.[1] ?? "";
 }
 
 function limitedText(value, maxCharacters) {
@@ -248,7 +232,7 @@ function objectiveBlock(replyObjective) {
   return `<reply_objective>\n${escapedBlockText(policy)}\n</reply_objective>`;
 }
 
-export async function handleRequest(request, env) {
+export async function handleRequest(request, env, options = {}) {
   const url = new URL(request.url);
 
   if (request.method === "GET" && url.pathname === "/health") {
@@ -271,11 +255,14 @@ export async function handleRequest(request, env) {
   const origin = request.headers.get("Origin");
   if (origin && origin !== url.origin) return json({ error: "Cross-origin requests are not allowed." }, 403);
 
-  const expectedHash = String(env.CHATHELP_ACCESS_TOKEN_HASH ?? "");
-  const token = bearerToken(request);
-  if (!expectedHash || !token || !constantTimeEqual(await sha256Hex(token), expectedHash)) return json({ error: "Invalid ChatHelp access code." }, 401);
+  let identity;
+  try {
+    identity = await authenticateAccessRequest(request, env, url.hostname, options.verifyAccess);
+  } catch {
+    return json({ error: "DialogMint authentication is required." }, 401);
+  }
 
-  const rate = await env.DRAFT_RATE_LIMITER.limit({ key: expectedHash.slice(0, 32) });
+  const rate = await env.DRAFT_RATE_LIMITER.limit({ key: identity.accountId });
   if (!rate.success) return json({ error: "Draft limit reached. Wait one minute and try again." }, 429, { "Retry-After": "60" });
 
   if (!request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) return json({ error: "Expected a JSON request." }, 415);

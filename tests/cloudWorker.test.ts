@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { GPT_REVIEW_MODEL, LLAMA_CANDIDATE_MODEL, handleRequest, sha256Hex, WORKERS_AI_MODEL } from "../cloudflare/worker/src/index.js";
+import { GPT_REVIEW_MODEL, LLAMA_CANDIDATE_MODEL, handleRequest, WORKERS_AI_MODEL } from "../cloudflare/worker/src/index.js";
 
-const ACCESS_CODE = "test-access-code-with-more-than-twenty-characters";
+const TESTING_HOST = "testing-chathelp-private-cloud.project-mission-ai.workers.dev";
+const TESTING_ORIGIN = `https://${TESTING_HOST}`;
+const SYNTHETIC_ASSERTION = "synthetic.assertion.value";
 const PLAYBOOK_PLAN = {
   objective: "Continue the actual conversation while building trust.",
   conversationStage: "The contact shared an adjacent professional interest.",
@@ -48,7 +50,9 @@ function structuredPayload(overrides: Record<string, unknown> = {}) {
 async function workerEnv() {
   let gptCalls = 0;
   return {
-    CHATHELP_ACCESS_TOKEN_HASH: await sha256Hex(ACCESS_CODE),
+    ACCESS_TEAM_DOMAIN: "https://dialogmint.cloudflareaccess.com",
+    ACCESS_AUD_TESTING: "testing-audience",
+    ACCESS_AUD_PRODUCTION: "production-audience",
     DRAFT_RATE_LIMITER: {
       limit: vi.fn().mockResolvedValue({ success: true }),
     },
@@ -62,11 +66,24 @@ async function workerEnv() {
   };
 }
 
-function draftRequest(body: unknown, origin = "https://chathelp.example") {
-  return new Request("https://chathelp.example/api/drafts", {
+const verifyAccess = vi.fn(async (_assertion: string, options: { issuer: string; audience: string }) => ({
+  payload: {
+    iss: options.issuer,
+    aud: [options.audience],
+    sub: "synthetic-subject",
+    exp: 2_000_000_000,
+  },
+}));
+
+function runWorker(request: Request, env: Awaited<ReturnType<typeof workerEnv>>) {
+  return handleRequest(request, env, { verifyAccess });
+}
+
+function draftRequest(body: unknown, origin = TESTING_ORIGIN) {
+  return new Request(`${TESTING_ORIGIN}/api/drafts`, {
     method: "POST",
     headers: {
-      Authorization: "Bearer " + ACCESS_CODE,
+      "Cf-Access-Jwt-Assertion": SYNTHETIC_ASSERTION,
       "Content-Type": "application/json",
       Origin: origin,
     },
@@ -76,7 +93,7 @@ function draftRequest(body: unknown, origin = "https://chathelp.example") {
 
 describe("Cloudflare private inference Worker", () => {
   it("reports the storage-free three-stage model boundary", async () => {
-    const response = await handleRequest(new Request("https://chathelp.example/health"), await workerEnv());
+    const response = await runWorker(new Request(`${TESTING_ORIGIN}/health`), await workerEnv());
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
@@ -92,20 +109,21 @@ describe("Cloudflare private inference Worker", () => {
 
   it("rejects unauthenticated requests before rate limiting or inference", async () => {
     const env = await workerEnv();
-    const response = await handleRequest(new Request("https://chathelp.example/api/drafts", {
+    const response = await runWorker(new Request(`${TESTING_ORIGIN}/api/drafts`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "Cf-Access-Authenticated-User-Email": "ignored@example.test" },
       body: JSON.stringify(structuredPayload()),
     }), env);
 
     expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ error: "DialogMint authentication is required." });
     expect(env.AI.run).not.toHaveBeenCalled();
     expect(env.DRAFT_RATE_LIMITER.limit).not.toHaveBeenCalled();
   });
 
   it("routes digest-only planning, full-rulebook writing, and full-rulebook review as three isolated calls", async () => {
     const env = await workerEnv();
-    const response = await handleRequest(draftRequest(structuredPayload()), env);
+    const response = await runWorker(draftRequest(structuredPayload()), env);
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
@@ -115,6 +133,7 @@ describe("Cloudflare private inference Worker", () => {
       mode: "rulebook-plan-write-review",
     });
     expect(env.DRAFT_RATE_LIMITER.limit).toHaveBeenCalledTimes(1);
+    expect(env.DRAFT_RATE_LIMITER.limit).toHaveBeenCalledWith({ key: expect.stringMatching(/^[a-f0-9]{64}$/) });
     expect(env.AI.run).toHaveBeenCalledTimes(3);
 
     const [plannerModel, plannerInput] = env.AI.run.mock.calls[0];
@@ -133,12 +152,12 @@ describe("Cloudflare private inference Worker", () => {
     expect(plannerInput.response_format.type).toBe("json_schema");
     expect(writerInput.response_format.type).toBe("json_schema");
     expect(reviewerInput.response_format.type).toBe("json_schema");
-    expect(JSON.stringify(env.AI.run.mock.calls)).not.toContain(ACCESS_CODE);
+    expect(JSON.stringify(env.AI.run.mock.calls)).not.toContain(SYNTHETIC_ASSERTION);
   });
 
   it("keeps an optional objective additive and out of system instructions", async () => {
     const env = await workerEnv();
-    const response = await handleRequest(draftRequest(structuredPayload({ replyObjective: "Ask when applications close" })), env);
+    const response = await runWorker(draftRequest(structuredPayload({ replyObjective: "Ask when applications close" })), env);
 
     expect(response.status).toBe(200);
     for (const [, input] of env.AI.run.mock.calls) {
@@ -150,7 +169,7 @@ describe("Cloudflare private inference Worker", () => {
 
   it("supports the previous prompt and replyRules request during rollout", async () => {
     const env = await workerEnv();
-    const response = await handleRequest(draftRequest({
+    const response = await runWorker(draftRequest({
       prompt: "Alex: Can you share more?",
       playbook: { role: "Job Seeker", relationshipGoal: "Learn about the role", voice: "Concise", replyRules: "No invented experience" },
       replyObjective: "",
@@ -171,7 +190,7 @@ describe("Cloudflare private inference Worker", () => {
       .mockResolvedValueOnce({ response: "not reviewer json" })
       .mockResolvedValueOnce({ response: REVIEWED_DRAFTS });
 
-    const response = await handleRequest(draftRequest(structuredPayload()), env);
+    const response = await runWorker(draftRequest(structuredPayload()), env);
     expect(response.status).toBe(200);
     expect(env.AI.run).toHaveBeenCalledTimes(6);
     expect(env.AI.run.mock.calls[0][1].response_format.type).toBe("json_schema");
@@ -189,7 +208,7 @@ describe("Cloudflare private inference Worker", () => {
       .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(WRITER_DRAFTS), role: "assistant" }, finish_reason: "stop" }] })
       .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(REVIEWED_DRAFTS), role: "assistant" }, finish_reason: "stop" }] });
 
-    const response = await handleRequest(draftRequest(structuredPayload()), env);
+    const response = await runWorker(draftRequest(structuredPayload()), env);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ drafts: ["Reviewed reply one", "Reviewed reply two", "Reviewed reply three"] });
   });
@@ -207,7 +226,7 @@ describe("Cloudflare private inference Worker", () => {
       .mockResolvedValueOnce({ response: questionDrafts })
       .mockResolvedValueOnce({ response: REVIEWED_DRAFTS });
 
-    const response = await handleRequest(draftRequest(structuredPayload()), env);
+    const response = await runWorker(draftRequest(structuredPayload()), env);
     expect(response.status).toBe(200);
     expect(env.AI.run).toHaveBeenCalledTimes(4);
     expect(env.AI.run.mock.calls[3][1].messages[1].content).toContain("overused follow-up questions");
@@ -222,14 +241,14 @@ describe("Cloudflare private inference Worker", () => {
     ] };
     env.AI.run.mockResolvedValueOnce({ response: PLAYBOOK_PLAN }).mockResolvedValue({ response: invented });
 
-    const response = await handleRequest(draftRequest(structuredPayload()), env);
+    const response = await runWorker(draftRequest(structuredPayload()), env);
     expect(response.status).toBe(502);
     await expect(response.json()).resolves.toEqual({ error: "Cloud AI could not produce three safe drafts. Please try again." });
   });
 
-  it("blocks cross-origin requests even with a valid access code", async () => {
+  it("blocks cross-origin requests even with a valid Access assertion", async () => {
     const env = await workerEnv();
-    const response = await handleRequest(draftRequest(structuredPayload(), "https://attacker.example"), env);
+    const response = await runWorker(draftRequest(structuredPayload(), "https://attacker.example"), env);
     expect(response.status).toBe(403);
     expect(env.AI.run).not.toHaveBeenCalled();
   });

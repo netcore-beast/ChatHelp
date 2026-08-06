@@ -36,9 +36,7 @@ describe("cloud AI client boundary", () => {
   it("requires explicit consent before making a network request", async () => {
     const request = vi.fn();
     await expect(generateWithCloud(input(), {
-      accessToken: "a-valid-access-token-with-enough-length",
       consentedAt: "",
-      rememberAccessToken: false,
     }, undefined, request as unknown as typeof fetch)).rejects.toThrow(/Confirm the cloud privacy notice/);
     expect(request).not.toHaveBeenCalled();
   });
@@ -47,12 +45,8 @@ describe("cloud AI client boundary", () => {
     const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       drafts: ["Draft one", "Draft two", "Draft three"],
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
-    const accessToken = "a-valid-access-token-with-enough-length";
-
     await expect(generateWithCloud(input(), {
-      accessToken,
       consentedAt: "2026-08-01T00:00:00.000Z",
-      rememberAccessToken: false,
     }, undefined, request as unknown as typeof fetch)).resolves.toEqual(["Draft one", "Draft two", "Draft three"]);
 
     expect(request).toHaveBeenCalledTimes(1);
@@ -60,7 +54,7 @@ describe("cloud AI client boundary", () => {
     expect(url).toBe("/api/drafts");
     expect(init.credentials).toBe("same-origin");
     expect(init.cache).toBe("no-store");
-    expect(init.headers.Authorization).toBe("Bearer " + accessToken);
+    expect(init.headers.Authorization).toBeUndefined();
     const body = JSON.parse(init.body);
     expect(Object.keys(body)).toEqual(["conversationContext", "playbook", "replyObjective"]);
     expect(body.conversationContext).toContain("<conversation_context>");
@@ -74,20 +68,17 @@ describe("cloud AI client boundary", () => {
       rulebookDigest: "- No pressure",
     });
     expect(body.replyObjective).toBe("Answer Alex and suggest two times.");
-    expect(body.conversationContext).not.toContain(accessToken);
     expect(body.conversationContext.length).toBeLessThanOrEqual(MAX_CLOUD_PROMPT_CHARS);
   });
 
   it("surfaces the Worker's safe error message", async () => {
     const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      error: "Invalid ChatHelp access code.",
+      error: "DialogMint authentication is required.",
     }), { status: 401, headers: { "Content-Type": "application/json" } }));
 
     await expect(generateWithCloud(input(), {
-      accessToken: "an-invalid-access-token-with-enough-length",
       consentedAt: "2026-08-01T00:00:00.000Z",
-      rememberAccessToken: false,
-    }, undefined, request as unknown as typeof fetch)).rejects.toThrow("Invalid ChatHelp access code.");
+    }, undefined, request as unknown as typeof fetch)).rejects.toThrow("DialogMint authentication is required.");
   });
 
   it("explains when Cloudflare Access returns a sign-in page instead of Worker JSON", async () => {
@@ -97,9 +88,7 @@ describe("cloud AI client boundary", () => {
     }));
 
     await expect(generateWithCloud(input(), {
-      accessToken: "a-valid-access-token-with-enough-length",
       consentedAt: "2026-08-01T00:00:00.000Z",
-      rememberAccessToken: false,
     }, undefined, request as unknown as typeof fetch)).rejects.toThrow(/Cloudflare sign-in session could not be verified/);
   });
 

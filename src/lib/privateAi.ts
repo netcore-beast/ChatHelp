@@ -279,10 +279,6 @@ export async function generateWithCloud(
   if (!config?.consentedAt) {
     throw new Error("Confirm the cloud privacy notice before using Cloudflare AI.");
   }
-  const accessToken = config.accessToken.trim();
-  if (accessToken.length < 20) {
-    throw new Error("Enter the ChatHelp cloud access code. It is encrypted inside your vault.");
-  }
 
   onProgress?.("Llama is planning from the rulebook digest. GPT-OSS will write three replies, then independently review each one against the full rulebook...");
   const response = await request(cloudDraftEndpoint(), {
@@ -295,7 +291,6 @@ export async function generateWithCloud(
     referrerPolicy: "no-referrer",
     headers: {
       Accept: "application/json",
-      Authorization: "Bearer " + accessToken,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(buildCloudDraftRequest(input)),
