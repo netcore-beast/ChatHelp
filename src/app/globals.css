@@ -630,46 +630,50 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 .import-fallback .capture-recommendation { grid-template-columns: 1fr; padding: .7rem; }
 .import-fallback textarea { min-height: 100px; }
 
-.composer-card { display: grid; gap: .36rem; padding: .52rem; border: 1px solid #bcd5c5; border-radius: 12px; background: #fff; box-shadow: 0 6px 18px rgba(22,45,33,.045); }
-.composer-heading { justify-content: space-between; gap: .7rem; }
+.composer-card { display: grid; gap: .28rem; padding: .42rem; border: 1px solid #bcd5c5; border-radius: 12px; background: #fff; box-shadow: 0 6px 18px rgba(22,45,33,.045); }
+.composer-heading { justify-content: space-between; gap: .55rem; }
 .composer-heading .eyebrow { margin-bottom: .08rem; font-size: .58rem; }
 .composer-heading h3 { margin: 0; font-size: .9rem; }
 .composer-heading > span { color: var(--green); font-size: .61rem; font-weight: 800; }
 .composer-card textarea { min-height: 40px; padding: .45rem .55rem; font-size: .76rem; line-height: 1.42; resize: vertical; }
-.draft-playbook-control { display: grid; grid-template-columns: minmax(170px, 210px) minmax(0, 1fr); align-items: end; gap: .5rem; }
-.draft-role-select { display: grid; align-content: start; gap: .22rem; margin: 0; }
+.draft-playbook-control { display: grid; grid-template-columns: minmax(170px, 210px) minmax(0, 1fr); align-items: end; gap: .4rem; }
+.draft-role-select { display: grid; align-content: start; gap: .16rem; margin: 0; }
 .draft-role-select > span { color: var(--muted); font-size: .64rem; font-weight: 800; }
-.draft-role-select select { min-width: 0; padding: .48rem .55rem; font-size: .7rem; }
-.active-playbook-summary { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: .4rem; padding: .42rem .5rem; border: 1px solid #c9ded1; border-radius: 9px; background: #f2faf5; }
+.draft-role-select select { min-width: 0; padding: .4rem .5rem; font-size: .7rem; }
+.active-playbook-summary { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: .35rem; padding: .34rem .45rem; border: 1px solid #c9ded1; border-radius: 9px; background: #f2faf5; }
 .active-playbook-summary strong { overflow: hidden; color: var(--green); font-size: .67rem; text-overflow: ellipsis; white-space: nowrap; }
 .draft-context-inspector { border: 1px solid #d7e1da; border-radius: 8px; background: #f8faf8; }
-.draft-context-inspector summary { padding: .35rem .5rem; color: var(--green); cursor: pointer; font-size: .63rem; font-weight: 850; }
-.draft-context-inspector > div { display: flex; flex-wrap: wrap; gap: .3rem; padding: 0 .5rem .48rem; }
+.draft-context-inspector summary { padding: .29rem .45rem; color: var(--green); cursor: pointer; font-size: .63rem; font-weight: 850; }
+.draft-context-inspector > div { display: flex; flex-wrap: wrap; gap: .26rem; padding: 0 .45rem .4rem; }
 .draft-context-inspector > div span { padding: .2rem .34rem; border-radius: 6px; background: #fff; color: #49564e; font-size: .6rem; line-height: 1.35; }
 .composer-info { position: relative; display: inline-grid; vertical-align: middle; }
 .composer-tooltip { position: absolute; left: auto; right: -6px; top: calc(100% + 7px); z-index: 20; width: min(300px, calc(100vw - 2rem)); padding: .55rem .62rem; border: 1px solid #c7d7cc; border-radius: 9px; background: #fff; color: #33453b; box-shadow: 0 8px 24px rgba(17,45,30,.14); font-size: .65rem; font-weight: 500; letter-spacing: normal; line-height: 1.42; opacity: 0; pointer-events: none; transform: translateY(-3px); transition: opacity .12s ease, transform .12s ease; }
 .composer-info:hover .composer-tooltip,
 .composer-info:focus-within .composer-tooltip { opacity: 1; transform: translateY(0); }
-.objective-field { display: grid; gap: .2rem; margin: 0; font-size: .68rem; }
-.objective-field > span { display: flex; align-items: center; gap: .2rem; }
+.objective-field { display: grid; gap: .14rem; margin: 0; font-size: .68rem; }
+.objective-field-label { display: flex; align-items: center; gap: .2rem; }
+.objective-field-label > label { display: flex; align-items: center; gap: .2rem; min-width: 0; font-size: .68rem; }
 .objective-tooltip { left: 0; right: auto; }
 .field-optional { display: inline-block; margin-left: .35rem; padding: .15rem .38rem; border-radius: 999px; background: #eef3ef; color: var(--muted); font-size: .6rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; vertical-align: middle; }
-.generate-row { display: flex; align-items: center; gap: .5rem; }
-.generate-row .primary { flex: 0 0 auto; }
-.generate-row .primary { padding: .52rem .7rem; font-size: .72rem; }
-.generate-row .status { flex: 1; padding: .42rem .55rem; font-size: .68rem; }
+.prompt-composer { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.prompt-composer textarea { width: 100%; height: 42px; min-height: 34px; padding: .38rem .5rem .2rem; border: 0; border-radius: 0; box-shadow: none; resize: vertical; }
+.prompt-composer textarea:focus { border-color: transparent; outline: 0; box-shadow: none; }
+.prompt-composer:focus-within { outline: 3px solid rgba(20, 92, 62, .34); outline-offset: 1px; }
+.prompt-composer-actions { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: .4rem; padding: .16rem .26rem .26rem; }
+.prompt-composer-actions .status { min-width: 0; flex: 1; padding: .28rem .4rem; font-size: .68rem; }
+.prompt-composer-actions .draft-generate-button { flex: 0 0 auto; padding: .48rem .68rem; font-size: .72rem; }
 .draft-generate-button { min-width: 142px; justify-content: center; transition: transform .2s ease-out, opacity .2s ease-out, background-color .2s ease-out; }
 .draft-generate-button:active:not(:disabled) { transform: scale(.975); }
 .draft-generate-button.is-loading { opacity: .88; }
 .draft-button-spinner { width: .78rem; height: .78rem; flex: 0 0 auto; border: 2px solid rgba(255,255,255,.45); border-top-color: #fff; border-radius: 50%; animation: draft-button-spin .7s linear infinite; }
 .draft-progress-panel { border: 1px solid #d7e1da; border-radius: 8px; background: #f8faf8; }
-.draft-progress-toggle { width: 100%; min-height: 28px; display: flex; align-items: center; justify-content: space-between; gap: .4rem; padding: .3rem .48rem; border: 0; background: transparent; color: var(--green); font-size: .63rem; font-weight: 850; text-align: left; }
+.draft-progress-toggle { width: 100%; min-height: 26px; display: flex; align-items: center; justify-content: space-between; gap: .35rem; padding: .24rem .44rem; border: 0; background: transparent; color: var(--green); font-size: .63rem; font-weight: 850; text-align: left; }
 .draft-progress-arrow { display: inline-block; font-size: 1rem; line-height: 1; transform: rotate(0); transform-origin: center; transition: transform .2s ease-out; }
 .draft-progress-toggle[aria-expanded="true"] .draft-progress-arrow { transform: rotate(90deg); }
 .draft-progress-collapse { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .2s ease-out; }
 .draft-progress-collapse[data-expanded="true"] { grid-template-rows: 1fr; }
 .draft-progress-content { min-height: 0; overflow: hidden; }
-.draft-progress-content ol { display: grid; gap: .25rem; margin: 0; padding: 0 .5rem .48rem; list-style: none; }
+.draft-progress-content ol { display: grid; gap: .22rem; margin: 0; padding: 0 .44rem .4rem; list-style: none; }
 .draft-progress-content li { display: grid; grid-template-columns: .72rem minmax(0, 1fr); align-items: center; gap: .35rem; color: var(--muted); font-size: .62rem; line-height: 1.35; }
 .draft-step-icon { width: .55rem; height: .55rem; border: 1.5px solid #b6c1ba; border-radius: 50%; }
 .draft-progress-content li[data-status="in-progress"] { color: var(--green); font-weight: 750; }
@@ -677,7 +681,7 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 .draft-progress-content li[data-status="done"] .draft-step-icon { border-color: var(--green); background: var(--green); box-shadow: inset 0 0 0 2px #fff; }
 .draft-progress-content li[data-status="error"] { color: var(--danger); }
 .draft-progress-content li[data-status="error"] .draft-step-icon { border-color: var(--danger); background: var(--danger); }
-.draft-progress-content > p { margin: 0; padding: 0 .5rem .5rem; color: var(--muted); font-size: .61rem; line-height: 1.4; }
+.draft-progress-content > p { margin: 0; padding: 0 .44rem .42rem; color: var(--muted); font-size: .61rem; line-height: 1.4; }
 @keyframes draft-button-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .draft-generate-button,
@@ -791,10 +795,19 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
   .drafting-scroll { padding: .7rem .7rem 1.5rem; }
   .message-thread .bubble { max-width: 90%; }
   .draft-playbook-control { grid-template-columns: 1fr; }
-  .generate-row { align-items: stretch; flex-direction: column; }
-  .generate-row .primary { width: 100%; }
   .draft-card > div { align-items: stretch; flex-direction: column; }
   .pipeline-view-column { min-height: calc(100vh - 122px); }
   .pipeline-view-column .pipeline-board { grid-auto-columns: minmax(210px, 82vw); }
   footer { display: none; }
+}
+
+@media (max-width: 360px) {
+  .composer-card { padding: .36rem; }
+  .composer-heading { align-items: flex-start; }
+  .composer-heading > span { max-width: 9rem; text-align: right; }
+  .draft-playbook-control { grid-template-columns: minmax(0, 1fr); }
+  .objective-field-label { align-items: flex-start; }
+  .prompt-composer-actions { flex-wrap: wrap; }
+  .prompt-composer-actions .status { flex-basis: 100%; }
+  .prompt-composer-actions .draft-generate-button { width: 100%; }
 }
