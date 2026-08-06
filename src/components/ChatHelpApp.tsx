@@ -494,12 +494,8 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
 
   function updateWorkspace(updater: (current: WorkspaceData) => WorkspaceData) {
     setSaveStatus("Unsaved changes");
-    if (workspaceRef.current.cloudRecovery.enabled) setCloudSyncState(baseCloudSyncState("pending", workspaceRef.current.cloudRecovery.revision));
-    setWorkspace((current) => {
-      const next = updater(current);
-      workspaceRef.current = next;
-      return next;
-    });
+    if (workspace.cloudRecovery.enabled) setCloudSyncState(baseCloudSyncState("pending", workspace.cloudRecovery.revision));
+    setWorkspace(updater);
   }
 
   function setActiveContactId(contactId: string) {
