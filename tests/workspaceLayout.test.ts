@@ -15,6 +15,10 @@ describe("desktop conversation workspace layout", () => {
     expect(app).toContain('"Generate 3 Drafts"');
     expect(app).toContain("Open LinkedIn to review and paste");
     expect(app).toContain('aria-label="Contact context"');
+    expect(styles).toContain(".prompt-composer");
+    expect(styles).toContain(".prompt-composer-actions");
+    expect(styles).toContain("@media (max-width: 360px)");
+    expect(styles).toMatch(/\.prompt-composer-actions\s+\.draft-generate-button\s*\{[^}]*width:\s*100%/s);
     for (const excluded of ["Add members", "Export to HubSpot", "Enrich now", "Find business email", "Find phone number"]) {
       expect(app).not.toContain(excluded);
     }

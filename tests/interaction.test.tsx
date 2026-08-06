@@ -291,6 +291,12 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
 
+    const objective = screen.getByRole("textbox", { name: "What should your reply accomplish?" });
+    const promptComposer = objective.closest(".prompt-composer");
+    expect(promptComposer).toBeTruthy();
+    expect(within(promptComposer as HTMLElement).getByRole("button", { name: "Generate 3 Drafts" })).toBeTruthy();
+    expect(promptComposer?.querySelector(".prompt-composer-actions")).toBeTruthy();
+
     await user.click(screen.getByRole("button", { name: "Generate 3 Drafts" }));
     const loadingButton = screen.getByRole("button", { name: "Generating Drafts" });
     expect((loadingButton as HTMLButtonElement).disabled).toBe(true);
