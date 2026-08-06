@@ -8,6 +8,10 @@ import { buildDraftContextSummary, CLOUDFLARE_MODEL_NAME, generatePrivateDrafts,
 import { deriveConversationState, sortPinnedThenRecent } from "@/lib/conversationState";
 import { PLATFORM_OPTIONS, safePlatformUrl } from "@/lib/platforms";
 import { createRulesDocumentDownload, mergeRulesDocument } from "@/lib/rulesDocument";
+import { createCloudSafeWorkspace, createRecoveryBundle, decryptCloudWorkspace, encryptCloudWorkspace, importRecoveryKey, parseRecoveryBundle, serializeRecoveryBundle, summarizeCloudBackup, type CloudEnvironment } from "@/lib/cloudRecovery";
+import { deleteCloudVault, readCloudVault } from "@/lib/cloudRecoveryClient";
+import { synchronizeCloudWorkspace, type CloudSyncState } from "@/lib/cloudRecoverySync";
+import { deleteContactEverywhere, mergeCloudWorkspaces } from "@/lib/cloudWorkspaceMerge";
 import {
   LINKEDIN_EXTENSION_SOURCE,
   LINKEDIN_EXTENSION_STATUS_ACK_EVENT,
@@ -39,8 +43,11 @@ import {
   eraseVault,
   getVaultMode,
   migrateLegacyVault,
+  openCloudRecoveryKey,
   openDeviceVault,
   parseLegacyWorkspace,
+  removeCloudRecoveryKey,
+  saveCloudRecoveryKey,
   saveVault,
   type VaultSession,
 } from "@/lib/secureVault";
@@ -64,6 +71,7 @@ import {
 
 const LEGACY_KEY = "chathelp-private-v2";
 const STORAGE_CHECK_TIMEOUT_MS = 8_000;
+const TESTING_WORKER_HOST = "testing-chathelp-private-cloud.project-mission-ai.workers.dev";
 type InboxView = "inbox" | "contacts" | "pipeline" | "reminders" | "labels" | "archived" | "settings";
 type InboxFilter = "main" | "to-respond" | "awaiting-reply" | "follow-up-due" | "snoozed" | "new-contacts" | "archived";
 const NAV_ITEMS: ReadonlyArray<{ value: InboxView; label: string; glyph: string }> = [
@@ -84,6 +92,29 @@ const INBOX_FILTERS: ReadonlyArray<{ value: InboxFilter; label: string }> = [
   { value: "new-contacts", label: "New contacts" },
   { value: "archived", label: "Archived" },
 ];
+
+function browserCloudEnvironment(): CloudEnvironment {
+  const configured = process.env.NEXT_PUBLIC_CHATHELP_CLOUD_AI_URL ?? "";
+  if (configured.includes(TESTING_WORKER_HOST) || window.location.hostname === TESTING_WORKER_HOST || window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") return "testing";
+  return "production";
+}
+
+function baseCloudSyncState(status: CloudSyncState["status"], revision = 0): CloudSyncState {
+  return { status, contactCount: 0, messageCount: 0, revision, logicalDigest: "" };
+}
+
+function cloudBackupLabel(state: CloudSyncState): string {
+  if (state.status === "synced") return `All ${state.contactCount} conversations backed up · ${state.messageCount} messages`;
+  if (state.status === "off") return "Encrypted backup off";
+  if (state.status === "preparing") return "Preparing encrypted backup";
+  if (state.status === "pending") return "Encrypted backup pending";
+  if (state.status === "encrypting") return "Encrypting workspace for backup";
+  if (state.status === "syncing") return "Syncing encrypted backup";
+  if (state.status === "restoring") return "Restoring encrypted backup";
+  if (state.status === "expired") return "Encrypted backup expired";
+  if (state.status === "deleted") return "Encrypted cloud backup deleted";
+  return "Encrypted backup needs attention";
+}
 
 function toDateTimeLocal(value: string | undefined): string {
   if (!value) return "";
@@ -274,6 +305,8 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [captureEnvironment, setCaptureEnvironment] = useState({ detected: false, isMobile: false, supportsScreenCapture: false });
   const [now, setNow] = useState(() => Date.now());
   const [saveStatus, setSaveStatus] = useState("Encrypted");
+  const [cloudSyncState, setCloudSyncState] = useState<CloudSyncState>(() => baseCloudSyncState(initial.cloudRecovery.enabled ? "preparing" : "off", initial.cloudRecovery.revision));
+  const [localSaveSequence, setLocalSaveSequence] = useState(0);
   const [newContactName, setNewContactName] = useState("");
   const [newPlatform, setNewPlatform] = useState<ConversationPlatform>("linkedin");
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -296,6 +329,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   } | null>(null);
   const documentRef = useRef<HTMLInputElement>(null);
   const rulesFileRef = useRef<HTMLInputElement>(null);
+  const recoveryFileRef = useRef<HTMLInputElement>(null);
   const chatPasteRef = useRef<HTMLTextAreaElement>(null);
   const agendaRef = useRef<HTMLTextAreaElement>(null);
   const snoozeRef = useRef<HTMLInputElement>(null);
@@ -305,6 +339,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const extensionConnectedRef = useRef(false);
   const extensionVersionRef = useRef("");
   const shortcutSequenceRef = useRef("");
+  const persistedWorkspaceRef = useRef<{ source: WorkspaceData; saved: WorkspaceData } | null>(null);
 
   const contact = workspace.contacts.find((item) => item.id === selectedId) ?? workspace.contacts[0] ?? null;
 
@@ -401,7 +436,12 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setSaveStatus("Encrypting…");
-      void saveVault(applyRetention(workspace), session).then(() => setSaveStatus("Encrypted"), (error) => {
+      const saved = applyRetention(workspace);
+      void saveVault(saved, session).then(() => {
+        persistedWorkspaceRef.current = { source: workspace, saved };
+        setSaveStatus("Encrypted");
+        setLocalSaveSequence((current) => current + 1);
+      }, (error) => {
         setSaveStatus("Save failed");
         setAppError(formatError(error));
       });
@@ -409,8 +449,52 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     return () => window.clearTimeout(timer);
   }, [session, workspace]);
 
+  useEffect(() => {
+    if (!localSaveSequence) return;
+    const persisted = persistedWorkspaceRef.current;
+    if (!persisted) return;
+    if (!persisted.saved.cloudRecovery.enabled) {
+      setCloudSyncState(baseCloudSyncState("off"));
+      return;
+    }
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const key = await openCloudRecoveryKey();
+        if (!key) {
+          if (active) setCloudSyncState({ ...baseCloudSyncState("needs-attention", persisted.saved.cloudRecovery.revision), message: "Choose your DialogMint recovery file to resume encrypted backup." });
+          return;
+        }
+        if (active) setCloudSyncState(baseCloudSyncState("syncing", persisted.saved.cloudRecovery.revision));
+        const result = await synchronizeCloudWorkspace({ workspace: persisted.saved, key, environment: browserCloudEnvironment() });
+        if (!active) return;
+        const latest = workspaceRef.current;
+        let next = result.workspace;
+        let nextState = result.state;
+        if (latest !== persisted.source) {
+          next = await mergeCloudWorkspaces(latest, result.workspace);
+          next = { ...next, cloudRecovery: result.workspace.cloudRecovery };
+          nextState = baseCloudSyncState("pending", result.workspace.cloudRecovery.revision);
+        }
+        setCloudSyncState(nextState);
+        if (JSON.stringify(next) !== JSON.stringify(latest)) {
+          workspaceRef.current = next;
+          setSaveStatus("Unsaved changes");
+          setWorkspace(next);
+        }
+      })().catch(() => {
+        if (active) setCloudSyncState({ ...baseCloudSyncState("needs-attention", persisted.saved.cloudRecovery.revision), message: "Encrypted backup needs attention." });
+      });
+    }, 350);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [localSaveSequence]);
+
   function updateWorkspace(updater: (current: WorkspaceData) => WorkspaceData) {
     setSaveStatus("Unsaved changes");
+    if (workspaceRef.current.cloudRecovery.enabled) setCloudSyncState(baseCloudSyncState("pending", workspaceRef.current.cloudRecovery.revision));
     setWorkspace((current) => {
       const next = updater(current);
       workspaceRef.current = next;
@@ -637,10 +721,116 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setNewContactName("");
   }
 
-  function deleteContact() {
-    if (!contact || !window.confirm("Permanently delete this contact and all of their local context?")) return;
-    const remaining = workspace.contacts.filter((item) => item.id !== contact.id);
-    updateWorkspace((current) => ({ ...current, contacts: remaining, feedback: current.feedback.filter((item) => item.contactId !== contact.id) }));
+  function downloadRecoveryBundle(serializedBundle: string) {
+    const url = URL.createObjectURL(new Blob([serializedBundle], { type: "application/json;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "DialogMint-recovery-key.json";
+    link.rel = "noopener";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  async function enableCloudBackup() {
+    setAppError("");
+    setCloudSyncState(baseCloudSyncState("preparing"));
+    try {
+      const bundle = await createRecoveryBundle();
+      const key = await importRecoveryKey(bundle.encryptionKey);
+      downloadRecoveryBundle(serializeRecoveryBundle(bundle));
+      await saveCloudRecoveryKey(key);
+      const emptyRecovery = createEmptyWorkspace().cloudRecovery;
+      updateWorkspace((current) => ({ ...current, cloudRecovery: { ...emptyRecovery, enabled: true } }));
+      setCloudSyncState(baseCloudSyncState("pending"));
+    } catch (caught) {
+      await removeCloudRecoveryKey().catch(() => undefined);
+      setCloudSyncState(baseCloudSyncState("off"));
+      setAppError(formatError(caught));
+    }
+  }
+
+  function readRecoveryFile(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+      reader.onerror = () => reject(new Error("The DialogMint recovery file could not be read."));
+      reader.readAsText(file);
+    });
+  }
+
+  async function restoreCloudBackup(file: File) {
+    setAppError("");
+    setCloudSyncState(baseCloudSyncState("restoring", workspaceRef.current.cloudRecovery.revision));
+    try {
+      const bundle = parseRecoveryBundle(await readRecoveryFile(file));
+      if (!bundle) throw new Error("This is not a valid DialogMint recovery file.");
+      const key = await importRecoveryKey(bundle.encryptionKey);
+      const remote = await readCloudVault();
+      if (!remote) throw new Error("No encrypted DialogMint backup was found for this signed-in account.");
+      const environment = browserCloudEnvironment();
+      const remoteWorkspace = await decryptCloudWorkspace(remote.envelope, key, environment);
+      const remoteSummary = await summarizeCloudBackup(remoteWorkspace, remote.envelope);
+      const merged = await mergeCloudWorkspaces(workspaceRef.current, remoteWorkspace);
+      const mergedSafe = createCloudSafeWorkspace(merged, environment);
+      const mergedEnvelope = await encryptCloudWorkspace(mergedSafe, key, environment);
+      const mergedSummary = await summarizeCloudBackup(mergedSafe, mergedEnvelope);
+      const matchesRemote = mergedSummary.logicalDigest === remoteSummary.logicalDigest && mergedSummary.contactCount === remoteSummary.contactCount && mergedSummary.messageCount === remoteSummary.messageCount;
+      const next: WorkspaceData = {
+        ...merged,
+        cloudRecovery: {
+          enabled: true,
+          revision: remote.revision,
+          lastConfirmedDigest: remoteSummary.logicalDigest,
+          lastConfirmedCiphertextDigest: remote.ciphertextDigest,
+          lastConfirmedContacts: remoteSummary.contactCount,
+          lastConfirmedMessages: remoteSummary.messageCount,
+          lastSyncedAt: new Date().toISOString(),
+        },
+      };
+      await saveCloudRecoveryKey(key);
+      workspaceRef.current = next;
+      setWorkspace(next);
+      setSaveStatus("Unsaved changes");
+      setCloudSyncState(matchesRemote ? { status: "synced", contactCount: remoteSummary.contactCount, messageCount: remoteSummary.messageCount, revision: remote.revision, logicalDigest: remoteSummary.logicalDigest } : baseCloudSyncState("pending", remote.revision));
+      setSelectedId(next.contacts[0]?.id ?? "");
+      setInboxView("inbox");
+      setInboxFilter("main");
+      setMobileConversationOpen(Boolean(next.contacts.length));
+    } catch (caught) {
+      setCloudSyncState(baseCloudSyncState(workspaceRef.current.cloudRecovery.enabled ? "needs-attention" : "off", workspaceRef.current.cloudRecovery.revision));
+      setAppError(formatError(caught));
+    } finally {
+      if (recoveryFileRef.current) recoveryFileRef.current.value = "";
+    }
+  }
+
+  async function deleteEncryptedCloudBackup() {
+    if (!window.confirm("Delete the encrypted 90-day cloud backup? Your local workspace will remain on this browser.")) return;
+    setAppError("");
+    try {
+      await deleteCloudVault();
+      await removeCloudRecoveryKey();
+      const emptyRecovery = createEmptyWorkspace().cloudRecovery;
+      updateWorkspace((current) => ({ ...current, cloudRecovery: { ...emptyRecovery } }));
+      setCloudSyncState(baseCloudSyncState("deleted"));
+    } catch (caught) {
+      setCloudSyncState(baseCloudSyncState("needs-attention", workspaceRef.current.cloudRecovery.revision));
+      setAppError(formatError(caught));
+    }
+  }
+
+  async function deleteContact() {
+    if (!contact) return;
+    const cloudEnabled = workspace.cloudRecovery.enabled;
+    const warning = cloudEnabled
+      ? "Delete this contact everywhere? The local copy will be removed now and an encrypted deletion marker will be included in the next cloud backup."
+      : "Permanently delete this contact and all of their local context?";
+    if (!window.confirm(warning)) return;
+    const next = cloudEnabled
+      ? await deleteContactEverywhere(workspaceRef.current, contact.id)
+      : { ...workspaceRef.current, contacts: workspaceRef.current.contacts.filter((item) => item.id !== contact.id), feedback: workspaceRef.current.feedback.filter((item) => item.contactId !== contact.id) };
+    const remaining = next.contacts;
+    updateWorkspace(() => next);
     setActiveContactId(remaining[0]?.id ?? "");
     setDrafts([]);
   }
@@ -982,6 +1172,13 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
               {manualCaptureHelp && <p className="manual-capture-help">Open the conversation in LinkedIn and click the ChatHelp extension icon once. This fallback works without enabling automatic sync and never sends a message.</p>}
             </section>}
 
+            <div className={"cloud-backup-status backup-" + cloudSyncState.status} role="status" aria-live="polite">
+              <span>{cloudBackupLabel(cloudSyncState)}</span>
+              {cloudSyncState.message && <small>{cloudSyncState.message}</small>}
+              {inboxView !== "settings" && !workspace.cloudRecovery.enabled && <button type="button" onClick={() => recoveryFileRef.current?.click()}>Restore encrypted backup</button>}
+            </div>
+            <input ref={recoveryFileRef} hidden type="file" accept=".json,application/json" aria-label="Choose DialogMint recovery file" onChange={(event) => event.target.files?.[0] && void restoreCloudBackup(event.target.files[0])} />
+
             <div className="inbox-filter-row">
               <select aria-label="Inbox filter" value={inboxFilter} onChange={(event) => setInboxFilter(event.target.value as InboxFilter)}>{INBOX_FILTERS.map((filter) => <option key={filter.value} value={filter.value}>{filter.label}</option>)}</select>
               <select aria-label="Filter by label" value={labelFilter} onChange={(event) => setLabelFilter(event.target.value)}><option value="">All labels</option>{allLabels.map((label) => <option key={label} value={label}>{label}</option>)}</select>
@@ -1044,6 +1241,26 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 <div className="playbook-actions"><button type="button" className="primary" onClick={() => void saveMessagingPlaybooks()}>Save playbook settings</button><button type="button" onClick={() => rulesFileRef.current?.click()}>Upload rules document</button><button type="button" onClick={downloadCurrentRules}>Download rules</button></div>
                 <p className="section-explainer">Type rules above, upload a plain-text or Markdown document, or use both. Uploaded text is appended to existing rules for the selected role and saved in the encrypted local vault. Download exports the current combined rules field as a text file.</p>
                 {playbookStatus && <p className="status" role="status" aria-live="polite">{playbookStatus}</p>}
+              </section>
+              <section className="panel-card cloud-backup-card">
+                <p className="eyebrow">ENCRYPTED RECOVERY</p>
+                <h3>Encrypted 90-day backup</h3>
+                <div className={"cloud-backup-summary backup-" + cloudSyncState.status}>
+                  <strong>{cloudBackupLabel(cloudSyncState)}</strong>
+                  {workspace.cloudRecovery.lastSyncedAt && <small>Last confirmed {new Date(workspace.cloudRecovery.lastSyncedAt).toLocaleString()}</small>}
+                </div>
+                <p className="section-explainer">Cloudflare Access login authorizes both draft generation and encrypted backup. Your email OTP and MFA verify your Access session; AI consent remains a separate choice below.</p>
+                <p className="section-explainer">DialogMint stores one AES-256-GCM encrypted workspace snapshot in Neon PostgreSQL for recovery. Cloudflare and Neon do not receive the recovery key and cannot read the stored conversations. The cloud copy contains at most 90 days of history and expires 90 days after its last successful update.</p>
+                <p className="section-explainer"><strong>Keep the downloaded recovery file safe.</strong> If both browser storage and that file are lost, restoration is impossible. Conversations erased before their first confirmed backup cannot be recovered.</p>
+                <div className="playbook-actions">
+                  {!workspace.cloudRecovery.enabled ? <>
+                    <button type="button" className="primary" onClick={() => void enableCloudBackup()}>Enable encrypted backup</button>
+                    <button type="button" onClick={() => recoveryFileRef.current?.click()}>Restore encrypted backup</button>
+                  </> : <>
+                    <button type="button" onClick={() => recoveryFileRef.current?.click()}>Choose recovery file</button>
+                    <button type="button" className="danger-link" onClick={() => void deleteEncryptedCloudBackup()}>Delete encrypted cloud backup</button>
+                  </>}
+                </div>
               </section>
               <section className="panel-card">
                 <p className="eyebrow">CLOUDFLARE PRIVATE AI</p>
@@ -1129,7 +1346,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 <section><h3>Conversation outcome</h3><div className="inline-form"><select aria-label="Conversation outcome" value={outcomeResult} onChange={(event) => setOutcomeResult(event.target.value as typeof outcomeResult)}><option value="positive">Positive</option><option value="neutral">Neutral</option><option value="negative">Negative</option></select><input value={outcomeNote} onChange={(event) => setOutcomeNote(event.target.value)} placeholder="What happened?" /><button onClick={addOutcome}>Save</button></div>{contact.outcomes.at(-1) && <p className="context-summary"><strong>{contact.outcomes.at(-1)?.result}</strong> {contact.outcomes.at(-1)?.note}</p>}</section>
                 <section><h3>Local storage and retention</h3><p>{storageSummary}. Stored only in this encrypted local vault.</p><label>Remove dated context after<select value={contact.retentionDays} onChange={(event) => updateContact((current) => ({ ...current, retentionDays: Number(event.target.value) as Contact["retentionDays"] }))}><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option><option value={0}>Keep until I delete it</option></select></label></section>
                 <section><h3>Profile details</h3><label>Name<input value={contact.name} onChange={(event) => updateContact((current) => ({ ...current, name: event.target.value.slice(0, 200) }))} /></label><label>Headline<input value={contact.headline} onChange={(event) => updateContact((current) => ({ ...current, headline: event.target.value.slice(0, 500) }))} /></label><label>Company<input value={contact.company || ""} onChange={(event) => updateContact((current) => ({ ...current, company: event.target.value.slice(0, 500) }))} /></label><label>Relevant profile notes<textarea value={contact.profileNotes} onChange={(event) => updateContact((current) => ({ ...current, profileNotes: event.target.value.slice(0, 20_000) }))} /></label></section>
-                <div className="context-actions"><button onClick={() => toggleArchive(contact)}>{contact.archivedAt ? "Restore to inbox" : "Archive"}</button><button className="danger-link" onClick={deleteContact}>Delete local contact</button></div>
+                <div className="context-actions"><button onClick={() => toggleArchive(contact)}>{contact.archivedAt ? "Restore to inbox" : "Archive"}</button><button className="danger-link" onClick={() => void deleteContact()}>{workspace.cloudRecovery.enabled ? "Delete contact everywhere" : "Delete local contact"}</button></div>
               </div>
             </> : <div className="context-empty">Select a conversation to see local contact context.</div>}
           </aside>

@@ -522,6 +522,16 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 .sync-card-row { display: grid; grid-template-columns: auto minmax(0,1fr) auto auto auto; align-items: center; gap: .42rem; min-height: 26px; }
 .sync-card-row > strong { overflow: hidden; font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
 .sync-card p { margin: 0; color: #526058; font-size: .68rem; line-height: 1.42; }
+.cloud-backup-status { display: grid; gap: .2rem; margin: 0 1rem .55rem; padding: .5rem .6rem; border: 1px solid #d8ded9; border-radius: 10px; background: #f7f9f7; color: #405148; font-size: .68rem; font-weight: 800; }
+.cloud-backup-status.backup-synced { border-color: #aad2b8; background: #edf8f1; color: var(--green); }
+.cloud-backup-status.backup-pending, .cloud-backup-status.backup-syncing, .cloud-backup-status.backup-restoring { border-color: #e2c27e; background: #fff8e8; }
+.cloud-backup-status.backup-needs-attention { border-color: #e2aaa5; background: #fff1ef; color: #8b2e26; }
+.cloud-backup-status small { font-weight: 600; line-height: 1.35; }
+.cloud-backup-status button { justify-self: start; padding: .34rem .5rem; font-size: .66rem; }
+.cloud-backup-card { border-top-color: #2a9d69; }
+.cloud-backup-summary { display: grid; gap: .25rem; padding: .65rem .7rem; border: 1px solid #d8ded9; border-radius: 10px; background: #f7f9f7; }
+.cloud-backup-summary.backup-synced { border-color: #aad2b8; background: #edf8f1; color: var(--green); }
+.cloud-backup-summary small { color: #607067; }
 .sync-info { position: relative; display: inline-grid; }
 .info-button { width: 19px; height: 19px; display: grid; place-items: center; padding: 0; border: 1px solid #7da88c; border-radius: 50%; background: #fff; color: var(--green); font: 800 .66rem/1 Georgia, serif; }
 .sync-tooltip { position: absolute; left: -112px; top: calc(100% + 8px); z-index: 20; width: min(260px, calc(100vw - 2rem)); padding: .58rem .65rem; border: 1px solid #c7d7cc; border-radius: 9px; background: #fff; color: #33453b; box-shadow: 0 8px 24px rgba(17,45,30,.14); font-size: .65rem; line-height: 1.42; opacity: 0; pointer-events: none; transform: translateY(-3px); transition: opacity .12s ease, transform .12s ease; }
