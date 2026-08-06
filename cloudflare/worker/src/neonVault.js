@@ -69,6 +69,17 @@ async function sha256Hex(value) {
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+function serializeEnvelope(envelope) {
+  return JSON.stringify({
+    format: envelope.format,
+    schemaVersion: envelope.schemaVersion,
+    iv: envelope.iv,
+    ciphertext: envelope.ciphertext,
+    encryptedBytes: envelope.encryptedBytes,
+    savedAt: envelope.savedAt,
+  });
+}
+
 async function parseVaultWrite(request) {
   if (!request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
     return { response: json({ error: "Expected a JSON request." }, 415) };
@@ -98,7 +109,7 @@ async function parseVaultWrite(request) {
   if (!validEnvelope(payload.envelope) || !Number.isSafeInteger(payload.expectedRevision) || payload.expectedRevision < 0 || !HEX_DIGEST.test(payload.ciphertextDigest ?? "")) {
     return { response: json({ error: "Encrypted backup request is invalid." }, 400) };
   }
-  if (await sha256Hex(JSON.stringify(payload.envelope)) !== payload.ciphertextDigest) {
+  if (await sha256Hex(serializeEnvelope(payload.envelope)) !== payload.ciphertextDigest) {
     return { response: json({ error: "Encrypted backup request is invalid." }, 400) };
   }
   return { payload };
@@ -153,7 +164,7 @@ export async function handleVaultRequest(request, env, url, identity, options = 
       if (!row) return json({ error: "Encrypted backup not found." }, 404);
       const revision = Number(row.revision);
       if (!Number.isSafeInteger(revision) || revision <= 0 || !HEX_DIGEST.test(row.ciphertext_digest ?? "") ||
-          !validEnvelope(row.ciphertext) || await sha256Hex(JSON.stringify(row.ciphertext)) !== row.ciphertext_digest) {
+          !validEnvelope(row.ciphertext) || await sha256Hex(serializeEnvelope(row.ciphertext)) !== row.ciphertext_digest) {
         throw new Error("Invalid stored row");
       }
       return json({ envelope: row.ciphertext, revision, ciphertextDigest: row.ciphertext_digest });

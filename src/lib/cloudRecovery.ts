@@ -134,6 +134,17 @@ export function isCloudVaultEnvelope(value: unknown): value is CloudVaultEnvelop
     typeof item.savedAt === "string";
 }
 
+export function serializeCloudVaultEnvelope(envelope: CloudVaultEnvelopeV1): string {
+  return JSON.stringify({
+    format: envelope.format,
+    schemaVersion: envelope.schemaVersion,
+    iv: envelope.iv,
+    ciphertext: envelope.ciphertext,
+    encryptedBytes: envelope.encryptedBytes,
+    savedAt: envelope.savedAt,
+  });
+}
+
 export async function decryptCloudWorkspace(envelope: CloudVaultEnvelopeV1, key: CryptoKey, environment: CloudEnvironment): Promise<WorkspaceData> {
   if (!isCloudVaultEnvelope(envelope)) throw new Error("This encrypted DialogMint backup is not valid.");
   try {
@@ -151,7 +162,7 @@ export async function decryptCloudWorkspace(envelope: CloudVaultEnvelopeV1, key:
 export async function summarizeCloudBackup(workspace: WorkspaceData, envelope: CloudVaultEnvelopeV1): Promise<CloudBackupSummary> {
   return {
     logicalDigest: await sha256Hex(JSON.stringify(normalizeWorkspace(workspace))),
-    ciphertextDigest: await sha256Hex(JSON.stringify(envelope)),
+    ciphertextDigest: await sha256Hex(serializeCloudVaultEnvelope(envelope)),
     contactCount: workspace.contacts.length,
     messageCount: workspace.contacts.reduce((total, contact) => total + contact.chat.length, 0),
   };

@@ -27,6 +27,20 @@ describe("DialogMint cloud recovery transport", () => {
     expect(headers.Authorization).toBeUndefined();
   });
 
+  it("verifies an encrypted envelope even when PostgreSQL jsonb changed key order", async () => {
+    const reorderedEnvelope: CloudVaultEnvelopeV1 = {
+      iv: envelope.iv,
+      format: envelope.format,
+      savedAt: envelope.savedAt,
+      ciphertext: envelope.ciphertext,
+      schemaVersion: envelope.schemaVersion,
+      encryptedBytes: envelope.encryptedBytes,
+    };
+    const request = vi.fn().mockResolvedValue(jsonResponse({ envelope: reorderedEnvelope, revision: 3, ciphertextDigest: digest }));
+
+    await expect(readCloudVault(request)).resolves.toEqual({ envelope: reorderedEnvelope, revision: 3, ciphertextDigest: digest });
+  });
+
   it("writes create revision zero with a locally calculated ciphertext digest", async () => {
     const request = vi.fn().mockImplementation(async (_url, init) => {
       const body = JSON.parse(String(init.body));
