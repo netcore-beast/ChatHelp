@@ -32,6 +32,15 @@ describe("installable client boundaries", () => {
     expect(worker).not.toContain("localStorage");
   });
 
+  it("enables the Worker database runtime and daily expiry cleanup without embedding credentials", () => {
+    const wrangler = read("wrangler.jsonc");
+    expect(wrangler).toContain('"nodejs_compat"');
+    expect(wrangler).toContain('"crons": ["0 3 * * *"]');
+    expect(wrangler).not.toContain("CHATHELP_ACCESS_TOKEN_HASH");
+    expect(wrangler).not.toMatch(/postgres(?:ql)?:\/\//i);
+    expect(wrangler).not.toMatch(/connectionString/i);
+  });
+
   it("hash-authorizes static bootstrap scripts without unsafe-inline", () => {
     const source = "self.__next_f.push(['test'])";
     const hash = createHash("sha256").update(source, "utf8").digest("base64");

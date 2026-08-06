@@ -53,6 +53,8 @@ async function workerEnv() {
     ACCESS_TEAM_DOMAIN: "https://dialogmint.cloudflareaccess.com",
     ACCESS_AUD_TESTING: "testing-audience",
     ACCESS_AUD_PRODUCTION: "production-audience",
+    NEON_TESTING: { connectionString: "synthetic-testing-binding" },
+    NEON_PRODUCTION: { connectionString: "synthetic-production-binding" },
     DRAFT_RATE_LIMITER: {
       limit: vi.fn().mockResolvedValue({ success: true }),
     },
@@ -100,7 +102,9 @@ describe("Cloudflare private inference Worker", () => {
       model: WORKERS_AI_MODEL,
       models: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
       mode: "rulebook-plan-write-review",
-      persistentStorage: false,
+      persistentStorage: "client-encrypted-neon",
+      retentionDays: 90,
+      vaultBindings: { testing: true, production: true },
       aiGateway: false,
       observability: false,
     });
@@ -119,6 +123,19 @@ describe("Cloudflare private inference Worker", () => {
     await expect(response.json()).resolves.toEqual({ error: "DialogMint authentication is required." });
     expect(env.AI.run).not.toHaveBeenCalled();
     expect(env.DRAFT_RATE_LIMITER.limit).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unauthenticated vault write before parsing or querying", async () => {
+    const env = { ...await workerEnv(), NEON_TESTING: { connectionString: "synthetic-testing-binding" } };
+    const query = vi.fn();
+    const response = await handleRequest(new Request(`${TESTING_ORIGIN}/api/vault`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: "not-json",
+    }), env, { verifyAccess, query });
+
+    expect(response.status).toBe(401);
+    expect(query).not.toHaveBeenCalled();
   });
 
   it("routes digest-only planning, full-rulebook writing, and full-rulebook review as three isolated calls", async () => {

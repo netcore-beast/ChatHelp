@@ -1,4 +1,5 @@
 import { authenticateAccessRequest } from "./accessAuth.js";
+import { cleanupExpiredVaults, handleVaultRequest } from "./neonVault.js";
 
 export const LLAMA_CANDIDATE_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 export const GPT_REVIEW_MODEL = "@cf/openai/gpt-oss-120b";
@@ -238,19 +239,23 @@ export async function handleRequest(request, env, options = {}) {
   if (request.method === "GET" && url.pathname === "/health") {
     return json({
       ok: true,
-      service: "chathelp-cloud-ai",
+      service: "dialogmint-cloud",
       provider: "cloudflare-workers-ai",
       model: WORKERS_AI_MODEL,
       models: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
       mode: PIPELINE_MODE,
-      persistentStorage: false,
+      persistentStorage: "client-encrypted-neon",
+      retentionDays: 90,
+      vaultBindings: {
+        testing: Boolean(env.NEON_TESTING?.connectionString),
+        production: Boolean(env.NEON_PRODUCTION?.connectionString),
+      },
       aiGateway: false,
       observability: false,
     });
   }
 
-  if (url.pathname !== "/api/drafts") return env.ASSETS ? env.ASSETS.fetch(request) : json({ error: "Not found." }, 404);
-  if (request.method !== "POST") return json({ error: "Method not allowed." }, 405, { Allow: "POST" });
+  if (url.pathname !== "/api/drafts" && url.pathname !== "/api/vault") return env.ASSETS ? env.ASSETS.fetch(request) : json({ error: "Not found." }, 404);
 
   const origin = request.headers.get("Origin");
   if (origin && origin !== url.origin) return json({ error: "Cross-origin requests are not allowed." }, 403);
@@ -261,6 +266,9 @@ export async function handleRequest(request, env, options = {}) {
   } catch {
     return json({ error: "DialogMint authentication is required." }, 401);
   }
+
+  if (url.pathname === "/api/vault") return handleVaultRequest(request, env, url, identity, options);
+  if (request.method !== "POST") return json({ error: "Method not allowed." }, 405, { Allow: "POST" });
 
   const rate = await env.DRAFT_RATE_LIMITER.limit({ key: identity.accountId });
   if (!rate.success) return json({ error: "Draft limit reached. Wait one minute and try again." }, 429, { "Retry-After": "60" });
@@ -401,6 +409,11 @@ export async function handleRequest(request, env, options = {}) {
   }
 }
 
-const worker = { fetch: handleRequest };
+const worker = {
+  fetch: handleRequest,
+  scheduled(_controller, env, context) {
+    context.waitUntil(cleanupExpiredVaults(env));
+  },
+};
 
 export default worker;

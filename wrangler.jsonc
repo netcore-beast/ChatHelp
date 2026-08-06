@@ -2,8 +2,12 @@
   "name": "chathelp-private-cloud",
   "main": "./cloudflare/worker/src/index.js",
   "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": true,
+  "triggers": {
+    "crons": ["0 3 * * *"]
+  },
   "ai": {
     "binding": "AI"
   },
@@ -25,8 +29,5 @@
   ],
   "observability": {
     "enabled": false
-  },
-  "secrets": {
-    "required": ["CHATHELP_ACCESS_TOKEN_HASH"]
   }
 }
