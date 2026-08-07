@@ -124,13 +124,13 @@ describe("secure conversation workspace interaction", () => {
     const user = userEvent.setup();
     const firstRender = render(<ChatHelpApp />);
     expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
-    expect(screen.queryByRole("complementary", { name: "Workspace navigation" })).toBeNull();
-    expect(screen.getByRole("combobox", { name: "Workspace view" })).toBeTruthy();
+    expect(screen.getByRole("complementary", { name: "Workspace navigation" })).toBeTruthy();
+    expect(screen.queryByRole("complementary", { name: "Contact context" })).toBeNull();
     expect(screen.getByLabelText("Conversation inbox")).toBeTruthy();
-    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "settings");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.type(screen.getByLabelText("New contact name"), "Alex Morgan");
     await user.click(screen.getByRole("button", { name: "Add" }));
-    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "inbox");
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
     expect(await within(screen.getByRole("navigation", { name: "Conversations" })).findByRole("button", { name: "Open conversation with Alex Morgan" })).toBeTruthy();
     expect(screen.getByLabelText("Conversation with Alex Morgan")).toBeTruthy();
     await waitFor(async () => expect((await openDeviceVault()).workspace.contacts.some((contact) => contact.name === "Alex Morgan")).toBe(true), { timeout: 3000 });
@@ -279,10 +279,10 @@ describe("secure conversation workspace interaction", () => {
     await deliverSnapshot();
     expect(await screen.findByLabelText("Conversation with Taylor Lee")).toBeTruthy();
 
-    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "settings");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.queryByLabelText(/Cloud access code/)).toBeNull();
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
-    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "inbox");
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
     expect((screen.getByLabelText("What should your reply accomplish?") as HTMLTextAreaElement).value).toBe("");
     await user.click(screen.getByRole("button", { name: "Generate 3 Drafts" }));
@@ -314,9 +314,9 @@ describe("secure conversation workspace interaction", () => {
     await screen.findByRole("heading", { name: /private conversation studio/i });
     await announceExtension();
     await deliverSnapshot();
-    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "settings");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
-    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "inbox");
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
 
     const objective = screen.getByRole("textbox", { name: "What should your reply accomplish?" });
@@ -367,9 +367,9 @@ describe("secure conversation workspace interaction", () => {
     await screen.findByRole("heading", { name: /private conversation studio/i });
     await announceExtension();
     await deliverSnapshot();
-    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "settings");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
-    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "inbox");
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
 
     await user.click(screen.getByRole("button", { name: "Generate 3 Drafts" }));
@@ -400,7 +400,7 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.getByRole("button", { name: "One-time manual capture" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Disable and revoke LinkedIn permission" }));
     expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: LINKEDIN_SYNC_COMMAND_EVENT, command: "disable" }), expect.any(String));
-    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "settings");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.queryByRole("switch")).toBeNull();
     expect(screen.queryByRole("button", { name: "One-time manual capture" })).toBeNull();
 
@@ -438,7 +438,7 @@ describe("secure conversation workspace interaction", () => {
     await announceExtension();
     await deliverSnapshot();
 
-    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "settings");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
     const settingsRole = screen.getByLabelText("Your role or team");
     await user.selectOptions(settingsRole, "Network Marketing");
     await user.clear(screen.getByLabelText("Your relationship goal"));
@@ -462,7 +462,7 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.queryByLabelText(/Cloud access code/)).toBeNull();
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
 
-    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "inbox");
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
     const inboxRole = screen.getByLabelText("Your role or team");
     expect(inboxRole.closest(".composer-card")).toBeTruthy();
     expect(firstRender.container.querySelector(".conversation-scroll[aria-label='Conversation history']")).toBeTruthy();
@@ -514,10 +514,10 @@ describe("secure conversation workspace interaction", () => {
     expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
     await announceExtension();
     await deliverSnapshot();
-    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "settings");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.queryByLabelText(/Cloud access code/)).toBeNull();
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
-    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "inbox");
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
     await user.type(screen.getByLabelText("What should your reply accomplish?"), "Write a short reply.");
     await user.click(screen.getByRole("button", { name: "Generate 3 Drafts" }));

@@ -5,7 +5,7 @@ const app = readFileSync("src/components/ChatHelpApp.tsx", "utf8");
 const styles = readFileSync("src/app/globals.css", "utf8");
 
 describe("desktop conversation workspace layout", () => {
-  it("provides the requested navigation, inbox filters, drafting action, and contact context", () => {
+  it("provides the requested navigation, inbox filters, and drafting action without a right context panel", () => {
     for (const destination of ["Inbox", "Contacts", "Pipeline", "Reminders", "Labels", "Archived", "Settings"]) {
       expect(app).toContain(`label: "${destination}"`);
     }
@@ -14,7 +14,9 @@ describe("desktop conversation workspace layout", () => {
     }
     expect(app).toContain('"Generate 3 Drafts"');
     expect(app).toContain("Open LinkedIn to review and paste");
-    expect(app).toContain('aria-label="Contact context"');
+    expect(app).toContain('<aside className="contact-context" aria-label="Contact context" hidden aria-hidden="true">');
+    expect(app).not.toContain("Show contact");
+    expect(app).not.toContain("Hide contact");
     expect(styles).toContain(".prompt-composer");
     expect(styles).toContain(".prompt-composer-actions");
     expect(styles).toContain("@media (max-width: 360px)");
@@ -25,11 +27,11 @@ describe("desktop conversation workspace layout", () => {
   });
 
   it("defines large, laptop, and mobile panel behavior", () => {
-    expect(app).not.toContain('<aside className="workspace-nav"');
-    expect(app).toContain('aria-label="Workspace view"');
-    expect(styles).toContain("grid-template-columns: 330px minmax(480px, 1fr) 320px");
+    expect(app).toContain('<aside className="workspace-nav"');
+    expect(app).toContain('aria-label={item.label}');
+    expect(app).not.toContain('aria-label="Workspace view"');
+    expect(styles).toContain("grid-template-columns: 176px 330px minmax(480px, 1fr)");
     expect(styles).toContain("@media (max-width: 1180px)");
-    expect(styles).toMatch(/@media \(max-width: 1180px\)[\s\S]*?\.contact-context \{ display: none;/);
     expect(styles).toContain("@media (max-width: 760px)");
     expect(styles).toMatch(/@media \(max-width: 760px\)[\s\S]*?\.mobile-list-hidden/);
     expect(styles).toMatch(/@media \(max-width: 760px\)[\s\S]*?\.mobile-conversation-hidden/);
