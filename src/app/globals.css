@@ -1,4 +1,29 @@
 :root {
+  color-scheme: dark;
+  --canvas: #080b10;
+  --surface: #10151d;
+  --surface-raised: #161c26;
+  --surface-soft: #0c1118;
+  --surface-hover: #1b2330;
+  --ink: #f3f5f7;
+  --muted: #98a2b3;
+  --paper: var(--canvas);
+  --card: var(--surface);
+  --line: #283241;
+  --green: #62d49b;
+  --green-2: #35ad76;
+  --mint: #173329;
+  --amber: #3b311b;
+  --red: #ff8178;
+  --shadow: 0 18px 60px rgba(0, 0, 0, .34);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --canvas: #f6f4ed;
+  --surface: #fffefa;
+  --surface-raised: #ffffff;
+  --surface-soft: #f3f7f4;
+  --surface-hover: #eef4ef;
   --ink: #17221c;
   --muted: #657168;
   --paper: #f6f4ed;
@@ -13,7 +38,7 @@
 }
 * { box-sizing: border-box; }
 html { background: var(--paper); color: var(--ink); }
-body { margin: 0; font-family: Arial, Helvetica, sans-serif; background: radial-gradient(circle at 10% 0%, #e5f1e9 0, transparent 30rem), var(--paper); }
+body { margin: 0; font-family: Arial, Helvetica, sans-serif; background: var(--paper); }
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
@@ -772,9 +797,10 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
   .topbar-brand .eyebrow { display: none; }
   .topbar h1 { font-size: 1rem; }
   .top-actions { justify-content: flex-end; }
-  .top-actions > button:not(.reminder-badge),
+  .top-actions > button:not(.reminder-badge):not(.theme-toggle),
   .top-actions .install-button,
   .top-actions .install-hint { display: none; }
+  .theme-toggle { min-width: 5.25rem; }
   .save-state { width: auto; padding: .35rem .5rem; font-size: .62rem; }
   .privacy-strip { padding: .55rem .8rem; font-size: .68rem; }
   .workspace-frame,
@@ -814,4 +840,276 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
   .prompt-composer-actions { flex-wrap: wrap; }
   .prompt-composer-actions .status { flex-basis: 100%; }
   .prompt-composer-actions .draft-generate-button { width: 100%; }
+}
+
+/* Appearance control: deliberately stores only the selected color theme. */
+.theme-toggle {
+  min-width: 92px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .45rem;
+  padding: .42rem .5rem .42rem .62rem;
+  background: var(--surface-raised);
+  color: var(--ink);
+  font-size: .68rem;
+}
+.theme-toggle-track {
+  width: 30px;
+  height: 17px;
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+}
+.theme-toggle-track > span {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--muted);
+  transform: translateX(13px);
+  transition: transform .18s ease-out, background-color .18s ease-out;
+}
+:root[data-theme="light"] .theme-toggle-track > span {
+  background: var(--green);
+  transform: translateX(0);
+}
+
+/* Dark-first palette inspired by the supplied charcoal card reference. */
+:root:not([data-theme="light"]) body,
+:root:not([data-theme="light"]) .app-shell,
+:root:not([data-theme="light"]) .workspace-frame,
+:root:not([data-theme="light"]) .empty-state {
+  background: var(--canvas);
+  color: var(--ink);
+}
+:root:not([data-theme="light"]) input,
+:root:not([data-theme="light"]) textarea,
+:root:not([data-theme="light"]) select,
+:root:not([data-theme="light"]) button,
+:root:not([data-theme="light"]) .topbar,
+:root:not([data-theme="light"]) .vault-card,
+:root:not([data-theme="light"]) .panel-card,
+:root:not([data-theme="light"]) .privacy-dialog,
+:root:not([data-theme="light"]) .crop-dialog {
+  border-color: var(--line);
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+:root:not([data-theme="light"]) input::placeholder,
+:root:not([data-theme="light"]) textarea::placeholder {
+  color: #687386;
+}
+:root:not([data-theme="light"]) label,
+:root:not([data-theme="light"]) .identity-note {
+  color: #c3cad4;
+}
+:root:not([data-theme="light"]) button:hover {
+  border-color: #465365;
+  background: var(--surface-hover);
+}
+:root:not([data-theme="light"]) button.primary,
+:root:not([data-theme="light"]) .install-button,
+:root:not([data-theme="light"]) .capture-primary-action button,
+:root:not([data-theme="light"]) .capture-action {
+  border-color: var(--green-2);
+  background: var(--green-2);
+  color: #07120d;
+}
+:root:not([data-theme="light"]) button.primary:hover,
+:root:not([data-theme="light"]) .install-button:hover,
+:root:not([data-theme="light"]) .capture-primary-action button:hover,
+:root:not([data-theme="light"]) .capture-action:hover {
+  border-color: var(--green);
+  background: var(--green);
+}
+:root:not([data-theme="light"]) .privacy-strip {
+  border-bottom: 1px solid #193428;
+  background: #0b1c15;
+  color: #cfe8da;
+}
+:root:not([data-theme="light"]) .workspace-nav,
+:root:not([data-theme="light"]) .inbox-column,
+:root:not([data-theme="light"]) .conversation-column,
+:root:not([data-theme="light"]) .contact-context,
+:root:not([data-theme="light"]) .settings-column {
+  background: var(--surface-soft);
+}
+:root:not([data-theme="light"]) .inbox-column,
+:root:not([data-theme="light"]) .contact-context,
+:root:not([data-theme="light"]) .workspace-nav {
+  border-color: var(--line);
+}
+:root:not([data-theme="light"]) .nav-brand,
+:root:not([data-theme="light"]) .inbox-header,
+:root:not([data-theme="light"]) .conversation-header,
+:root:not([data-theme="light"]) .contact-context > header {
+  border-color: var(--line);
+  background: var(--surface);
+}
+:root:not([data-theme="light"]) .workspace-nav nav button {
+  color: #abb5c2;
+}
+:root:not([data-theme="light"]) .workspace-nav nav button > span,
+:root:not([data-theme="light"]) .workspace-nav nav button small,
+:root:not([data-theme="light"]) .inbox-header > span,
+:root:not([data-theme="light"]) .nav-is-collapsed .nav-brand button {
+  border-color: var(--line);
+  background: var(--surface-raised);
+  color: var(--green);
+}
+:root:not([data-theme="light"]) .workspace-nav nav button:hover,
+:root:not([data-theme="light"]) .workspace-nav nav button.active {
+  border-color: #335743;
+  background: #17271f;
+  color: #d9f5e5;
+}
+:root:not([data-theme="light"]) .search-field input,
+:root:not([data-theme="light"]) .sync-card,
+:root:not([data-theme="light"]) .cloud-backup-status,
+:root:not([data-theme="light"]) .cloud-backup-summary,
+:root:not([data-theme="light"]) .sync-more summary,
+:root:not([data-theme="light"]) .sync-more-menu,
+:root:not([data-theme="light"]) .manual-capture-help,
+:root:not([data-theme="light"]) .sync-tooltip {
+  border-color: var(--line);
+  background: var(--surface-raised);
+  color: #c4ccd6;
+}
+:root:not([data-theme="light"]) .sync-card.sync-on,
+:root:not([data-theme="light"]) .cloud-backup-status.backup-synced,
+:root:not([data-theme="light"]) .cloud-backup-summary.backup-synced {
+  border-color: #295b43;
+  background: #12281e;
+  color: #8de0b2;
+}
+:root:not([data-theme="light"]) .sync-card.sync-paused,
+:root:not([data-theme="light"]) .cloud-backup-status.backup-pending,
+:root:not([data-theme="light"]) .cloud-backup-status.backup-syncing,
+:root:not([data-theme="light"]) .cloud-backup-status.backup-restoring,
+:root:not([data-theme="light"]) .missing-context,
+:root:not([data-theme="light"]) .capture-recommendation.capture-manual,
+:root:not([data-theme="light"]) .extension-identity-confirmation {
+  border-color: #675526;
+  background: #2b2516;
+  color: #ead291;
+}
+:root:not([data-theme="light"]) .cloud-backup-status.backup-needs-attention,
+:root:not([data-theme="light"]) .notice.error,
+:root:not([data-theme="light"]) .error {
+  border-color: #693d3b;
+  background: #321c1d;
+  color: #ffaaa3;
+}
+:root:not([data-theme="light"]) .sync-card p,
+:root:not([data-theme="light"]) .cloud-backup-summary small,
+:root:not([data-theme="light"]) .conversation-preview {
+  color: var(--muted);
+}
+:root:not([data-theme="light"]) .sync-tooltip::before {
+  border-color: var(--line);
+  background: var(--surface-raised);
+}
+:root:not([data-theme="light"]) .sync-more-menu button:hover,
+:root:not([data-theme="light"]) .conversation-row-shell:hover {
+  background: var(--surface-hover);
+}
+:root:not([data-theme="light"]) .conversation-row-shell.active {
+  border-color: #355d47;
+  background: #15251d;
+  box-shadow: inset 3px 0 0 var(--green);
+}
+:root:not([data-theme="light"]) .conversation-state-badge,
+:root:not([data-theme="light"]) .stage-pill,
+:root:not([data-theme="light"]) .label-chip,
+:root:not([data-theme="light"]) .field-optional,
+:root:not([data-theme="light"]) .sync-status-pill {
+  background: #202833;
+  color: #b8c1cc;
+}
+:root:not([data-theme="light"]) .conversation-state-badge.state-follow-up-due,
+:root:not([data-theme="light"]) .stage-warm {
+  background: #3b311b;
+  color: #f1d78b;
+}
+:root:not([data-theme="light"]) .stage-hot {
+  background: #3a2020;
+  color: #ffaaa3;
+}
+:root:not([data-theme="light"]) .stage-follow-up,
+:root:not([data-theme="light"]) .conversation-state-badge.state-read-later {
+  background: #24243d;
+  color: #b9b7ff;
+}
+:root:not([data-theme="light"]) .stage-replied,
+:root:not([data-theme="light"]) .sync-status-pill.on,
+:root:not([data-theme="light"]) .new-chip {
+  background: #173329;
+  color: #8de0b2;
+}
+:root:not([data-theme="light"]) .conversation-scroll {
+  border-color: var(--line);
+  background: #0b1016;
+}
+:root:not([data-theme="light"]) .drafting-scroll {
+  background: #0d1219;
+}
+:root:not([data-theme="light"]) .message-thread .bubble,
+:root:not([data-theme="light"]) .composer-card,
+:root:not([data-theme="light"]) .import-fallback,
+:root:not([data-theme="light"]) .prompt-composer,
+:root:not([data-theme="light"]) .draft-card,
+:root:not([data-theme="light"]) .draft-progress-panel,
+:root:not([data-theme="light"]) .draft-context-inspector,
+:root:not([data-theme="light"]) .active-playbook-summary,
+:root:not([data-theme="light"]) .composer-tooltip,
+:root:not([data-theme="light"]) .drafting-scroll .platform-link {
+  border-color: var(--line);
+  background: var(--surface-raised);
+  color: var(--ink);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .16);
+}
+:root:not([data-theme="light"]) .message-thread .bubble.mine {
+  border-color: #315d46;
+  background: #14271e;
+}
+:root:not([data-theme="light"]) .message-thread .bubble.latest-incoming {
+  border-color: var(--green-2);
+  box-shadow: 0 0 0 3px rgba(98, 212, 155, .1);
+}
+:root:not([data-theme="light"]) .draft-context-inspector > div span,
+:root:not([data-theme="light"]) .draft-card textarea,
+:root:not([data-theme="light"]) .attachment-chip,
+:root:not([data-theme="light"]) .document-row,
+:root:not([data-theme="light"]) .captured-context,
+:root:not([data-theme="light"]) .captured-context pre,
+:root:not([data-theme="light"]) .shortcut-dialog dl div {
+  border-color: var(--line);
+  background: var(--surface-soft);
+  color: #c3ccd7;
+}
+:root:not([data-theme="light"]) .draft-card textarea:hover,
+:root:not([data-theme="light"]) .draft-card textarea:focus {
+  border-color: #3a5c49;
+  background: var(--surface);
+}
+:root:not([data-theme="light"]) .pipeline-column {
+  background: var(--surface-soft);
+}
+:root:not([data-theme="light"]) .pipeline-card,
+:root:not([data-theme="light"]) .pipeline-column > header span {
+  border-color: var(--line);
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+:root:not([data-theme="light"]) .contact-context-scroll > section,
+:root:not([data-theme="light"]) .conversation-header-actions,
+:root:not([data-theme="light"]) footer {
+  border-color: var(--line);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-toggle-track > span { transition-duration: .01ms; }
 }

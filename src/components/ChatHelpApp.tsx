@@ -7,6 +7,7 @@ import { captureVisibleScreen, cropImageToRegion, extractTextFromImage, type Nor
 import { buildDraftContextSummary, CLOUDFLARE_MODEL_NAME, generatePrivateDrafts, type PrivateAiInput } from "@/lib/privateAi";
 import { type DraftPipelineStage, type DraftProgressUpdate, type DraftStageStatus } from "@/lib/draftProgress";
 import { DraftProgressPanel } from "@/components/DraftProgressPanel";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { deriveConversationState, sortPinnedThenRecent } from "@/lib/conversationState";
 import { PLATFORM_OPTIONS, safePlatformUrl } from "@/lib/platforms";
 import { createRulesDocumentDownload, mergeRulesDocument } from "@/lib/rulesDocument";
@@ -1144,6 +1145,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         <header className="topbar">
           <div className="topbar-brand"><div className="brand-mark" aria-hidden="true">DM</div><div><p className="eyebrow">DIALOGMINT</p><h1>Private conversation studio</h1></div></div>
           <div className="top-actions">
+            <ThemeToggle />
             {dueReminderCount > 0 && <button className="reminder-badge" onClick={() => { setInboxView("reminders"); setInboxFilter("follow-up-due"); }}>{dueReminderCount} due</button>}
             <button onClick={() => shortcutDialogRef.current?.showModal()} aria-label="Show keyboard shortcuts">Shortcuts</button>
             <button className="wizard-launch" data-testid="open-linkedin-test-wizard" onClick={() => setWizardOpen(true)}>Guided import</button>

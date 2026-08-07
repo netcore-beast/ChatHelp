@@ -47,3 +47,34 @@ The baseline, Perplexity prompt reference, and rendered desktop card were inspec
 ## Final result
 
 passed
+
+---
+
+# Design QA - dark card theme
+
+## Comparison setup
+
+- Source: user-supplied `codex-clipboard-2a5b90db-0004-4fc6-8214-ccc9aeaf0353.png`.
+- Implementation: PR #19 local browser capture at a 1280px desktop viewport.
+- State: signed-out/empty local workspace with the default dark theme active.
+- Scope: color palette, surface hierarchy, borders, and card treatment only. The existing DialogMint information architecture and behavior were intentionally preserved.
+
+## Visual comparison
+
+- The page canvas matches the reference's near-black foundation.
+- Navigation, inbox, composer, draft, settings, and context surfaces use layered charcoal cards with thin low-contrast borders.
+- Primary text remains bright and secondary text muted without reducing readability.
+- DialogMint green remains the sole brand accent for active, success, and primary-action states.
+- No Axora branding, layout, artwork, or proprietary graphics were copied.
+
+## Interaction and responsive checks
+
+- Dark mode is the default.
+- The light/dark control is keyboard-accessible and persists only the appearance preference.
+- The saved theme restores after reload.
+- At 320px, the document width remains within the viewport and the theme control stays available.
+- Browser console check completed with no application warnings or errors.
+
+## Result
+
+Passed. No P0, P1, or P2 visual defects were found. The only intentional difference is the underlying DialogMint workspace layout, which remains unchanged per the implementation constraint.
