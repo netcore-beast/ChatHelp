@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyRetention } from "@/lib/retention";
 import { buildOutcomeSummary, containsLinkedInPageNoise, isConversationCapture, isLikelyFullLinkedInPageCapture, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
 import { captureVisibleScreen, cropImageToRegion, extractTextFromImage, type NormalizedCropRegion } from "@/lib/localOcr";
@@ -306,7 +306,6 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [extensionConnected, setExtensionConnected] = useState(false);
   const [syncState, setSyncState] = useState<LinkedInSyncState | null>(null);
   const [manualCaptureHelp, setManualCaptureHelp] = useState(false);
-  const [navCollapsed, setNavCollapsed] = useState(false);
   const [contextCollapsed, setContextCollapsed] = useState(false);
   const [mobileConversationOpen, setMobileConversationOpen] = useState(false);
   const [captureEnvironment, setCaptureEnvironment] = useState({ detected: false, isMobile: false, supportsScreenCapture: false });
@@ -518,8 +517,25 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setWorkspace(updater);
   }
 
-  function setActiveContactId(contactId: string) {
+  const setActiveContactId = useCallback((contactId: string) => {
     setSelectedId(contactId);
+    const selected = workspace.contacts.find((item) => item.id === contactId);
+    const latestIncoming = selected?.chat.findLast((message) => message.role === "them");
+    if (!selected || !latestIncoming || selected.lastReadIncomingMessageId === latestIncoming.id) return;
+    setSaveStatus("Unsaved changes");
+    if (workspace.cloudRecovery.enabled) setCloudSyncState(baseCloudSyncState("pending", workspace.cloudRecovery.revision));
+    setWorkspace((current) => ({
+      ...current,
+      contacts: current.contacts.map((item) => item.id === contactId ? { ...item, lastReadIncomingMessageId: latestIncoming.id } : item),
+    }));
+  }, [workspace.cloudRecovery.enabled, workspace.cloudRecovery.revision, workspace.contacts]);
+
+  function changeInboxView(view: InboxView) {
+    setInboxView(view);
+    setMobileConversationOpen(false);
+    if (view === "archived") setInboxFilter("archived");
+    else if (view === "reminders") setInboxFilter("follow-up-due");
+    else if (view === "inbox") setInboxFilter("main");
   }
 
   function updateContactById(contactId: string, updater: (current: Contact) => Contact) {
@@ -540,7 +556,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       return;
     }
     if (!extensionConnected) {
-      setExtensionStatus("The current DialogMint Chrome extension is not connected. Reload version 0.5.0 in chrome://extensions, then reload this tab.");
+      setExtensionStatus("The current DialogMint Chrome extension is not connected. Reload version 0.5.1 in chrome://extensions, then reload this tab.");
       return;
     }
     if (command === "enable") setExtensionStatus("Waiting for Chrome's LinkedIn permission decision…");
@@ -1110,7 +1126,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     };
     window.addEventListener("keydown", handleKeyboard);
     return () => window.removeEventListener("keydown", handleKeyboard);
-  }, [contact, visibleContacts, workspace.inboxRole]);
+  }, [contact, setActiveContactId, visibleContacts, workspace.inboxRole]);
 
   const storageSummary = useMemo(() => contact ? contact.chat.length + " messages · " + contact.documents.length + " context files · " + contact.outcomes.length + " outcomes · " + (contact.draftHistory?.length ?? 0) + " draft sets" : "No contact selected", [contact]);
   const latestMeaningfulIncomingId = useMemo(() => contact?.chat.findLast((message) => message.role === "them" && (message.body.trim() || message.attachments?.length))?.id ?? "", [contact]);
@@ -1146,7 +1162,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
           <div className="topbar-brand"><div className="brand-mark" aria-hidden="true">DM</div><div><p className="eyebrow">DIALOGMINT</p><h1>Private conversation studio</h1></div></div>
           <div className="top-actions">
             <ThemeToggle />
-            {dueReminderCount > 0 && <button className="reminder-badge" onClick={() => { setInboxView("reminders"); setInboxFilter("follow-up-due"); }}>{dueReminderCount} due</button>}
+            {dueReminderCount > 0 && <button className="reminder-badge" onClick={() => changeInboxView("reminders")}>{dueReminderCount} due</button>}
             <button onClick={() => shortcutDialogRef.current?.showModal()} aria-label="Show keyboard shortcuts">Shortcuts</button>
             <button className="wizard-launch" data-testid="open-linkedin-test-wizard" onClick={() => setWizardOpen(true)}>Guided import</button>
             <PwaInstall />
@@ -1158,24 +1174,12 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         </div>
         {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
 
-        <div className={"workspace-frame" + (navCollapsed ? " nav-is-collapsed" : "") + (contextCollapsed ? " context-is-collapsed" : "")}>
-          <aside className="workspace-nav" aria-label="Workspace navigation">
-            <div className="nav-brand"><div className="brand-mark" aria-hidden="true">DM</div><strong>DialogMint</strong><button aria-label={navCollapsed ? "Expand navigation" : "Collapse navigation"} onClick={() => setNavCollapsed((current) => !current)}>{navCollapsed ? "›" : "‹"}</button></div>
-            <nav>
-              {NAV_ITEMS.map((item) => <button key={item.value} className={inboxView === item.value ? "active" : ""} aria-current={inboxView === item.value ? "page" : undefined} onClick={() => {
-                setInboxView(item.value);
-                if (item.value === "archived") setInboxFilter("archived");
-                else if (item.value === "reminders") setInboxFilter("follow-up-due");
-                else if (item.value === "inbox") setInboxFilter("main");
-              }}><span aria-hidden="true">{item.glyph}</span><b>{item.label}</b>{item.value === "reminders" && dueReminderCount > 0 && <small>{dueReminderCount}</small>}</button>)}
-            </nav>
-            <div className="nav-privacy"><span className={"sync-dot " + (syncState?.enabled && !syncState.paused ? "on" : "")} /><b>{automaticSyncLabel}</b><small>Encrypted on this device</small></div>
-          </aside>
+        <div className={"workspace-frame" + (contextCollapsed ? " context-is-collapsed" : "")}>
 
           <section className={"inbox-column" + (mobileConversationOpen ? " mobile-list-hidden" : "")} aria-label="Conversation inbox">
             <header className="inbox-header">
               <div><p className="eyebrow">CONVERSATIONS</p><h2>{inboxView === "archived" ? "Archived" : inboxView === "reminders" ? "Reminders" : inboxView === "contacts" ? "Contacts" : inboxView === "labels" ? "Labels" : "Inbox"}</h2></div>
-              <span>{visibleContacts.length}</span>
+              <div className="inbox-header-actions"><select aria-label="Workspace view" value={inboxView} onChange={(event) => changeInboxView(event.target.value as InboxView)}>{NAV_ITEMS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><span>{visibleContacts.length}</span></div>
             </header>
             <label className="search-field"><span className="sr-only">Search conversations</span><input aria-label="Search conversations" value={contactSearch} onChange={(event) => setContactSearch(event.target.value)} placeholder="Search conversations" /></label>
             {inboxView !== "settings" && <section className={"sync-card sync-" + (syncState?.enabled ? syncState.paused ? "paused" : "on" : "off")} aria-label="LinkedIn conversation synchronization">
@@ -1241,23 +1245,21 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
             <nav className="conversation-list" aria-label="Conversations">
               {visibleContacts.map((item) => {
                 const latest = item.chat.at(-1);
-                const reminderAt = item.followUpAt || item.snoozedUntil;
-                const state = deriveConversationState(item, now);
+                const latestIncoming = item.chat.findLast((message) => message.role === "them");
+                const hasUnread = Boolean(latestIncoming && latestIncoming.id !== item.lastReadIncomingMessageId);
                 return <div className={item.id === contact?.id ? "conversation-row-shell active" : "conversation-row-shell"} key={item.id}>
                   <button className="conversation-row" aria-label={`Open conversation with ${item.name}`} onClick={() => {
-                    setSelectedId(item.id);
+                    setActiveContactId(item.id);
                     setDrafts(latestDraftsForRole(item, workspace.inboxRole));
                     setDraftError("");
                     setMobileConversationOpen(true);
                   }}>
-                    {renderAvatar(item)}
+                    <span className="conversation-avatar-shell">{renderAvatar(item)}{hasUnread && <span className="unread-dot" title={`Unread message from ${item.name}`} aria-label={`Unread message from ${item.name}`} />}</span>
                     <span className="conversation-row-body">
                       <span className="conversation-row-title"><strong>{item.name}</strong><time dateTime={latest?.createdAt || item.lastSyncedAt}>{formatRelativeTime(latest?.createdAt || item.lastSyncedAt, now)}</time></span>
                       <span className="conversation-preview">{latest?.body || item.headline || "No conversation imported yet"}</span>
-                      <span className="conversation-row-meta"><small className={`conversation-state-badge state-${state.code}`} title={state.explanation}>{state.label}</small><small className={"stage-pill stage-" + contactStage(item)}>{PIPELINE_STAGES.find((stage) => stage.value === contactStage(item))?.label}</small>{item.source === "linkedin-extension" && <small className="new-chip">Synced</small>}{reminderAt && <small className={isReminderDue(item, now) ? "reminder-due" : ""}>Follow-up {formatRelativeTime(reminderAt, now)}</small>}</span>
                       {Boolean(item.labels?.length) && <span className="label-row">{item.labels?.slice(0, 3).map((label) => <small key={label} className="label-chip">{label}</small>)}</span>}
                     </span>
-                    {item.lastSyncedAt && <span className="updated-dot" title="Synchronized conversation" aria-label="Synchronized conversation" />}
                   </button>
                   <span className="conversation-quick-actions">
                     <button type="button" aria-label={item.pinned ? `Unpin ${item.name}` : `Pin ${item.name}`} aria-pressed={Boolean(item.pinned)} title={item.pinned ? "Unpin" : "Pin"} onClick={() => updateContactById(item.id, (current) => ({ ...current, pinned: !current.pinned }))}>★</button>
@@ -1274,7 +1276,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
             <div className="pipeline-board">{PIPELINE_STAGES.map((stage) => <section className="pipeline-column" key={stage.value} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData("text/contact-id"); if (id) moveContactToStage(id, stage.value); }}>
               <header><strong>{stage.label}</strong><span>{stageCounts[stage.value]}</span></header>
               <div>{workspace.contacts.filter((item) => !item.archivedAt && contactStage(item) === stage.value).map((item) => <article className={item.id === contact?.id ? "pipeline-card selected" : "pipeline-card"} draggable key={item.id} onDragStart={(event) => event.dataTransfer.setData("text/contact-id", item.id)} onClick={() => {
-                setSelectedId(item.id);
+                setActiveContactId(item.id);
                 setDrafts(latestDraftsForRole(item, workspace.inboxRole));
                 setDraftError("");
                 setMobileConversationOpen(true);

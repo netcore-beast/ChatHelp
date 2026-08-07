@@ -25,7 +25,9 @@ describe("desktop conversation workspace layout", () => {
   });
 
   it("defines large, laptop, and mobile panel behavior", () => {
-    expect(styles).toContain("grid-template-columns: 176px 330px minmax(480px, 1fr) 320px");
+    expect(app).not.toContain('<aside className="workspace-nav"');
+    expect(app).toContain('aria-label="Workspace view"');
+    expect(styles).toContain("grid-template-columns: 330px minmax(480px, 1fr) 320px");
     expect(styles).toContain("@media (max-width: 1180px)");
     expect(styles).toMatch(/@media \(max-width: 1180px\)[\s\S]*?\.contact-context \{ display: none;/);
     expect(styles).toContain("@media (max-width: 760px)");

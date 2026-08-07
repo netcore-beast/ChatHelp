@@ -8,7 +8,7 @@ interface ExtractionResult {
   error?: { code: string; message: string; observedContact: { name: string; profileUrl: string } | null };
   snapshot?: {
     captureMode: "automatic" | "manual";
-    contact: { name: string; profileUrl: string; company: string };
+    contact: { name: string; profileUrl: string; headline: string; company: string; avatarUrl: string };
     messages: Array<{ id: string; sourceId: string; role: "me" | "them"; body: string }>;
   };
 }
@@ -51,6 +51,28 @@ describe("LinkedIn visible central conversation extraction", () => {
       expect.objectContaining({ sourceId: "urn:li:msg:1", role: "them", body: "Thanks for connecting." }),
       expect.objectContaining({ sourceId: "urn:li:msg:2", role: "me", body: "Glad to connect, Amit." }),
     ]);
+  });
+
+  it("captures visible profile metadata from LinkedIn's lazy-loaded header markup", () => {
+    document.body.innerHTML = [
+      '<main>',
+      '<header data-view-name="message-thread-header">',
+      '<a class="msg-thread__link-to-profile" href="/in/samreet-kaur/"><span data-anonymize="person-name">Samreet Kaur</span></a>',
+      '<img data-delayed-url="https://media.licdn.com/dms/image/v2/avatar-profile-displayphoto-shrink_100_100/avatar" alt="Samreet Kaur">',
+      '<div data-anonymize="headline">Security professional</div>',
+      '<div data-anonymize="company-name">Example Security</div>',
+      '</header>',
+      '<section data-view-name="message-thread-list"><div data-view-name="message-event" data-event-urn="central-profile-1"><span data-view-name="message-sender">Samreet Kaur</span><div data-view-name="message-bubble">Visible message.</div></div></section>',
+      '</main>',
+    ].join("");
+
+    expect(extractor()().snapshot?.contact).toMatchObject({
+      name: "Samreet Kaur",
+      profileUrl: "https://www.linkedin.com/in/samreet-kaur/",
+      headline: "Security professional",
+      company: "Example Security",
+      avatarUrl: "https://media.licdn.com/dms/image/v2/avatar-profile-displayphoto-shrink_100_100/avatar",
+    });
   });
 
   it("excludes background conversation-list previews and side panels", () => {

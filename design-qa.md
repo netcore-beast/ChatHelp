@@ -78,3 +78,34 @@ passed
 ## Result
 
 Passed. No P0, P1, or P2 visual defects were found. The only intentional difference is the underlying DialogMint workspace layout, which remains unchanged per the implementation constraint.
+
+---
+
+# Design QA - conversation inbox density and unread state
+
+## Sources
+
+- Current DialogMint contact context: `C:/Users/anshj/AppData/Local/Temp/codex-clipboard-96f2c9df-4bbe-42b2-a309-35bc227f1657.png`.
+- LinkedIn conversation reference: `C:/Users/anshj/AppData/Local/Temp/codex-clipboard-802d3e54-a963-4d34-9080-d83436c3f798.png`.
+- Local DialogMint preview with an incoming message and a user label, inspected in the in-app browser.
+
+## Comparison and implementation
+
+- The permanent left workspace rail was removed while navigation remains available from the compact `Workspace view` selector in the inbox header.
+- The conversation inbox remains visible as the primary navigation surface.
+- Selected conversation styling now uses a restrained green-to-charcoal gradient, a five-pixel green inset edge, and a low-contrast shadow. This follows the reference hierarchy without copying LinkedIn colors or trade dress.
+- Conversation tiles no longer display derived workflow, synchronization, or pipeline chips. Only labels entered by the user are rendered.
+- A new incoming message displays a compact green unread indicator anchored to the contact avatar. Explicitly opening that conversation clears the indicator.
+- The visible contact name, profile URL, headline, company, and avatar remain populated only from the current LinkedIn conversation header exposed to the extension.
+
+## Interaction and accessibility checks
+
+- The workspace selector exposes all existing destinations and is keyboard accessible.
+- The unread indicator has an accessible label naming the contact.
+- The active tile remains a normal conversation button, so keyboard selection also marks the latest incoming message as read.
+- The tile title, timestamp, preview, user labels, pin, and read-later controls remain usable without system chips.
+- The desktop preview showed no clipped tile content or overlap between the unread marker and avatar.
+
+## Result
+
+Passed. The requested inbox hierarchy is present and the existing conversation, drafting, contact-context, and synchronization flows remain intact.

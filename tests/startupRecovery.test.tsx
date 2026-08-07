@@ -37,7 +37,7 @@ describe("DialogMint startup recovery and confirmed backup status", () => {
   it("offers restore on an empty local workspace and explains separate Access, AI consent, and backup states", async () => {
     render(<ChatHelpApp />);
     expect(await screen.findByRole("button", { name: "Restore encrypted backup" })).toBeTruthy();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Settings" }));
+    await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "settings");
     expect(screen.getByRole("heading", { name: "Encrypted 90-day backup" })).toBeTruthy();
     expect(screen.getByText(/Cloudflare Access login authorizes both draft generation and encrypted backup/i)).toBeTruthy();
     expect(screen.queryByLabelText(/Cloud access code/i)).toBeNull();
@@ -47,7 +47,7 @@ describe("DialogMint startup recovery and confirmed backup status", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "offline" }), { status: 503, headers: { "Content-Type": "application/json" } })));
     render(<ChatHelpApp />);
     await screen.findByRole("heading", { name: /private conversation studio/i });
-    await userEvent.setup().click(screen.getByRole("button", { name: "Settings" }));
+    await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "settings");
     await userEvent.setup().click(screen.getByRole("button", { name: "Enable encrypted backup" }));
 
     expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
@@ -70,10 +70,10 @@ describe("DialogMint startup recovery and confirmed backup status", () => {
 
     render(<ChatHelpApp />);
     expect(await screen.findByText("All 1 conversations backed up · 1 messages", {}, { timeout: 8_000 })).toBeTruthy();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Settings" }));
+    await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "settings");
     await userEvent.setup().type(screen.getByLabelText("New contact name"), "New local contact");
     await userEvent.setup().click(screen.getByRole("button", { name: "Add" }));
-    expect(screen.getAllByText(/Encrypted backup pending/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Encrypted backup pending|Syncing encrypted backup/i).length).toBeGreaterThan(0);
   }, 15_000);
 
   it("restores an already-backed-up workspace after local browser data is empty", async () => {
@@ -134,7 +134,7 @@ describe("DialogMint startup recovery and confirmed backup status", () => {
 
     render(<ChatHelpApp />);
     await screen.findByRole("button", { name: "Open conversation with Recovery Contact" });
-    await userEvent.setup().click(screen.getByRole("button", { name: "Settings" }));
+    await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "Workspace view" }), "settings");
     await userEvent.setup().click(screen.getByRole("button", { name: "Delete encrypted cloud backup" }));
 
     await waitFor(() => expect(request).toHaveBeenCalledWith("/api/vault", expect.objectContaining({ method: "DELETE" })));
