@@ -5,7 +5,7 @@ const app = readFileSync("src/components/ChatHelpApp.tsx", "utf8");
 const styles = readFileSync("src/app/globals.css", "utf8");
 
 describe("desktop conversation workspace layout", () => {
-  it("provides the requested navigation, inbox filters, and drafting action without a right context panel", () => {
+  it("provides the requested navigation, inbox filters, drafting action, and collapsed right context panel", () => {
     for (const destination of ["Inbox", "Contacts", "Pipeline", "Reminders", "Labels", "Archived", "Settings"]) {
       expect(app).toContain(`label: "${destination}"`);
     }
@@ -14,9 +14,10 @@ describe("desktop conversation workspace layout", () => {
     }
     expect(app).toContain('"Generate 3 Drafts"');
     expect(app).toContain("Open LinkedIn to review and paste");
-    expect(app).toContain('<aside className="contact-context" aria-label="Contact context" hidden aria-hidden="true">');
-    expect(app).not.toContain("Show contact");
-    expect(app).not.toContain("Hide contact");
+    expect(app).toContain('aria-label={contactContextOpen ? "Hide contact details" : "Show contact details"}');
+    expect(app).toContain('hidden={!contactContextOpen} aria-hidden={!contactContextOpen}');
+    expect(styles).toContain(".contact-context-toggle");
+    expect(styles).toContain(".workspace-frame.context-is-expanded");
     expect(styles).toContain(".prompt-composer");
     expect(styles).toContain(".prompt-composer-actions");
     expect(styles).toContain("@media (max-width: 360px)");

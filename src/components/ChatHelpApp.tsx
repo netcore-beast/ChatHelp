@@ -307,6 +307,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [syncState, setSyncState] = useState<LinkedInSyncState | null>(null);
   const [manualCaptureHelp, setManualCaptureHelp] = useState(false);
   const [navCollapsed, setNavCollapsed] = useState(false);
+  const [contactContextExpanded, setContactContextExpanded] = useState(false);
   const [mobileConversationOpen, setMobileConversationOpen] = useState(false);
   const [captureEnvironment, setCaptureEnvironment] = useState({ detected: false, isMobile: false, supportsScreenCapture: false });
   const [now, setNow] = useState(() => Date.now());
@@ -353,6 +354,8 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const persistedWorkspaceRef = useRef<{ source: WorkspaceData; saved: WorkspaceData } | null>(null);
 
   const contact = workspace.contacts.find((item) => item.id === selectedId) ?? workspace.contacts[0] ?? null;
+  const contactContextAvailable = Boolean(contact && inboxView !== "settings" && inboxView !== "pipeline");
+  const contactContextOpen = contactContextExpanded && contactContextAvailable;
 
   useEffect(() => { workspaceRef.current = workspace; }, [workspace]);
 
@@ -1174,7 +1177,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         </div>
         {appError && <div className="notice error" role="alert">{appError}<button aria-label="Dismiss" onClick={() => setAppError("")}>×</button></div>}
 
-        <div className={"workspace-frame" + (navCollapsed ? " nav-is-collapsed" : "")}>
+        <div className={"workspace-frame" + (navCollapsed ? " nav-is-collapsed" : "") + (contactContextOpen ? " context-is-expanded" : "")}>
           <aside className="workspace-nav" aria-label="Workspace navigation">
             <div className="nav-brand"><div className="brand-mark" aria-hidden="true">DM</div><strong>DialogMint</strong><button aria-label={navCollapsed ? "Expand navigation" : "Collapse navigation"} onClick={() => setNavCollapsed((current) => !current)}>{navCollapsed ? "›" : "‹"}</button></div>
             <nav>
@@ -1406,7 +1409,16 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
             </> : <div className="empty-state"><div className="brand-mark">DM</div><h2>Open your first conversation</h2><p>Enable automatic sync, then manually open a LinkedIn conversation. Unknown contacts are added locally without inbox crawling.</p></div>}
           </section>}
 
-          <aside className="contact-context" aria-label="Contact context" hidden aria-hidden="true">
+          {contactContextAvailable && <button
+            className="contact-context-toggle"
+            type="button"
+            aria-label={contactContextOpen ? "Hide contact details" : "Show contact details"}
+            aria-controls="contact-context-panel"
+            aria-expanded={contactContextOpen}
+            onClick={() => setContactContextExpanded((current) => !current)}
+          ><span aria-hidden="true">{contactContextOpen ? "›" : "‹"}</span></button>}
+
+          <aside id="contact-context-panel" className="contact-context" aria-label="Contact context" hidden={!contactContextOpen} aria-hidden={!contactContextOpen}>
             {contact ? <>
               <header>{renderAvatar(contact, "context-avatar")}<h2>{contact.name}</h2><p>{contact.headline || "No headline synchronized"}</p><small>{contact.company || "No visible company"}</small>{contact.profileUrl && <a href={contact.profileUrl} target="_blank" rel="noreferrer">Visit LinkedIn profile ↗</a>}</header>
               <div className="contact-context-scroll">

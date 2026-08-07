@@ -463,6 +463,7 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 .topbar-brand .eyebrow { margin-bottom: .18rem; }
 
 .workspace-frame {
+  position: relative;
   display: grid;
   grid-template-columns: 176px 330px minmax(480px, 1fr);
   height: calc(100vh - 151px);
@@ -473,6 +474,8 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 }
 
 .workspace-frame.nav-is-collapsed { grid-template-columns: 68px 330px minmax(480px, 1fr); }
+.workspace-frame.context-is-expanded { grid-template-columns: 176px 330px minmax(360px, 1fr) 300px; }
+.workspace-frame.nav-is-collapsed.context-is-expanded { grid-template-columns: 68px 330px minmax(360px, 1fr) 300px; }
 
 .workspace-nav,
 .inbox-column,
@@ -721,7 +724,26 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 .drafting-scroll .draft-stack { margin-top: .6rem; }
 .drafting-scroll .platform-link { margin-top: .6rem; padding: .58rem; background: #fff; font-size: .7rem; }
 
-.contact-context { display: flex; flex-direction: column; border-right: 0; background: #fff; }
+.contact-context-toggle {
+  position: absolute;
+  top: 12px;
+  right: 0;
+  z-index: 9;
+  width: 32px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-right: 0;
+  border-radius: 12px 0 0 12px;
+  background: var(--surface-raised);
+  color: var(--green);
+  box-shadow: var(--shadow);
+  transition: right .2s ease-out, background-color .2s ease-out;
+}
+.contact-context-toggle span { font-size: 1.35rem; line-height: 1; }
+.context-is-expanded .contact-context-toggle { right: 300px; }
+.contact-context { grid-column: 4; display: flex; flex-direction: column; border-right: 0; border-left: 1px solid var(--line); background: #fff; }
 .contact-context[hidden] { display: none !important; }
 .contact-context > header { position: relative; display: grid; justify-items: center; gap: .25rem; padding: 1.1rem 1rem; border-bottom: 1px solid var(--line); text-align: center; }
 .contact-context > header > button { position: absolute; right: .65rem; top: .65rem; width: 30px; height: 30px; padding: 0; border-radius: 50%; }
@@ -766,6 +788,9 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 @media (max-width: 1450px) {
   .workspace-frame,
   .workspace-frame.nav-is-collapsed { grid-template-columns: 72px 310px minmax(460px,1fr); }
+  .workspace-frame.context-is-expanded,
+  .workspace-frame.nav-is-collapsed.context-is-expanded { grid-template-columns: 72px 310px minmax(360px,1fr) 290px; }
+  .context-is-expanded .contact-context-toggle { right: 290px; }
   .workspace-nav strong,
   .workspace-nav nav b,
   .workspace-nav nav small,
@@ -778,8 +803,11 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 
 @media (max-width: 1180px) {
   .workspace-frame,
-  .workspace-frame.nav-is-collapsed { grid-template-columns: 68px 300px minmax(0,1fr); }
-  .contact-context { display: none; }
+  .workspace-frame.nav-is-collapsed,
+  .workspace-frame.context-is-expanded,
+  .workspace-frame.nav-is-collapsed.context-is-expanded { grid-template-columns: 68px 300px minmax(0,1fr); }
+  .contact-context:not([hidden]) { position: absolute; inset: 0 0 0 auto; z-index: 8; width: min(300px, calc(100% - 68px)); display: flex; box-shadow: var(--shadow); }
+  .context-is-expanded .contact-context-toggle { right: min(300px, calc(100% - 68px)); }
   .pipeline-view-column { grid-column: 3; }
   .conversation-header-actions .sync-status-pill { display: none; }
   .settings-scroll { grid-template-columns: 1fr; }
@@ -802,6 +830,7 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
   .workspace-frame,
   .workspace-frame.nav-is-collapsed { display: block; height: auto; min-height: calc(100vh - 122px); overflow: visible; }
   .workspace-nav { display: none; }
+  .contact-context-toggle { display: none; }
   .inbox-column,
   .conversation-column { min-height: calc(100vh - 122px); border: 0; }
   .mobile-list-hidden,
@@ -949,7 +978,8 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 :root:not([data-theme="light"]) .workspace-nav nav button > span,
 :root:not([data-theme="light"]) .workspace-nav nav button small,
 :root:not([data-theme="light"]) .inbox-header > span,
-:root:not([data-theme="light"]) .nav-is-collapsed .nav-brand button {
+:root:not([data-theme="light"]) .nav-is-collapsed .nav-brand button,
+:root:not([data-theme="light"]) .contact-context-toggle {
   border-color: var(--line);
   background: var(--surface-raised);
   color: var(--green);

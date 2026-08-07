@@ -133,6 +133,14 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     expect(await within(screen.getByRole("navigation", { name: "Conversations" })).findByRole("button", { name: "Open conversation with Alex Morgan" })).toBeTruthy();
     expect(screen.getByLabelText("Conversation with Alex Morgan")).toBeTruthy();
+    const contextToggle = screen.getByRole("button", { name: "Show contact details" });
+    expect(contextToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("complementary", { name: "Contact context" })).toBeNull();
+    await user.click(contextToggle);
+    expect(screen.getByRole("complementary", { name: "Contact context" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Hide contact details" }).getAttribute("aria-expanded")).toBe("true");
+    await user.click(screen.getByRole("button", { name: "Hide contact details" }));
+    expect(screen.queryByRole("complementary", { name: "Contact context" })).toBeNull();
     await waitFor(async () => expect((await openDeviceVault()).workspace.contacts.some((contact) => contact.name === "Alex Morgan")).toBe(true), { timeout: 3000 });
 
     firstRender.unmount();

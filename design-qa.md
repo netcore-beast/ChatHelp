@@ -93,7 +93,7 @@ Passed. No P0, P1, or P2 visual defects were found. The only intentional differe
 ## Comparison and implementation
 
 - The left workspace navigation is restored and remains visible on desktop. At narrower desktop widths it collapses to its existing icon rail instead of disappearing.
-- The right contact-context panel is permanently hidden and its former show/hide controls are removed. Profile data remains stored and synchronized for drafting and contact identity matching without occupying workspace width.
+- The right contact-context panel is hidden by default and opens only from its compact right-edge chevron. Profile data remains stored and synchronized for drafting and contact identity matching without occupying workspace width until requested.
 - The conversation inbox remains visible beside the restored navigation as the primary conversation surface.
 - Selected conversation styling now uses a restrained green-to-charcoal gradient, a five-pixel green inset edge, and a low-contrast shadow. This follows the reference hierarchy without copying LinkedIn colors or trade dress.
 - Conversation tiles no longer display derived workflow, synchronization, or pipeline chips. Only labels entered by the user are rendered.
@@ -112,4 +112,43 @@ Passed. No P0, P1, or P2 visual defects were found. The only intentional differe
 
 ## Result
 
-Passed. The corrected left/right panel behavior is present, while the approved profile synchronization, selected gradient, unread state, user labels, drafting, encryption, backup, and synchronization logic remain intact.
+Passed. The corrected left navigation and collapsed-by-default right panel behavior are present, while the approved profile synchronization, selected gradient, unread state, user labels, drafting, encryption, backup, and synchronization logic remain intact.
+
+---
+
+# Design QA - collapsible right contact panel
+
+## Comparison setup
+
+- Source visual truth: `C:/Users/anshj/AppData/Local/Temp/codex-clipboard-5597c0e3-327b-43f5-a5d6-6a3f12b74c89.png` (81 x 128).
+- Collapsed implementation: `artifacts/contact-panel-collapsed.jpg` (1265 x 712 browser-rendered desktop capture).
+- Expanded implementation: `artifacts/contact-panel-expanded.jpg` (1265 x 712 browser-rendered desktop capture).
+- Focused control comparison: `artifacts/contact-panel-toggle-focus.png` (95 x 120 crop from the collapsed implementation).
+- State: default dark theme with one locally created contact selected.
+- Density normalization: browser captures and the source were inspected at their native pixel density; the focused crop isolates the same right-edge control state shown in the source.
+
+## Full-view and focused comparison evidence
+
+- The collapsed full view keeps the entire right panel out of the layout and leaves the conversation workspace at full width.
+- The focused comparison shows a compact, dark, rounded left-edge control aligned to the far-right workspace boundary, matching the supplied visual hierarchy while retaining DialogMint's green accent token.
+- Activating the control adds the existing contact panel as the rightmost column and reverses the chevron direction. Activating it again removes the panel from the accessibility tree and restores the original three-column workspace.
+- At laptop widths, the panel behaves as a right-side overlay so it does not compress the conversation below its usable minimum width. The existing mobile layout continues to omit the desktop contact panel.
+
+## Required fidelity surfaces
+
+- Fonts and typography: no typography changes; the control is icon-only with an accessible name.
+- Spacing and layout rhythm: the control is 32 x 44 CSS pixels and sits 12 pixels below the workspace edge without shifting collapsed content.
+- Colors and visual tokens: existing dark surfaces, border, shadow, and green accent tokens are reused; no new palette was introduced.
+- Image quality and asset fidelity: no raster artwork is required for this native workspace control; the supplied source was used for size, placement, and silhouette.
+- Copy and content: the visible control has no text. Screen readers receive `Show contact details` and `Hide contact details`, with `aria-expanded` and `aria-controls` reflecting the actual state.
+
+## Findings and verification history
+
+- Initial automated interaction test failed because no `Show contact details` control existed.
+- The minimal implementation added collapsed state, the right-edge toggle, responsive panel sizing, and accessible expanded state.
+- The focused interaction test then passed, proving default-hidden, open, and close behavior.
+- Browser verification exercised both visible states using the real control. No P0, P1, or P2 mismatch remains.
+
+## Final result
+
+passed
