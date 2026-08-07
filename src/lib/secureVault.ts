@@ -390,6 +390,7 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
         lastSyncMessageCount: typeof contact.lastSyncMessageCount === "number" && Number.isFinite(contact.lastSyncMessageCount) ? Math.max(0, Math.floor(contact.lastSyncMessageCount)) : 0,
         pinned: contact.pinned === true,
         readLater: contact.readLater === true,
+        lastReadIncomingMessageId: typeof contact.lastReadIncomingMessageId === "string" ? contact.lastReadIncomingMessageId.slice(0, 500) : "",
         lastSyncDiagnostic: normalizeSyncDiagnostic(contact.lastSyncDiagnostic),
         draftHistory: Array.isArray(contact.draftHistory) ? contact.draftHistory.slice(-20).flatMap((draft, draftIndex) => {
           if (!draft || typeof draft !== "object") return [];

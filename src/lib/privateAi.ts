@@ -2,6 +2,7 @@ import { CLOUDFLARE_MODEL_ID, PLAYBOOK_GOAL_MAX_CHARS, PLAYBOOK_RULES_MAX_CHARS,
 import { isLikelyFullLinkedInPageCapture, selectRecentConversationCaptures, type RankedContext } from "./retrieval";
 import { repairLegacyLinkedInMessages } from "./messageDedup";
 import { RULEBOOK_DIGEST_MAX_CHARS, buildRulebookDigest } from "./rulebookDigest";
+import { parseDraftProgressStream, type DraftProgressUpdate } from "./draftProgress";
 
 export interface PrivateAiInput {
   contact: Contact;
@@ -273,14 +274,14 @@ function cloudDraftEndpoint(): string {
 export async function generateWithCloud(
   input: PrivateAiInput,
   config: CloudInferenceSettings | undefined,
-  onProgress?: (message: string) => void,
+  onProgress?: (update: DraftProgressUpdate) => void,
   request: typeof fetch = fetch,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   if (!config?.consentedAt) {
     throw new Error("Confirm the cloud privacy notice before using Cloudflare AI.");
   }
 
-  onProgress?.("Llama is planning from the rulebook digest. GPT-OSS will write three replies, then independently review each one against the full rulebook...");
   const response = await request(cloudDraftEndpoint(), {
     method: "POST",
     cache: "no-store",
@@ -289,14 +290,21 @@ export async function generateWithCloud(
     // credentials to any third-party origin.
     credentials: "same-origin",
     referrerPolicy: "no-referrer",
+    signal,
     headers: {
-      Accept: "application/json",
+      Accept: "text/event-stream, application/json",
       "Content-Type": "application/json",
     },
     body: JSON.stringify(buildCloudDraftRequest(input)),
   });
 
   const contentType = response.headers.get("Content-Type")?.toLowerCase() ?? "";
+  if (contentType.includes("text/event-stream")) {
+    const payload = await parseDraftProgressStream(response, onProgress);
+    const drafts = (payload as { drafts?: unknown }).drafts;
+    if (!Array.isArray(drafts)) throw new Error("Cloudflare AI returned an invalid response.");
+    return parseDrafts(JSON.stringify(drafts));
+  }
   if (!contentType.includes("application/json")) {
     throw new Error("Your Cloudflare sign-in session could not be verified. Refresh DialogMint, sign in again if asked, then retry.");
   }
@@ -328,18 +336,18 @@ async function unloadWebGpuModel(): Promise<void> {
   loadedModelId = "";
 }
 
-async function generateWithWebGpu(modelId: string, input: PrivateAiInput, onProgress?: (message: string) => void): Promise<string[]> {
+async function generateWithWebGpu(modelId: string, input: PrivateAiInput, onProgress?: (update: DraftProgressUpdate) => void): Promise<string[]> {
   if (!engine || loadedModelId !== modelId) {
     await unloadWebGpuModel();
-    onProgress?.("Starting the private WebGPU model…");
+    onProgress?.({ kind: "message", message: "Starting the private WebGPU model…" });
     const webllm = await import("@mlc-ai/web-llm");
     webGpuWorker = new Worker(new URL("../workers/webllm.worker.ts", import.meta.url), { type: "module" });
     engine = await webllm.CreateWebWorkerMLCEngine(webGpuWorker, modelId, {
-      initProgressCallback: (progress) => onProgress?.(progress.text),
+      initProgressCallback: (progress) => onProgress?.({ kind: "message", message: progress.text }),
     });
     loadedModelId = modelId;
   }
-  onProgress?.("Generating locally with WebGPU…");
+  onProgress?.({ kind: "message", message: "Generating locally with WebGPU…" });
   const result = await engine.chat.completions.create({
     messages: [
       { role: "system", content: "Follow the privacy and safety rules in the user prompt. Output JSON only." },
@@ -357,7 +365,7 @@ type CpuWorkerMessage =
   | { requestId: number; type: "complete"; output: string }
   | { requestId: number; type: "error"; message: string };
 
-function generateWithCpu(input: PrivateAiInput, onProgress?: (message: string) => void): Promise<string[]> {
+function generateWithCpu(input: PrivateAiInput, onProgress?: (update: DraftProgressUpdate) => void): Promise<string[]> {
   if (!cpuWorker) cpuWorker = new Worker(new URL("../workers/transformers.worker.ts", import.meta.url), { type: "module" });
   const activeWorker = cpuWorker;
   const requestId = ++cpuRequestId;
@@ -375,7 +383,7 @@ function generateWithCpu(input: PrivateAiInput, onProgress?: (message: string) =
     const handleMessage = (event: MessageEvent<CpuWorkerMessage>) => {
       if (event.data.requestId !== requestId) return;
       if (event.data.type === "progress") {
-        onProgress?.(event.data.message);
+        onProgress?.({ kind: "message", message: event.data.message });
         return;
       }
       cleanup();
@@ -398,11 +406,12 @@ function generateWithCpu(input: PrivateAiInput, onProgress?: (message: string) =
 export async function generatePrivateDrafts(
   modelId: string,
   input: PrivateAiInput,
-  onProgress?: (message: string) => void,
+  onProgress?: (update: DraftProgressUpdate) => void,
   cloudConfig?: CloudInferenceSettings,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   if (modelId === CLOUDFLARE_MODEL_ID) {
-    return generateWithCloud(input, cloudConfig, onProgress);
+    return generateWithCloud(input, cloudConfig, onProgress, fetch, signal);
   }
 
   const forceCpu = modelId.startsWith("cpu:");
@@ -411,12 +420,12 @@ export async function generatePrivateDrafts(
       return await generateWithWebGpu(modelId, input, onProgress);
     } catch {
       await unloadWebGpuModel();
-      onProgress?.("WebGPU could not start. Switching to the private CPU model…");
+      onProgress?.({ kind: "message", message: "WebGPU could not start. Switching to the private CPU model…" });
     }
   } else if (forceCpu) {
-    onProgress?.("Using the private CPU/WASM model you selected…");
+    onProgress?.({ kind: "message", message: "Using the private CPU/WASM model you selected…" });
   } else {
-    onProgress?.("WebGPU is unavailable. Using the private CPU model…");
+    onProgress?.({ kind: "message", message: "WebGPU is unavailable. Using the private CPU model…" });
   }
   return generateWithCpu(input, onProgress);
 }

@@ -30,6 +30,10 @@ function json(body, status = 200, extraHeaders = {}) {
   });
 }
 
+function sseEvent(event, data) {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
 function limitedText(value, maxCharacters) {
   return typeof value === "string" ? value.trim().slice(0, maxCharacters) : "";
 }
@@ -318,7 +322,9 @@ export async function handleRequest(request, env, options = {}) {
   ].join("\n");
   const fullRulebookBlock = `<rulebook>\n${escapedBlockText(playbook.rulebookFull || "Follow the supplied safety and conversation-grounding rules.")}\n</rulebook>`;
 
-  try {
+  const runDraftPipeline = async (emit = () => {}) => {
+    try {
+    emit("stage", { stage: "planning", status: "in-progress" });
     const plannerOptions = {
       messages: [
         {
@@ -340,7 +346,9 @@ export async function handleRequest(request, env, options = {}) {
       max_tokens: 1_100,
     };
     const plan = await runStructuredStage(env, LLAMA_CANDIDATE_MODEL, plannerOptions, PLAN_RESPONSE_FORMAT, parseModelPlan);
+    emit("stage", { stage: "planning", status: "done" });
 
+    emit("stage", { stage: "drafting", status: "in-progress" });
     const writerOptions = {
       messages: [
         {
@@ -364,7 +372,9 @@ export async function handleRequest(request, env, options = {}) {
       max_tokens: 1_200,
     };
     const writerDrafts = await runStructuredStage(env, GPT_REVIEW_MODEL, writerOptions, DRAFTS_RESPONSE_FORMAT, parseModelDraftObjects);
+    emit("stage", { stage: "drafting", status: "done" });
 
+    emit("stage", { stage: "reviewing", status: "in-progress" });
     const runReviewer = async (drafts, correction = "") => {
       const reviewerOptions = {
         messages: [
@@ -404,12 +414,48 @@ export async function handleRequest(request, env, options = {}) {
       if (unsupportedPersonalHistory.length) corrections.push(`These drafts invented unsupported personal history: ${JSON.stringify(unsupportedPersonalHistory)}. Replace those claims with evidence-supported present-tense wording.`);
       reviewedDrafts = await runReviewer(reviewedDrafts, `\n\n<quality_correction>\n${escapedBlockText(corrections.join("\n"))}\n</quality_correction>`);
     }
+    emit("stage", { stage: "reviewing", status: "done" });
 
+    emit("stage", { stage: "finalizing", status: "in-progress" });
     const drafts = reviewedDrafts.map((draft) => draft.text);
     if (draftsRepeatedFromContext(drafts, conversationContext).length || draftsWithUnsupportedPersonalHistory(drafts).length || tooManyDraftsAreQuestions(drafts)) {
       throw new Error("Draft quality validation failed");
     }
-    return json({ drafts, model: WORKERS_AI_MODEL, models: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL], mode: PIPELINE_MODE });
+    emit("stage", { stage: "finalizing", status: "done" });
+    return { drafts, model: WORKERS_AI_MODEL, models: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL], mode: PIPELINE_MODE };
+    } catch {
+      throw new Error("Cloud AI could not produce three safe drafts. Please try again.");
+    }
+  };
+
+  const wantsStream = request.headers.get("Accept")?.toLowerCase().includes("text/event-stream");
+  if (wantsStream) {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream({
+      async start(controller) {
+        const emit = (event, data) => controller.enqueue(encoder.encode(sseEvent(event, data)));
+        try {
+          const result = await runDraftPipeline(emit);
+          emit("result", result);
+        } catch (error) {
+          emit("error", { error: error instanceof Error ? error.message : "Cloud AI could not produce three safe drafts. Please try again." });
+        } finally {
+          controller.close();
+        }
+      },
+    });
+    return new Response(body, {
+      status: 200,
+      headers: {
+        ...RESPONSE_HEADERS,
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "X-Accel-Buffering": "no",
+      },
+    });
+  }
+
+  try {
+    return json(await runDraftPipeline());
   } catch {
     return json({ error: "Cloud AI could not produce three safe drafts. Please try again." }, 502);
   }

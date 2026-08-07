@@ -88,6 +88,7 @@ function mergeContact(local: Contact, remote: Contact): Contact {
     archivedAt: nonblank(preferred.archivedAt, fallback.archivedAt),
     firstSyncedAt: nonblank(local.firstSyncedAt, remote.firstSyncedAt),
     lastSyncedAt: nonblank(preferred.lastSyncedAt, fallback.lastSyncedAt),
+    lastReadIncomingMessageId: nonblank(preferred.lastReadIncomingMessageId, fallback.lastReadIncomingMessageId),
     labels: Array.from(new Set([...(local.labels ?? []), ...(remote.labels ?? [])])),
     chat: mergeMessages(local.chat, remote.chat),
     documents: mergeById(local.documents, remote.documents),

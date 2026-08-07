@@ -85,6 +85,7 @@ export interface Contact {
   lastSyncMessageCount?: number;
   pinned?: boolean;
   readLater?: boolean;
+  lastReadIncomingMessageId?: string;
   lastSyncDiagnostic?: ContactSyncDiagnostic;
   draftHistory?: DraftHistoryEntry[];
 }

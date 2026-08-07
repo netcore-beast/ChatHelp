@@ -68,6 +68,26 @@ describe("DialogMint Neon vault Worker boundary", () => {
     expect(response?.headers.get("Cache-Control")).toBe("no-store");
   });
 
+  it("accepts a valid encrypted envelope after PostgreSQL jsonb reorders its keys", async () => {
+    const reorderedEnvelope = {
+      iv: envelope.iv,
+      format: envelope.format,
+      savedAt: envelope.savedAt,
+      ciphertext: envelope.ciphertext,
+      schemaVersion: envelope.schemaVersion,
+      encryptedBytes: envelope.encryptedBytes,
+    };
+    const query = vi.fn().mockResolvedValue({
+      rows: [{ ciphertext: reorderedEnvelope, revision: "2", ciphertext_digest: ciphertextDigest }],
+      rowCount: 1,
+    });
+
+    const response = await handleVaultRequest(vaultRequest("GET"), env(), new URL(`https://${TESTING_HOST}/api/vault`), { accountId: ACCOUNT_ID, environment: "testing" }, { query });
+
+    expect(response?.status).toBe(200);
+    await expect(response?.json()).resolves.toEqual({ envelope: reorderedEnvelope, revision: 2, ciphertextDigest });
+  });
+
   it("returns 404 for an absent or expired row without exposing identity", async () => {
     const query = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
     const response = await handleVaultRequest(vaultRequest("GET"), env(), new URL(`https://${TESTING_HOST}/api/vault`), { accountId: ACCOUNT_ID, environment: "testing" }, { query });

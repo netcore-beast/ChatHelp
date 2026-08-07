@@ -1,4 +1,4 @@
-import { isCloudVaultEnvelope, type CloudVaultEnvelopeV1 } from "./cloudRecovery";
+import { isCloudVaultEnvelope, serializeCloudVaultEnvelope, type CloudVaultEnvelopeV1 } from "./cloudRecovery";
 
 const MAX_RESPONSE_BYTES = 11 * 1024 * 1024;
 const HEX_DIGEST = /^[0-9a-f]{64}$/;
@@ -77,13 +77,13 @@ export async function readCloudVault(fetchImpl: FetchLike = fetch): Promise<Clou
   if (!isCloudVaultEnvelope(item.envelope) || !Number.isSafeInteger(item.revision) || Number(item.revision) <= 0 || typeof item.ciphertextDigest !== "string" || !HEX_DIGEST.test(item.ciphertextDigest)) {
     throw new CloudRecoveryTransportError("invalid", "DialogMint received an invalid encrypted backup response.");
   }
-  if (await sha256Hex(JSON.stringify(item.envelope)) !== item.ciphertextDigest) throw new CloudRecoveryTransportError("invalid", "DialogMint received an invalid encrypted backup response.");
+  if (await sha256Hex(serializeCloudVaultEnvelope(item.envelope)) !== item.ciphertextDigest) throw new CloudRecoveryTransportError("invalid", "DialogMint received an invalid encrypted backup response.");
   return { envelope: item.envelope, revision: Number(item.revision), ciphertextDigest: item.ciphertextDigest };
 }
 
 export async function writeCloudVault(envelope: CloudVaultEnvelopeV1, expectedRevision: number, fetchImpl: FetchLike = fetch): Promise<CloudVaultWriteResult> {
   if (!isCloudVaultEnvelope(envelope) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new CloudRecoveryTransportError("invalid", "This encrypted DialogMint backup is not valid.");
-  const ciphertextDigest = await sha256Hex(JSON.stringify(envelope));
+  const ciphertextDigest = await sha256Hex(serializeCloudVaultEnvelope(envelope));
   const response = await fetchImpl("/api/vault", {
     method: "PUT",
     cache: "no-store",

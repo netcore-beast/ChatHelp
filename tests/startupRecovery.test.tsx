@@ -73,7 +73,7 @@ describe("DialogMint startup recovery and confirmed backup status", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "Settings" }));
     await userEvent.setup().type(screen.getByLabelText("New contact name"), "New local contact");
     await userEvent.setup().click(screen.getByRole("button", { name: "Add" }));
-    expect(screen.getAllByText(/Encrypted backup pending/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Encrypted backup pending|Syncing encrypted backup/i).length).toBeGreaterThan(0);
   }, 15_000);
 
   it("restores an already-backed-up workspace after local browser data is empty", async () => {

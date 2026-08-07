@@ -23,7 +23,7 @@ When automatic sync is enabled, DialogMint reads the visible LinkedIn conversati
 ## Local testing
 
 1. Open 'chrome://extensions', enable Developer mode, and choose **Load unpacked**.
-2. Select this 'extension' directory. When updating, click **Reload** and confirm version '0.5.0', then reload the DialogMint and LinkedIn tabs.
+2. Select this 'extension' directory. When updating, click **Reload** and confirm version '0.5.1', then reload the DialogMint and LinkedIn tabs.
 3. In desktop DialogMint, click **Enable automatic LinkedIn conversation sync** and approve Chrome's LinkedIn host prompt.
 4. Manually open conversations at LinkedIn Messaging. DialogMint's local inbox grows only from conversations you open.
 5. Test Pause, Resume, and Disable. Disable must revoke the optional host permission.

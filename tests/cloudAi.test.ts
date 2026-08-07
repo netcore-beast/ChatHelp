@@ -32,6 +32,16 @@ function input(): PrivateAiInput {
   };
 }
 
+function sseResponse(chunks: string[]): Response {
+  const encoder = new TextEncoder();
+  return new Response(new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  }), { status: 200, headers: { "Content-Type": "text/event-stream; charset=utf-8" } });
+}
+
 describe("cloud AI client boundary", () => {
   it("requires explicit consent before making a network request", async () => {
     const request = vi.fn();
@@ -55,6 +65,7 @@ describe("cloud AI client boundary", () => {
     expect(init.credentials).toBe("same-origin");
     expect(init.cache).toBe("no-store");
     expect(init.headers.Authorization).toBeUndefined();
+    expect(init.headers.Accept).toBe("text/event-stream, application/json");
     const body = JSON.parse(init.body);
     expect(Object.keys(body)).toEqual(["conversationContext", "playbook", "replyObjective"]);
     expect(body.conversationContext).toContain("<conversation_context>");
@@ -69,6 +80,39 @@ describe("cloud AI client boundary", () => {
     });
     expect(body.replyObjective).toBe("Answer Alex and suggest two times.");
     expect(body.conversationContext.length).toBeLessThanOrEqual(MAX_CLOUD_PROMPT_CHARS);
+  });
+
+  it("parses bounded live stage events and the final three drafts", async () => {
+    const progress = vi.fn();
+    const request = vi.fn().mockResolvedValue(sseResponse([
+      'event: stage\r\ndata: {"stage":"planning","status":"in-progress"}\r\n\r\n',
+      'event: stage\ndata: {"stage":"planning","status":"done"}\n\nevent: stage\ndata: {"stage":"drafting",',
+      '"status":"in-progress"}\n\nevent: result\ndata: {"drafts":["Draft one","Draft two","Draft three"]}\n\n',
+    ]));
+
+    await expect(generateWithCloud(input(), {
+      consentedAt: "2026-08-01T00:00:00.000Z",
+    }, progress, request as unknown as typeof fetch)).resolves.toEqual(["Draft one", "Draft two", "Draft three"]);
+
+    expect(progress.mock.calls.map(([update]) => update)).toEqual([
+      { kind: "stage", stage: "planning", status: "in-progress" },
+      { kind: "stage", stage: "planning", status: "done" },
+      { kind: "stage", stage: "drafting", status: "in-progress" },
+    ]);
+  });
+
+  it("surfaces a safe streaming error and rejects a truncated stream", async () => {
+    const consent = { consentedAt: "2026-08-01T00:00:00.000Z" };
+    const safeError = vi.fn().mockResolvedValue(sseResponse([
+      'event: stage\ndata: {"stage":"planning","status":"in-progress"}\n\n',
+      'event: error\ndata: {"error":"Cloud AI could not produce three safe drafts. Please try again."}\n\n',
+    ]));
+    await expect(generateWithCloud(input(), consent, undefined, safeError as unknown as typeof fetch)).rejects.toThrow("Cloud AI could not produce three safe drafts. Please try again.");
+
+    const truncated = vi.fn().mockResolvedValue(sseResponse([
+      'event: stage\ndata: {"stage":"planning","status":"done"}\n\n',
+    ]));
+    await expect(generateWithCloud(input(), consent, undefined, truncated as unknown as typeof fetch)).rejects.toThrow(/incomplete response/i);
   });
 
   it("surfaces the Worker's safe error message", async () => {

@@ -86,7 +86,7 @@ describe("automatic LinkedIn extension import", () => {
   });
 
   it("validates extension versions, status, and visible sync state", () => {
-    expect(isCurrentLinkedInExtensionVersion("0.5.0")).toBe(true);
+    expect(isCurrentLinkedInExtensionVersion("0.5.1")).toBe(true);
     expect(isCurrentLinkedInExtensionVersion("0.4.0")).toBe(false);
     expect(isCurrentLinkedInExtensionVersion("0.3.9")).toBe(false);
     expect(parseLinkedInExtensionStatus({
@@ -353,7 +353,7 @@ describe("automatic LinkedIn extension import", () => {
     ]);
     expect(manifest.optional_host_permissions).toEqual(["https://www.linkedin.com/*"]);
     expect(manifest.host_permissions.some((permission) => permission.includes("linkedin.com"))).toBe(false);
-    expect(manifest.version).toBe("0.5.0");
+    expect(manifest.version).toBe("0.5.1");
     expect(manifest.permissions).not.toContain("cookies");
     expect(manifest.permissions).not.toContain("webRequest");
     expect(sources).not.toMatch(/chrome\.cookies|chrome\.webRequest|chrome\.debugger|fetch\s*\(|XMLHttpRequest|\.click\s*\(/);
