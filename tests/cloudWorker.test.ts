@@ -217,6 +217,27 @@ describe("Cloudflare private inference Worker", () => {
     expect(env.AI.run).toHaveBeenCalledTimes(3);
   });
 
+  it("regenerates the permanent fallback once when its first review misses the quality threshold", async () => {
+    const lowReview = {
+      ...REVIEW,
+      scores: { ...REVIEW.scores, conversationGrounding: 14 },
+      total: 89,
+    };
+    const fallbackResponses = [ANALYSIS, CANDIDATE, lowReview, ANALYSIS, CANDIDATE, REVIEW];
+    const env = workerEnv({ anthropicConfigured: false });
+    env.AI.run = vi.fn(async () => ({ response: fallbackResponses.shift() }));
+
+    const response = await handleRequest(draftRequest(structuredPayload()), env, { verifyAccess });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      draft: REVIEW.finalDraft,
+      provider: "cloudflare",
+      model: WORKERS_AI_MODEL,
+    });
+    expect(env.AI.run).toHaveBeenCalledTimes(6);
+  });
+
   it("uses the permanent fallback when Claude returns invalid quality or a critical policy failure", async () => {
     for (const responses of [
       [{ invalid: "analysis" }],

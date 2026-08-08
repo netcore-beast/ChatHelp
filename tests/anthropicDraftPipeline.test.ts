@@ -122,6 +122,31 @@ describe("Claude Opus precision pipeline", () => {
     expect(bodies[2].messages[0].content).toContain(CANDIDATE.draft.text);
   });
 
+  it("allows a precise writer stage to take sixty seconds", async () => {
+    vi.useFakeTimers();
+    let call = 0;
+    const request = vi.fn((_url: string, init?: RequestInit) => {
+      call += 1;
+      if (call === 1) return Promise.resolve(messageResponse(ANALYSIS));
+      if (call === 3) return Promise.resolve(messageResponse(REVIEW));
+      return new Promise<Response>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(messageResponse(CANDIDATE)), 60_000);
+        init?.signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      });
+    });
+
+    try {
+      const result = runAnthropicDraftPipeline(CONTEXT, { apiKey: "[runtime-secret]", request });
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect(result).resolves.toMatchObject({ draft: REVIEW.finalDraft, provider: "anthropic" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("fails closed on a low-scoring review without returning reasoning or the rejected candidate", async () => {
     const lowReview = {
       ...REVIEW,

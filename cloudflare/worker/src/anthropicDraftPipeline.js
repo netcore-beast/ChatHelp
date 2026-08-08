@@ -13,7 +13,7 @@ export const ANTHROPIC_MODEL = "claude-opus-4-6";
 export const SINGLE_DRAFT_MODE = "stage-aware-single-draft-v1";
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const MAX_PROVIDER_RESPONSE_BYTES = 512_000;
-const DEFAULT_STAGE_TIMEOUT_MS = 45_000;
+const DEFAULT_STAGE_TIMEOUT_MS = 90_000;
 const UNSUPPORTED_SCHEMA_CONSTRAINTS = new Set(["minimum", "maximum", "maxItems"]);
 
 export class AnthropicPipelineError extends Error {

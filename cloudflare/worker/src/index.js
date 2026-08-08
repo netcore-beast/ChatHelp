@@ -176,10 +176,19 @@ function createOrderedStageEmitter(emit) {
   };
 }
 
+async function runWorkersAiWithQualityRetry(context, env, emit) {
+  try {
+    return await runWorkersAiDraftPipeline(context, { ai: env.AI, emit });
+  } catch (error) {
+    if (!(error instanceof WorkersAiPipelineError) || error.kind !== "quality") throw error;
+    return runWorkersAiDraftPipeline(context, { ai: env.AI, emit });
+  }
+}
+
 async function runProviderPipeline(context, env, options, emit) {
   const orderedEmit = createOrderedStageEmitter(emit);
   if (options.providerOverride === "cloudflare") {
-    const result = await runWorkersAiDraftPipeline(context, { ai: env.AI, emit: orderedEmit });
+    const result = await runWorkersAiWithQualityRetry(context, env, orderedEmit);
     orderedEmit("stage", { stage: "finalizing", status: "in-progress" });
     orderedEmit("stage", { stage: "finalizing", status: "done" });
     return result;
@@ -199,7 +208,7 @@ async function runProviderPipeline(context, env, options, emit) {
     if (!(error instanceof AnthropicPipelineError) || error.kind === "cancelled") throw error;
     let result;
     try {
-      result = await runWorkersAiDraftPipeline(context, { ai: env.AI, emit: orderedEmit });
+      result = await runWorkersAiWithQualityRetry(context, env, orderedEmit);
     } catch (fallbackError) {
       if (fallbackError instanceof WorkersAiPipelineError) throw new DraftPipelineFailure(error.kind, fallbackError.kind);
       throw fallbackError;
