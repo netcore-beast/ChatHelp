@@ -41,6 +41,14 @@ function safeDiagnosticCode(error) {
   return error instanceof DraftPipelineFailure ? error.diagnosticCode : "pipeline_unclassified";
 }
 
+function safeGenerationErrorPayload(error) {
+  const diagnosticCode = safeDiagnosticCode(error);
+  return {
+    error: `${SAFE_GENERATION_ERROR} Diagnostic: ${diagnosticCode}`,
+    diagnosticCode,
+  };
+}
+
 const RESPONSE_HEADERS = {
   "Cache-Control": "no-store",
   "Content-Type": "application/json; charset=utf-8",
@@ -276,7 +284,7 @@ export async function handleRequest(request, env, options = {}) {
           const result = await runProviderPipeline(context, env, { ...options, signal: request.signal }, emit);
           emit("result", result);
         } catch (error) {
-          emit("error", { error: SAFE_GENERATION_ERROR, diagnosticCode: safeDiagnosticCode(error) });
+          emit("error", safeGenerationErrorPayload(error));
         } finally {
           controller.close();
         }
@@ -291,7 +299,7 @@ export async function handleRequest(request, env, options = {}) {
   try {
     return json(await runProviderPipeline(context, env, { ...options, signal: request.signal }, () => {}));
   } catch (error) {
-    return json({ error: SAFE_GENERATION_ERROR, diagnosticCode: safeDiagnosticCode(error) }, 502);
+    return json(safeGenerationErrorPayload(error), 502);
   }
 }
 

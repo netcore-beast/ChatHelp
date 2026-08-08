@@ -273,7 +273,7 @@ describe("Cloudflare private inference Worker", () => {
     expect(events.at(-1)).toEqual({
       event: "error",
       data: {
-        error: "Cloud AI could not produce a safe draft. Please try again.",
+        error: "Cloud AI could not produce a safe draft. Please try again. Diagnostic: anthropic_quality__cloudflare_quality",
         diagnosticCode: "anthropic_quality__cloudflare_quality",
       },
     });
