@@ -1,4 +1,4 @@
-import { MESSAGING_ROLES, PLAYBOOK_GOAL_MAX_CHARS, PLAYBOOK_RULES_MAX_CHARS, PLAYBOOK_VOICE_MAX_CHARS, createDefaultMessagingGuidance, createEmptyWorkspace, isMessagingRole, normalizeMessagingRole, normalizeWorkspaceModelId, type Contact, type ConversationAttachment, type Message, type PipelineStage, type RolePlaybooks, type WorkspaceData } from "./workspaceTypes";
+import { CONVERSATION_GOAL_MAX_CHARS, MESSAGING_ROLES, PLAYBOOK_GOAL_MAX_CHARS, PLAYBOOK_RULES_MAX_CHARS, PLAYBOOK_VOICE_MAX_CHARS, createDefaultMessagingGuidance, createEmptyWorkspace, isMessagingRole, normalizeMessagingRole, normalizePersonalGuidelines, normalizeRelationshipStage, normalizeWorkspaceModelId, type Contact, type ConversationAttachment, type Message, type PipelineStage, type RolePlaybooks, type WorkspaceData } from "./workspaceTypes";
 import { PIPELINE_STAGES } from "./linkedinExtension";
 import { repairLegacyLinkedInMessages } from "./messageDedup";
 import { buildRulebookDigest } from "./rulebookDigest";
@@ -326,7 +326,7 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
   };
   const inboxRole = isMessagingRole(source.inboxRole) ? source.inboxRole : selectedRole;
   return {
-    version: 10,
+    version: 11,
     modelId: normalizeWorkspaceModelId(),
     cloudInference: {
       consentedAt: typeof cloudInference.consentedAt === "string" ? cloudInference.consentedAt.slice(0, 100) : "",
@@ -397,8 +397,11 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
           const item = draft as Record<string, unknown>;
           const drafts = Array.isArray(item.drafts) ? item.drafts.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.slice(0, 5_000)).slice(0, 3) : [];
           if (!drafts.length) return [];
-          return [{ id: typeof item.id === "string" ? item.id.slice(0, 200) : `draft-history-${draftIndex}`, agenda: typeof item.agenda === "string" ? item.agenda.slice(0, 5_000) : "", drafts, createdAt: typeof item.createdAt === "string" ? item.createdAt.slice(0, 100) : new Date().toISOString(), role: isMessagingRole(item.role) ? item.role : inboxRole }];
+          const provider = item.provider === "anthropic" || item.provider === "cloudflare" || item.provider === "local" ? item.provider : undefined;
+          return [{ id: typeof item.id === "string" ? item.id.slice(0, 200) : `draft-history-${draftIndex}`, agenda: typeof item.agenda === "string" ? item.agenda.slice(0, 5_000) : "", drafts, createdAt: typeof item.createdAt === "string" ? item.createdAt.slice(0, 100) : new Date().toISOString(), role: isMessagingRole(item.role) ? item.role : inboxRole, provider, modelId: typeof item.modelId === "string" ? item.modelId.slice(0, 300) : undefined }];
         }) : [],
+        relationshipStage: normalizeRelationshipStage(contact.relationshipStage),
+        conversationGoal: typeof contact.conversationGoal === "string" ? contact.conversationGoal.slice(0, CONVERSATION_GOAL_MAX_CHARS) : "",
       };
     }),
     feedback: Array.isArray(source.feedback) ? source.feedback.slice(-1000) as WorkspaceData["feedback"] : [],
@@ -415,6 +418,7 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
         createdAt: typeof item.createdAt === "string" ? item.createdAt.slice(0, 100) : new Date().toISOString(),
       }];
     }) : [],
+    personalGuidelines: normalizePersonalGuidelines(source.personalGuidelines),
   };
 }
 

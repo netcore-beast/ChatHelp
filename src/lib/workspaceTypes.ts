@@ -4,6 +4,29 @@ export type MessageRole = "me" | "them";
 export type ConversationPlatform = "linkedin" | "gmail" | "outlook" | "other";
 export type PipelineStage = "inbox" | "hot" | "warm" | "cold" | "follow-up" | "replied" | "snoozed" | "done";
 export type ContactSource = "manual" | "linkedin-extension";
+export const RELATIONSHIP_STAGES = [
+  "new_connection",
+  "genuine_rapport",
+  "learn_interests",
+  "identify_need",
+  "ask_permission",
+  "introduce_value",
+  "answer_without_pressure",
+  "voluntary_next_step",
+] as const;
+export type RelationshipStage = (typeof RELATIONSHIP_STAGES)[number];
+export const RELATIONSHIP_STAGE_LABELS: Record<RelationshipStage, string> = {
+  new_connection: "New connection",
+  genuine_rapport: "Build genuine rapport",
+  learn_interests: "Learn interests and situation",
+  identify_need: "Identify a relevant need",
+  ask_permission: "Ask permission to discuss an idea",
+  introduce_value: "Introduce relevant business or product value",
+  answer_without_pressure: "Answer questions without pressure",
+  voluntary_next_step: "Agree on a voluntary next step",
+};
+export const PERSONAL_GUIDELINES_MAX_CHARS = 2_000;
+export const CONVERSATION_GOAL_MAX_CHARS = 5_000;
 export const MESSAGING_ROLES = ["Human Resource", "Network Marketing", "Job Seeker", "Socializing/Networking"] as const;
 export type MessagingRole = (typeof MESSAGING_ROLES)[number];
 export const DEFAULT_MESSAGING_ROLE: MessagingRole = "Socializing/Networking";
@@ -32,6 +55,8 @@ export interface DraftHistoryEntry {
   drafts: string[];
   createdAt: string;
   role?: MessagingRole;
+  provider?: "anthropic" | "cloudflare" | "local";
+  modelId?: string;
 }
 
 export interface ContextDocument {
@@ -88,6 +113,8 @@ export interface Contact {
   lastReadIncomingMessageId?: string;
   lastSyncDiagnostic?: ContactSyncDiagnostic;
   draftHistory?: DraftHistoryEntry[];
+  relationshipStage?: RelationshipStage;
+  conversationGoal?: string;
 }
 
 export interface Guidance {
@@ -152,7 +179,7 @@ export interface AiUsageEntry {
 }
 
 export interface WorkspaceData {
-  version: 10;
+  version: 11;
   modelId: string;
   cloudInference: CloudInferenceSettings;
   cloudRecovery: CloudRecoverySettings;
@@ -162,6 +189,7 @@ export interface WorkspaceData {
   inboxRole: MessagingRole;
   feedback: Feedback[];
   aiUsage: AiUsageEntry[];
+  personalGuidelines: string;
 }
 
 export const CLOUDFLARE_MODEL_ID = "cloud:cloudflare:auto-llama-3.1-8b-gpt-oss-120b";
@@ -176,6 +204,24 @@ export function normalizeWorkspaceModelId(): string {
 
 export function newId(prefix = "item"): string {
   return prefix + "-" + crypto.randomUUID();
+}
+
+export function isRelationshipStage(value: unknown): value is RelationshipStage {
+  return typeof value === "string" && RELATIONSHIP_STAGES.includes(value as RelationshipStage);
+}
+
+export function normalizeRelationshipStage(value: unknown): RelationshipStage {
+  return isRelationshipStage(value) ? value : "new_connection";
+}
+
+export function nextRelationshipStage(stage: RelationshipStage): RelationshipStage {
+  const index = RELATIONSHIP_STAGES.indexOf(stage);
+  return RELATIONSHIP_STAGES[Math.min(index + 1, RELATIONSHIP_STAGES.length - 1)];
+}
+
+export function normalizePersonalGuidelines(value: unknown): string {
+  const normalized = typeof value === "string" ? value.normalize("NFC").trim() : "";
+  return Array.from(normalized).slice(0, PERSONAL_GUIDELINES_MAX_CHARS).join("");
 }
 
 export function isMessagingRole(value: unknown): value is MessagingRole {
@@ -237,7 +283,7 @@ export function updateRolePlaybookRules(playbook: RolePlaybook, boundaries: stri
 export function createEmptyWorkspace(): WorkspaceData {
   const guidance = createDefaultMessagingGuidance();
   return {
-    version: 10,
+    version: 11,
     modelId: DEFAULT_MODEL_ID,
     cloudInference: {
       consentedAt: "",
@@ -257,5 +303,6 @@ export function createEmptyWorkspace(): WorkspaceData {
     inboxRole: guidance.selectedRole,
     feedback: [],
     aiUsage: [],
+    personalGuidelines: "",
   };
 }

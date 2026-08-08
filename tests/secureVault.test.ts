@@ -39,7 +39,7 @@ describe("encrypted device vault", () => {
       },
     });
 
-    expect(workspace.version).toBe(10);
+    expect(workspace.version).toBe(11);
     expect(workspace.guidance.selectedRole).toBe("Human Resource");
     expect(workspace.inboxRole).toBe("Human Resource");
     expect(workspace.guidance.playbooks["Human Resource"]).toEqual({
@@ -163,6 +163,38 @@ describe("encrypted device vault", () => {
     expect(reopened.lastSyncDiagnostic).toEqual(workspace.contacts[0].lastSyncDiagnostic);
     const stored = JSON.stringify(await readVaultEnvelopeForTests());
     expect(stored).not.toContain("abc123");
+  });
+
+  it("migrates stage-aware guidance safely and round-trips it only inside ciphertext", async () => {
+    const migrated = normalizeWorkspace({
+      version: 10,
+      personalGuidelines: "  Prefer one thoughtful question.  ",
+      contacts: [{
+        id: "alex",
+        name: "Alex",
+        relationshipStage: "not-a-stage",
+        conversationGoal: "Learn what kind of support would be useful.",
+      }],
+    });
+
+    expect(migrated.version).toBe(11);
+    expect(migrated.personalGuidelines).toBe("Prefer one thoughtful question.");
+    expect(migrated.contacts[0]).toMatchObject({
+      relationshipStage: "new_connection",
+      conversationGoal: "Learn what kind of support would be useful.",
+    });
+
+    migrated.contacts[0].relationshipStage = "learn_interests";
+    await createDeviceVault(migrated);
+
+    const stored = JSON.stringify(await readVaultEnvelopeForTests());
+    expect(stored).not.toContain("Prefer one thoughtful question.");
+    expect(stored).not.toContain("learn_interests");
+
+    const reopened = (await openDeviceVault()).workspace;
+    expect(reopened.personalGuidelines).toBe("Prefer one thoughtful question.");
+    expect(reopened.contacts[0].relationshipStage).toBe("learn_interests");
+    expect(reopened.contacts[0].conversationGoal).toBe("Learn what kind of support would be useful.");
   });
 
   it("stores no readable workspace content and opens without a passphrase", async () => {
