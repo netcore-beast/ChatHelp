@@ -1096,7 +1096,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     const history = contact.draftHistory?.findLast((entry) => entry.role === workspace.inboxRole);
     const timestamp = new Date().toISOString();
     const originalDraft = history?.drafts[0] ?? draft;
-    updateWorkspace((current) => ({ ...current, feedback: [...current.feedback, {
+    const feedback: Feedback = {
       id: newId("feedback"),
       contactId: contact.id,
       role: workspace.inboxRole,
@@ -1115,7 +1115,8 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       enabled: true,
       createdAt: timestamp,
       updatedAt: timestamp,
-    }].slice(-1000) }));
+    };
+    updateWorkspace((current) => ({ ...current, feedback: [...current.feedback, feedback].slice(-1000) }));
     setExtensionStatus("Saved encrypted feedback locally. It will not affect future drafts unless you separately approve it as a learning example.");
   }
 

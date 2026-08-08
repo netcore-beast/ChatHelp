@@ -60,34 +60,39 @@ const automaticSnapshot = (messages: SnapshotMessage[] = [{
 });
 
 async function announceExtension() {
-  await act(async () => {
-    window.dispatchEvent(new MessageEvent("message", {
-      source: window,
-      origin: window.location.origin,
-      data: { source: LINKEDIN_EXTENSION_SOURCE, type: "CHATHELP_EXTENSION_READY", version: "0.5.1" },
-    }));
-    window.dispatchEvent(new MessageEvent("message", {
-      source: window,
-      origin: window.location.origin,
-      data: {
-        source: LINKEDIN_EXTENSION_SOURCE,
-        type: LINKEDIN_SYNC_STATE_EVENT,
-        payload: {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent("message", {
+        source: window,
+        origin: window.location.origin,
+        data: { source: LINKEDIN_EXTENSION_SOURCE, type: "CHATHELP_EXTENSION_READY", version: "0.5.1" },
+      }));
+      window.dispatchEvent(new MessageEvent("message", {
+        source: window,
+        origin: window.location.origin,
+        data: {
           source: LINKEDIN_EXTENSION_SOURCE,
-          version: 1,
-          stateId: "state-ui-1",
-          occurredAt: "2026-08-02T12:00:00.000Z",
-          enabled: true,
-          paused: false,
-          permissionGranted: true,
-          code: "waiting_for_conversation",
-          message: "Waiting for a LinkedIn conversation.",
-          lastContactName: "",
-          lastMessageCount: 0,
+          type: LINKEDIN_SYNC_STATE_EVENT,
+          payload: {
+            source: LINKEDIN_EXTENSION_SOURCE,
+            version: 1,
+            stateId: "state-ui-1",
+            occurredAt: "2026-08-02T12:00:00.000Z",
+            enabled: true,
+            paused: false,
+            permissionGranted: true,
+            code: "waiting_for_conversation",
+            message: "Waiting for a LinkedIn conversation.",
+            lastContactName: "",
+            lastMessageCount: 0,
+          },
         },
-      },
-    }));
-  });
+      }));
+    });
+    if (screen.queryByRole("switch", { name: "Pause automatic sync" })) return;
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
+  }
+  await waitFor(() => expect(screen.getByRole("switch", { name: "Pause automatic sync" })).toBeTruthy());
 }
 
 async function deliverSnapshot(snapshot = automaticSnapshot()) {

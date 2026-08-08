@@ -17,7 +17,6 @@ export interface PrivateAiInput {
   knownFacts?: string[];
   unansweredQuestions?: string[];
   learningExamples?: Array<{
-    id: string;
     role: string;
     relationshipStage: RelationshipStage;
     conversationGoal: string;

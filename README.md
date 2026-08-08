@@ -6,8 +6,10 @@ ChatHelp is a local-first, encrypted web application that helps a person write t
 
 - Cloudflare Access email verification and MFA protect the deployed application.
 - AES-256-GCM encrypted IndexedDB vault with a non-exportable, browser-held device key and no additional passphrase prompt.
-- Draft generation through an authenticated Cloudflare Worker and Workers AI; no model is downloaded to the device.
+- One stage-aware draft through an authenticated Cloudflare Worker. Claude Opus 4.6 Thinking is primary; Llama 3.1 8B Fast plus GPT-OSS 120B remain the permanent Workers AI fallback.
 - Local relevance ranking for imported context; no embedding service.
+- Disabled-by-default encrypted personal learning with deterministic retrieval of at most three independently authored, user-approved examples.
+- A narrow offline relationship-stage classifier trained only from explicit human confirmations; suggestions never change a stage without a separate user action.
 - Self-hosted Tesseract worker, WebAssembly engine, and English OCR data.
 - Desktop-first, opt-in Chrome synchronization for only the LinkedIn conversation the user manually opens. Unknown contacts are created locally; mobile uses manual paste/import, and one-time extension capture plus screen/OCR remain fallbacks.
 - Local inbox, CRM pipeline stages, labels, private notes, snooze/follow-up reminders, editable draft history, and local AI usage metadata.
@@ -24,7 +26,7 @@ Read SECURITY.md and PRIVACY.md before using real conversation data.
 4. Open the forwarded port 3000 preview.
 5. Open ChatHelp. The browser creates and opens its encrypted workspace automatically after Cloudflare Access authentication.
 
-Draft generation runs in Cloudflare Workers AI. ChatHelp does not download or run LLM weights on the user device.
+Draft generation runs through the authenticated Cloudflare Worker. Claude is the primary provider and the earlier Workers AI models remain the fallback. ChatHelp does not download or run conversation-model weights on the user device.
 
 ## Verification
 
@@ -36,7 +38,7 @@ Run these commands inside the Codespace:
     npm run build
     npm audit --audit-level=high
 
-The test suite covers automatic device encryption, one-time migration of older passphrase vaults, tamper rejection, extension snapshot validation/deduplication, minimal Chrome permissions, manual-send boundaries, retention, retrieval, prompt-injection boundaries, response parsing, security headers, self-hosted OCR assets, and browser reopen behavior.
+The test suite covers device encryption, migration, tamper rejection, stage-aware single-draft policy, Claude/fallback routing, opt-in retrieval learning, provenance-gated training exports, the offline stage classifier, extension snapshot validation/deduplication, minimal Chrome permissions, manual-send boundaries, retention, prompt-injection boundaries, response parsing, security headers, self-hosted OCR assets, and browser reopen behavior.
 
 ## Desktop LinkedIn extension workflow
 
@@ -45,8 +47,8 @@ The test suite covers automatic device encryption, one-time migration of older p
 3. Manually open a conversation in LinkedIn Messaging. ChatHelp reads the visible central header and thread only; it never opens, scrolls, clicks, types, or scans the inbox.
 4. ChatHelp matches by normalized profile URL, then conversation URL, then guarded unique name. Unknown contacts are created in the encrypted local vault, while ambiguous identities are never merged.
 5. Manually opening another conversation synchronizes it without another toolbar click. Repeated DOM changes and captures are deduplicated.
-6. Triage the conversation with pipeline stages, labels, notes, snooze/follow-up times, and keyboard shortcuts. Generate three editable drafts only when needed.
-7. Copy the chosen draft, review it on LinkedIn, and send it yourself. The toolbar's one-time capture remains available as a fallback; ChatHelp never types or clicks Send.
+6. Triage the conversation with pipeline stages, labels, notes, snooze/follow-up times, and keyboard shortcuts. Set the relationship stage and goal, then generate one precise editable draft when needed.
+7. Review and copy the draft to LinkedIn, then send it yourself. The toolbar's one-time capture remains available as a fallback; ChatHelp never types or clicks Send.
 
 See [extension/README.md](extension/README.md) and [docs/DESKTOP_LINKEDIN_WORKFLOW.md](docs/DESKTOP_LINKEDIN_WORKFLOW.md).
 
@@ -59,6 +61,8 @@ ChatHelp supports selected LinkedIn, Gmail, Outlook, and other HTTPS conversatio
 - Browser/PWA: installable, with an offline application shell after the first successful load.
 
 See [docs/NATIVE_PACKAGING.md](docs/NATIVE_PACKAGING.md) for artifact and signing details. Cloud inference remains explicitly consented to inside the application.
+
+Personal learning and export remain separate opt-ins. See [docs/TRAINING_AND_LORA.md](docs/TRAINING_AND_LORA.md) for the classifier, dataset-provenance, and no-upload boundaries.
 
 ## Important product boundary
 
