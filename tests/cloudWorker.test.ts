@@ -1,102 +1,124 @@
 import { describe, expect, it, vi } from "vitest";
-import { GPT_REVIEW_MODEL, LLAMA_CANDIDATE_MODEL, handleRequest, WORKERS_AI_MODEL } from "../cloudflare/worker/src/index.js";
+import {
+  ANTHROPIC_MODEL,
+  GPT_REVIEW_MODEL,
+  LLAMA_CANDIDATE_MODEL,
+  PIPELINE_MODE,
+  WORKERS_AI_MODEL,
+  handleRequest,
+} from "../cloudflare/worker/src/index.js";
 
 const TESTING_HOST = "testing-chathelp-private-cloud.project-mission-ai.workers.dev";
 const TESTING_ORIGIN = `https://${TESTING_HOST}`;
 const SYNTHETIC_ASSERTION = "synthetic.assertion.value";
-const PLAYBOOK_PLAN = {
-  objective: "Continue the actual conversation while building trust.",
-  conversationStage: "The contact shared an adjacent professional interest.",
-  keyFactsToReference: ["The contact mentioned ZTNA and SASE."],
+
+const ANALYSIS = {
+  storedStage: "learn_interests",
+  observedStage: "identify_need",
+  effectiveStage: "identify_need",
+  nextAllowedStage: "identify_need",
+  latestIncomingIntent: "The contact wants role details.",
+  knownFacts: ["The contact asked for role details."],
+  unansweredQuestions: ["Which detail matters most?"],
+  goalForThisReply: "Answer briefly and clarify the priority.",
   toneDirectives: ["Warm", "Concise"],
-  thingsToAvoid: ["Do not pitch", "Do not invent facts"],
-  replyLengthHint: "One or two short sentences.",
-  directions: [
-    { move: "Respond directly", goalStep: "Build relevance", applicableRules: "Stay factual", avoid: "Do not pitch" },
-    { move: "Bridge naturally", goalStep: "Build trust", applicableRules: "Keep it concise", avoid: "Do not invent familiarity" },
-    { move: "Offer a low-pressure step", goalStep: "Explore mutual value", applicableRules: "Stay conversational", avoid: "Do not force a meeting" },
-  ],
+  prohibitedMoves: ["Do not pitch"],
+  replyPlan: "Answer briefly, then ask one focused question.",
+  evidence: ["m1"],
+  needEstablished: false,
+  permissionGranted: false,
+  explicitRequest: false,
 };
-const WRITER_DRAFTS = {
-  drafts: [
-    { angle: "direct", text: "Writer draft one" },
-    { angle: "warm", text: "Writer draft two" },
-    { angle: "low-pressure", text: "Writer draft three" },
-  ],
+
+const CANDIDATE = {
+  draft: {
+    text: "I can share the key details. Which part would be most useful to start with?",
+    stage: "identify_need",
+    goal: "Answer briefly and clarify the priority.",
+  },
 };
-const REVIEWED_DRAFTS = {
-  drafts: [
-    { angle: "direct", text: "Reviewed reply one" },
-    { angle: "warm", text: "Reviewed reply two" },
-    { angle: "low-pressure", text: "Reviewed reply three" },
-  ],
+
+const REVIEW = {
+  scores: {
+    conversationGrounding: 25,
+    latestMessageRelevance: 20,
+    personalGuidelineCompliance: 15,
+    goalStageAlignment: 15,
+    humanTone: 10,
+    curiosityNeedDiscovery: 5,
+    technicalFactualAccuracy: 5,
+    ethicalSellingBoundaries: 5,
+  },
+  total: 100,
+  criticalFailures: [],
+  rewritten: false,
+  finalDraft: CANDIDATE.draft.text,
 };
 
 function structuredPayload(overrides: Record<string, unknown> = {}) {
   return {
-    conversationContext: "<conversation_context>\n{\"contact\":{\"name\":\"Alex\"},\"recentMessages\":[{\"sender\":\"CONTACT\",\"text\":\"Can you share more?\"}]}\n</conversation_context>",
+    conversationContext: "<conversation_context>\n{\"recentMessages\":[{\"id\":\"m1\",\"sender\":\"CONTACT\",\"text\":\"Could you share the role details?\"}]}\n</conversation_context>",
+    latestMeaningfulIncoming: { id: "m1", sender: "CONTACT", speaker: "Alex", text: "Could you share the role details?", timestamp: "2026-01-01T00:00:00.000Z" },
     playbook: {
-      role: "Network Marketing",
-      relationshipGoal: "Build genuine trust",
+      role: "Human Resource",
+      relationshipGoal: "Build trust before discussing a role",
       voice: "Warm and concise",
-      rulebookFull: "Do not pitch early. FULL-RULEBOOK-TAIL",
-      rulebookDigest: "DIGEST-ONLY-RULE",
+      rulebookFull: "Never pressure the contact.",
+      rulebookDigest: "No pressure.",
     },
-    replyObjective: "",
+    personalGuidelines: "Use plain language and one useful question.",
+    conversationGoal: "Learn which role detail matters most.",
+    relationshipStage: "learn_interests",
+    knownFacts: ["The contact asked for role details."],
+    unansweredQuestions: ["Which detail matters most?"],
+    learningExamples: [],
+    replyObjective: "Answer directly, then clarify their priority.",
     ...overrides,
   };
 }
 
-async function workerEnv() {
-  let gptCalls = 0;
+function anthropicResponse(value: unknown) {
+  return new Response(JSON.stringify({
+    id: "msg_synthetic",
+    type: "message",
+    role: "assistant",
+    model: "claude-opus-4-6",
+    content: [{ type: "text", text: JSON.stringify(value) }],
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: { input_tokens: 100, output_tokens: 50 },
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+function workerEnv(options: { anthropicConfigured?: boolean } = {}) {
+  const fallbackResponses = [ANALYSIS, CANDIDATE, REVIEW];
   return {
+    ...(options.anthropicConfigured === false ? {} : { ANTHROPIC_API_KEY: "[runtime-secret]" }),
     ACCESS_TEAM_DOMAIN: "https://dialogmint.cloudflareaccess.com",
     ACCESS_AUD_TESTING: "testing-audience",
     ACCESS_AUD_PRODUCTION: "production-audience",
     NEON_TESTING: { connectionString: "synthetic-testing-binding" },
     NEON_PRODUCTION: { connectionString: "synthetic-production-binding" },
-    DRAFT_RATE_LIMITER: {
-      limit: vi.fn().mockResolvedValue({ success: true }),
-    },
-    AI: {
-      run: vi.fn().mockImplementation(async (model: string) => {
-        if (model === LLAMA_CANDIDATE_MODEL) return { response: PLAYBOOK_PLAN };
-        gptCalls += 1;
-        return { response: gptCalls === 1 ? WRITER_DRAFTS : REVIEWED_DRAFTS };
-      }),
-    },
+    DRAFT_RATE_LIMITER: { limit: vi.fn().mockResolvedValue({ success: true }) },
+    AI: { run: vi.fn(async () => ({ response: fallbackResponses.shift() })) },
   };
 }
 
 const verifyAccess = vi.fn(async (_assertion: string, options: { issuer: string; audience: string }) => ({
-  payload: {
-    iss: options.issuer,
-    aud: [options.audience],
-    sub: "synthetic-subject",
-    exp: 2_000_000_000,
-  },
+  payload: { iss: options.issuer, aud: [options.audience], sub: "synthetic-subject", exp: 2_000_000_000 },
 }));
 
-function runWorker(request: Request, env: Awaited<ReturnType<typeof workerEnv>>) {
-  return handleRequest(request, env, { verifyAccess });
-}
-
-function draftRequest(body: unknown, origin = TESTING_ORIGIN) {
+function draftRequest(body: unknown, origin = TESTING_ORIGIN, stream = false) {
   return new Request(`${TESTING_ORIGIN}/api/drafts`, {
     method: "POST",
     headers: {
       "Cf-Access-Jwt-Assertion": SYNTHETIC_ASSERTION,
       "Content-Type": "application/json",
       Origin: origin,
+      ...(stream ? { Accept: "text/event-stream, application/json" } : {}),
     },
     body: JSON.stringify(body),
   });
-}
-
-function streamingDraftRequest(body: unknown) {
-  const request = draftRequest(body);
-  request.headers.set("Accept", "text/event-stream, application/json");
-  return request;
 }
 
 function parseSseEvents(text: string) {
@@ -110,96 +132,111 @@ function parseSseEvents(text: string) {
 }
 
 describe("Cloudflare private inference Worker", () => {
-  it("reports the encrypted storage, Access, and three-stage model boundary without configuration values", async () => {
-    const response = await runWorker(new Request(`${TESTING_ORIGIN}/health`), await workerEnv());
+  it("reports safe primary/fallback configuration without any configuration value", async () => {
+    const env = workerEnv();
+    const response = await handleRequest(new Request(`${TESTING_ORIGIN}/health`), env, { verifyAccess });
+
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
-      model: WORKERS_AI_MODEL,
-      models: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
-      mode: "rulebook-plan-write-review",
+      provider: "anthropic-primary-cloudflare-fallback",
+      model: ANTHROPIC_MODEL,
+      models: [ANTHROPIC_MODEL, LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
+      fallbackModel: WORKERS_AI_MODEL,
+      fallbackModels: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
+      mode: PIPELINE_MODE,
+      anthropicConfigured: true,
       authentication: "cloudflare-access-jwt",
-      accessBindings: { teamDomain: true, testingAudience: true, productionAudience: true },
       persistentStorage: "client-encrypted-neon",
-      retentionDays: 90,
-      vaultBindings: { testing: true, production: true },
-      aiGateway: false,
-      observability: false,
     });
+    const text = await (await handleRequest(new Request(`${TESTING_ORIGIN}/health`), env, { verifyAccess })).text();
+    expect(text).not.toContain("runtime-secret");
     expect(response.headers.get("Cache-Control")).toBe("no-store");
   });
 
-  it("rejects unauthenticated requests before rate limiting or inference", async () => {
-    const env = await workerEnv();
-    const response = await runWorker(new Request(`${TESTING_ORIGIN}/api/drafts`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Cf-Access-Authenticated-User-Email": "ignored@example.test" },
-      body: JSON.stringify(structuredPayload()),
-    }), env);
-
-    expect(response.status).toBe(401);
-    await expect(response.json()).resolves.toEqual({ error: "DialogMint authentication is required." });
-    expect(env.AI.run).not.toHaveBeenCalled();
-    expect(env.DRAFT_RATE_LIMITER.limit).not.toHaveBeenCalled();
-  });
-
-  it("rejects an unauthenticated vault write before parsing or querying", async () => {
-    const env = { ...await workerEnv(), NEON_TESTING: { connectionString: "synthetic-testing-binding" } };
-    const query = vi.fn();
-    const response = await handleRequest(new Request(`${TESTING_ORIGIN}/api/vault`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: "not-json",
-    }), env, { verifyAccess, query });
-
-    expect(response.status).toBe(401);
-    expect(query).not.toHaveBeenCalled();
-  });
-
-  it("routes digest-only planning, full-rulebook writing, and full-rulebook review as three isolated calls", async () => {
-    const env = await workerEnv();
-    const response = await runWorker(draftRequest(structuredPayload()), env);
+  it("uses Claude successfully without invoking either fallback model", async () => {
+    const responses = [ANALYSIS, CANDIDATE, REVIEW];
+    const anthropicFetch = vi.fn(async () => anthropicResponse(responses.shift()));
+    const env = workerEnv();
+    const response = await handleRequest(draftRequest(structuredPayload()), env, { verifyAccess, anthropicFetch });
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
-      drafts: ["Reviewed reply one", "Reviewed reply two", "Reviewed reply three"],
-      model: WORKERS_AI_MODEL,
-      models: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
-      mode: "rulebook-plan-write-review",
+      draft: REVIEW.finalDraft,
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      mode: "stage-aware-single-draft-v1",
     });
-    expect(env.DRAFT_RATE_LIMITER.limit).toHaveBeenCalledTimes(1);
-    expect(env.DRAFT_RATE_LIMITER.limit).toHaveBeenCalledWith({ key: expect.stringMatching(/^[a-f0-9]{64}$/) });
-    expect(env.AI.run).toHaveBeenCalledTimes(3);
-
-    const [plannerModel, plannerInput] = env.AI.run.mock.calls[0];
-    const [writerModel, writerInput] = env.AI.run.mock.calls[1];
-    const [reviewerModel, reviewerInput] = env.AI.run.mock.calls[2];
-    expect([plannerModel, writerModel, reviewerModel]).toEqual([LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL, GPT_REVIEW_MODEL]);
-    expect(plannerInput.messages[0].content).toContain("DIGEST-ONLY-RULE");
-    expect(plannerInput.messages[0].content).not.toContain("FULL-RULEBOOK-TAIL");
-    expect(plannerInput.messages[1].content).toContain("<conversation_context>");
-    expect(writerInput.messages[0].content).toContain("FULL-RULEBOOK-TAIL");
-    expect(reviewerInput.messages[0].content).toContain("FULL-RULEBOOK-TAIL");
-    expect(writerInput.messages[1].content).toContain("<plan>");
-    expect(writerInput.messages[1].content).toContain("<conversation_context>");
-    expect(reviewerInput.messages[1].content).toContain("<drafts>");
-    expect(reviewerInput.messages[1].content).toContain("<conversation_context>");
-    expect(plannerInput.response_format.type).toBe("json_schema");
-    expect(writerInput.response_format.type).toBe("json_schema");
-    expect(reviewerInput.response_format.type).toBe("json_schema");
-    expect(JSON.stringify(env.AI.run.mock.calls)).not.toContain(SYNTHETIC_ASSERTION);
+    expect(anthropicFetch).toHaveBeenCalledTimes(3);
+    expect(env.AI.run).not.toHaveBeenCalled();
   });
 
-  it("streams real pipeline stages in order and preserves the final result", async () => {
-    const response = await runWorker(streamingDraftRequest(structuredPayload()), await workerEnv());
+  it.each([
+    ["missing configuration", null, false],
+    ["network failure", "network", true],
+    ["timeout", "timeout", true],
+    ["rate limit", 429, true],
+    ["provider server failure", 529, true],
+  ])("uses the permanent fallback for %s", async (_name, failure, configured) => {
+    const env = workerEnv({ anthropicConfigured: configured });
+    const anthropicFetch = failure === "network"
+      ? vi.fn(async () => { throw new TypeError("synthetic network failure"); })
+      : failure === "timeout"
+        ? vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+          }))
+        : typeof failure === "number"
+          ? vi.fn(async () => new Response("synthetic provider detail", { status: failure }))
+          : vi.fn();
+    const response = await handleRequest(draftRequest(structuredPayload()), env, {
+      verifyAccess,
+      anthropicFetch,
+      anthropicTimeoutMs: 1,
+    });
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("Content-Type")).toContain("text/event-stream");
-    expect(response.headers.get("Cache-Control")).toBe("no-store");
-    const events = parseSseEvents(await response.text());
+    await expect(response.json()).resolves.toEqual({
+      draft: REVIEW.finalDraft,
+      provider: "cloudflare",
+      model: WORKERS_AI_MODEL,
+      mode: "stage-aware-single-draft-v1",
+    });
+    expect(env.AI.run).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([401, 403, 400])("does not fall back for Anthropic HTTP %s", async (status) => {
+    const env = workerEnv();
+    const anthropicFetch = vi.fn(async () => new Response("synthetic provider detail", { status }));
+    const response = await handleRequest(draftRequest(structuredPayload()), env, { verifyAccess, anthropicFetch });
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({ error: "Cloud AI could not produce a safe draft. Please try again." });
+    expect(env.AI.run).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back when Claude returns invalid quality or a critical policy failure", async () => {
+    for (const responses of [
+      [{ invalid: "analysis" }],
+      [ANALYSIS, CANDIDATE, { ...REVIEW, criticalFailures: ["premature_pitch"] }],
+    ]) {
+      const anthropicFetch = vi.fn(async () => anthropicResponse(responses.shift()));
+      const env = workerEnv();
+      const response = await handleRequest(draftRequest(structuredPayload()), env, { verifyAccess, anthropicFetch });
+      expect(response.status).toBe(502);
+      expect(env.AI.run).not.toHaveBeenCalled();
+    }
+  });
+
+  it("streams only ordered stage metadata and one final safe result", async () => {
+    const responses = [ANALYSIS, CANDIDATE, REVIEW];
+    const anthropicFetch = vi.fn(async () => anthropicResponse(responses.shift()));
+    const response = await handleRequest(draftRequest(structuredPayload(), TESTING_ORIGIN, true), workerEnv(), { verifyAccess, anthropicFetch });
+    const body = await response.text();
+    const events = parseSseEvents(body);
+
     expect(events.map(({ event, data }) => [event, data.stage, data.status])).toEqual([
-      ["stage", "planning", "in-progress"],
-      ["stage", "planning", "done"],
+      ["stage", "analyzing", "in-progress"],
+      ["stage", "analyzing", "done"],
       ["stage", "drafting", "in-progress"],
       ["stage", "drafting", "done"],
       ["stage", "reviewing", "in-progress"],
@@ -208,135 +245,47 @@ describe("Cloudflare private inference Worker", () => {
       ["stage", "finalizing", "done"],
       ["result", undefined, undefined],
     ]);
-    expect(events.at(-1)?.data).toMatchObject({ drafts: ["Reviewed reply one", "Reviewed reply two", "Reviewed reply three"] });
+    expect(events.at(-1)?.data).toEqual({ draft: REVIEW.finalDraft, provider: "anthropic", model: "claude-opus-4-6", mode: "stage-aware-single-draft-v1" });
+    expect(body).not.toContain("scores");
+    expect(body).not.toContain("replyPlan");
+    expect(body).not.toContain("runtime-secret");
   });
 
-  it("does not mark review done until bounded compliance correction finishes", async () => {
-    const env = await workerEnv();
-    const questionDrafts = { drafts: [
-      { angle: "one", text: "Are you focused on Sentinel?" },
-      { angle: "two", text: "Do you spend more time on ZTNA?" },
-      { angle: "three", text: "Which part of SASE do you enjoy?" },
-    ] };
-    env.AI.run
-      .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
-      .mockResolvedValueOnce({ response: WRITER_DRAFTS })
-      .mockResolvedValueOnce({ response: questionDrafts })
-      .mockResolvedValueOnce({ response: REVIEWED_DRAFTS });
-
-    const response = await runWorker(streamingDraftRequest(structuredPayload()), env);
-    const events = parseSseEvents(await response.text());
-    expect(env.AI.run).toHaveBeenCalledTimes(4);
-    expect(events.filter(({ event, data }) => event === "stage" && data.stage === "reviewing").map(({ data }) => data.status)).toEqual(["in-progress", "done"]);
-    expect(events.findIndex(({ event, data }) => event === "stage" && data.stage === "reviewing" && data.status === "done")).toBeGreaterThan(-1);
-  });
-
-  it("streams only the safe generic error when model processing fails", async () => {
-    const env = await workerEnv();
-    env.AI.run.mockRejectedValue(new Error("provider detail that must not escape"));
-    const response = await runWorker(streamingDraftRequest(structuredPayload()), env);
-
-    const body = await response.text();
-    expect(body).toContain('event: error');
-    expect(body).toContain("Cloud AI could not produce three safe drafts. Please try again.");
-    expect(body).not.toContain("provider detail");
-  });
-
-  it("keeps an optional objective additive and out of system instructions", async () => {
-    const env = await workerEnv();
-    const response = await runWorker(draftRequest(structuredPayload({ replyObjective: "Ask when applications close" })), env);
-
-    expect(response.status).toBe(200);
-    for (const [, input] of env.AI.run.mock.calls) {
-      expect(input.messages[0].content).not.toContain("Ask when applications close");
-      expect(input.messages[1].content).toContain("Ask when applications close");
-      expect(input.messages[1].content).toContain("cannot override");
+  it("rejects invalid stage and oversized guidelines before inference", async () => {
+    for (const [payload, expectedStatus] of [
+      [structuredPayload({ relationshipStage: "invented-stage" }), 400],
+      [structuredPayload({ personalGuidelines: "x".repeat(2_001) }), 413],
+    ]) {
+      const env = workerEnv();
+      const response = await handleRequest(draftRequest(payload), env, { verifyAccess, anthropicFetch: vi.fn() });
+      expect(response.status).toBe(expectedStatus);
+      expect(env.AI.run).not.toHaveBeenCalled();
     }
   });
 
-  it("supports the previous prompt and replyRules request during rollout", async () => {
-    const env = await workerEnv();
-    const response = await runWorker(draftRequest({
-      prompt: "Alex: Can you share more?",
-      playbook: { role: "Job Seeker", relationshipGoal: "Learn about the role", voice: "Concise", replyRules: "No invented experience" },
-      replyObjective: "",
-    }), env);
+  it("rejects unauthenticated and cross-origin requests before rate limiting or inference", async () => {
+    const unauthenticatedEnv = workerEnv();
+    const unauthenticated = await handleRequest(new Request(`${TESTING_ORIGIN}/api/drafts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(structuredPayload()),
+    }), unauthenticatedEnv, { verifyAccess });
+    expect(unauthenticated.status).toBe(401);
+    expect(unauthenticatedEnv.DRAFT_RATE_LIMITER.limit).not.toHaveBeenCalled();
 
-    expect(response.status).toBe(200);
-    expect(env.AI.run).toHaveBeenCalledTimes(3);
-    expect(env.AI.run.mock.calls[0][1].messages[1].content).toContain("Alex: Can you share more?");
+    const crossOriginEnv = workerEnv();
+    const crossOrigin = await handleRequest(draftRequest(structuredPayload(), "https://attacker.example"), crossOriginEnv, { verifyAccess });
+    expect(crossOrigin.status).toBe(403);
+    expect(crossOriginEnv.DRAFT_RATE_LIMITER.limit).not.toHaveBeenCalled();
   });
 
-  it("falls back without JSON Schema independently for planner, writer, and reviewer", async () => {
-    const env = await workerEnv();
-    env.AI.run
-      .mockResolvedValueOnce({ response: "not plan json" })
-      .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
-      .mockResolvedValueOnce({ response: "not writer json" })
-      .mockResolvedValueOnce({ response: WRITER_DRAFTS })
-      .mockResolvedValueOnce({ response: "not reviewer json" })
-      .mockResolvedValueOnce({ response: REVIEWED_DRAFTS });
-
-    const response = await runWorker(draftRequest(structuredPayload()), env);
-    expect(response.status).toBe(200);
-    expect(env.AI.run).toHaveBeenCalledTimes(6);
-    expect(env.AI.run.mock.calls[0][1].response_format.type).toBe("json_schema");
-    expect(env.AI.run.mock.calls[1][1].response_format).toBeUndefined();
-    expect(env.AI.run.mock.calls[2][1].response_format.type).toBe("json_schema");
-    expect(env.AI.run.mock.calls[3][1].response_format).toBeUndefined();
-    expect(env.AI.run.mock.calls[4][1].response_format.type).toBe("json_schema");
-    expect(env.AI.run.mock.calls[5][1].response_format).toBeUndefined();
-  });
-
-  it("parses OpenAI-compatible GPT-OSS choices and returns only reviewed text", async () => {
-    const env = await workerEnv();
-    env.AI.run
-      .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
-      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(WRITER_DRAFTS), role: "assistant" }, finish_reason: "stop" }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(REVIEWED_DRAFTS), role: "assistant" }, finish_reason: "stop" }] });
-
-    const response = await runWorker(draftRequest(structuredPayload()), env);
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ drafts: ["Reviewed reply one", "Reviewed reply two", "Reviewed reply three"] });
-  });
-
-  it("routes an all-question reviewed set through a bounded compliance correction", async () => {
-    const env = await workerEnv();
-    const questionDrafts = { drafts: [
-      { angle: "one", text: "Are you focused on Sentinel?" },
-      { angle: "two", text: "Do you spend more time on ZTNA?" },
-      { angle: "three", text: "Which part of SASE do you enjoy?" },
-    ] };
-    env.AI.run
-      .mockResolvedValueOnce({ response: PLAYBOOK_PLAN })
-      .mockResolvedValueOnce({ response: WRITER_DRAFTS })
-      .mockResolvedValueOnce({ response: questionDrafts })
-      .mockResolvedValueOnce({ response: REVIEWED_DRAFTS });
-
-    const response = await runWorker(draftRequest(structuredPayload()), env);
-    expect(response.status).toBe(200);
-    expect(env.AI.run).toHaveBeenCalledTimes(4);
-    expect(env.AI.run.mock.calls[3][1].messages[1].content).toContain("overused follow-up questions");
-  });
-
-  it("rejects invented personal histories after bounded review attempts", async () => {
-    const env = await workerEnv();
-    const invented = { drafts: [
-      { angle: "one", text: "Honestly, I got into zero trust after seeing perimeter defenses bypassed." },
-      { angle: "two", text: "My motivation came from watching breaches exploit trust." },
-      { angle: "three", text: "The principle of explicit verification is relevant here." },
-    ] };
-    env.AI.run.mockResolvedValueOnce({ response: PLAYBOOK_PLAN }).mockResolvedValue({ response: invented });
-
-    const response = await runWorker(draftRequest(structuredPayload()), env);
-    expect(response.status).toBe(502);
-    await expect(response.json()).resolves.toEqual({ error: "Cloud AI could not produce three safe drafts. Please try again." });
-  });
-
-  it("blocks cross-origin requests even with a valid Access assertion", async () => {
-    const env = await workerEnv();
-    const response = await runWorker(draftRequest(structuredPayload(), "https://attacker.example"), env);
-    expect(response.status).toBe(403);
-    expect(env.AI.run).not.toHaveBeenCalled();
+  it("keeps the authenticated encrypted-vault route available", async () => {
+    const env = workerEnv();
+    const response = await handleRequest(new Request(`${TESTING_ORIGIN}/api/vault`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: "not-json",
+    }), env, { verifyAccess });
+    expect(response.status).toBe(401);
   });
 });

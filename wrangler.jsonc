@@ -12,7 +12,7 @@
     "binding": "AI"
   },
   "secrets": {
-    "required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD_TESTING", "ACCESS_AUD_PRODUCTION"]
+    "required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD_TESTING", "ACCESS_AUD_PRODUCTION", "ANTHROPIC_API_KEY"]
   },
   "hyperdrive": [
     {

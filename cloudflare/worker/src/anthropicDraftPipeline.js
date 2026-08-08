@@ -151,9 +151,14 @@ function baseRequest(system, content, budgetTokens, maxTokens) {
   };
 }
 
+function emitStage(emit, stage, status) {
+  emit?.("stage", { stage, status });
+}
+
 export async function runAnthropicDraftPipeline(context, options) {
   if (!options?.apiKey || typeof options.apiKey !== "string") throw new AnthropicPipelineError("provider_unavailable");
   const requestContext = untrustedContext(context);
+  emitStage(options.emit, "analyzing", "in-progress");
   const analysisValue = await callStructuredStage(options, baseRequest(
     [
       "You are DialogMint's relationship-stage analyst. Never write reply prose.",
@@ -173,7 +178,9 @@ export async function runAnthropicDraftPipeline(context, options) {
   } catch {
     throw new AnthropicPipelineError("quality");
   }
+  emitStage(options.emit, "analyzing", "done");
 
+  emitStage(options.emit, "drafting", "in-progress");
   const candidateValue = await callStructuredStage(options, baseRequest(
     [
       "You are DialogMint's senior conversation writer. Return exactly one paste-ready reply draft.",
@@ -193,7 +200,9 @@ export async function runAnthropicDraftPipeline(context, options) {
     throw new AnthropicPipelineError("quality");
   }
   if (candidate.stage !== analysis.effectiveStage || candidate.goal !== analysis.goalForThisReply) throw new AnthropicPipelineError("policy");
+  emitStage(options.emit, "drafting", "done");
 
+  emitStage(options.emit, "reviewing", "in-progress");
   const reviewValue = await callStructuredStage(options, baseRequest(
     [
       "You are DialogMint's independent final reviewer. Review the candidate against the actual conversation, latest incoming message, full rulebook, personal guidelines, effective stage, and ethical boundaries.",
@@ -216,6 +225,7 @@ export async function runAnthropicDraftPipeline(context, options) {
     const kind = validation.reason === "premature_pitch" || validation.reason === "unsupported_history" || validation.reason === "critical" ? "policy" : "quality";
     throw new AnthropicPipelineError(kind);
   }
+  emitStage(options.emit, "reviewing", "done");
   return {
     draft: validation.draft,
     provider: "anthropic",
