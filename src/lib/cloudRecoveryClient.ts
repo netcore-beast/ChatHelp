@@ -1,6 +1,6 @@
 import { isCloudVaultEnvelope, serializeCloudVaultEnvelope, type CloudVaultEnvelopeV1 } from "./cloudRecovery";
 
-const MAX_RESPONSE_BYTES = 11 * 1024 * 1024;
+const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const HEX_DIGEST = /^[0-9a-f]{64}$/;
 
 export type CloudRecoveryTransportCode = "authentication" | "not-found" | "conflict" | "too-large" | "unavailable" | "invalid";

@@ -13,10 +13,7 @@ const TESTING_ORIGIN = `https://${TESTING_HOST}`;
 const SYNTHETIC_ASSERTION = "synthetic.assertion.value";
 
 const ANALYSIS = {
-  storedStage: "learn_interests",
   observedStage: "identify_need",
-  effectiveStage: "identify_need",
-  nextAllowedStage: "identify_need",
   latestIncomingIntent: "The contact wants role details.",
   knownFacts: ["The contact asked for role details."],
   unansweredQuestions: ["Which detail matters most?"],
@@ -47,15 +44,14 @@ const REVIEW = {
     technicalFactualAccuracy: 5,
     ethicalSellingBoundaries: 5,
   },
-  total: 100,
   criticalFailures: [],
-  rewritten: false,
   finalDraft: CANDIDATE.draft.text,
 };
 
 function structuredPayload(overrides: Record<string, unknown> = {}) {
   return {
     conversationContext: "<conversation_context>\n{\"recentMessages\":[{\"id\":\"m1\",\"sender\":\"CONTACT\",\"text\":\"Could you share the role details?\"}]}\n</conversation_context>",
+    latestActualMessage: { id: "m1", sender: "CONTACT", speaker: "Alex", text: "Could you share the role details?", timestamp: "2026-01-01T00:00:00.000Z" },
     latestMeaningfulIncoming: { id: "m1", sender: "CONTACT", speaker: "Alex", text: "Could you share the role details?", timestamp: "2026-01-01T00:00:00.000Z" },
     playbook: {
       role: "Human Resource",
@@ -221,7 +217,6 @@ describe("Cloudflare private inference Worker", () => {
     const lowReview = {
       ...REVIEW,
       scores: { ...REVIEW.scores, conversationGrounding: 14 },
-      total: 89,
     };
     const fallbackResponses = [ANALYSIS, CANDIDATE, lowReview, ANALYSIS, CANDIDATE, REVIEW];
     const env = workerEnv({ anthropicConfigured: false });
@@ -285,20 +280,27 @@ describe("Cloudflare private inference Worker", () => {
     const env = workerEnv();
     env.AI.run = vi.fn(async () => ({ response: "not-json" }));
     const anthropicFetch = vi.fn(async () => anthropicResponse({ invalid: "analysis" }));
-    const response = await handleRequest(draftRequest(structuredPayload(), TESTING_ORIGIN, true), env, { verifyAccess, anthropicFetch });
+    const logError = vi.fn();
+    const response = await handleRequest(draftRequest(structuredPayload(), TESTING_ORIGIN, true), env, { verifyAccess, anthropicFetch, logError });
     const body = await response.text();
     const events = parseSseEvents(body);
 
     expect(events.at(-1)).toEqual({
       event: "error",
       data: {
-        error: "Cloud AI could not produce a safe draft. Please try again. Diagnostic: anthropic_quality__cloudflare_quality",
-        diagnosticCode: "anthropic_quality__cloudflare_quality",
+        error: "Cloud AI could not produce a safe draft. Please try again. Diagnostic: anthropic_quality_analysis_schema__cloudflare_quality_analysis_schema",
+        diagnosticCode: "anthropic_quality_analysis_schema__cloudflare_quality_analysis_schema",
       },
     });
     expect(body).not.toContain("runtime-secret");
     expect(body).not.toContain("not-json");
     expect(body).not.toContain("Could you share the role details?");
+    expect(logError).toHaveBeenCalledWith({
+      event: "draft_pipeline_failed",
+      primary: { provider: "anthropic", kind: "quality", code: "analysis_schema" },
+      fallback: { provider: "cloudflare", kind: "quality", code: "analysis_schema" },
+    });
+    expect(JSON.stringify(logError.mock.calls)).not.toContain("Could you share the role details?");
   });
 
   it("rejects invalid stage and oversized guidelines before inference", async () => {

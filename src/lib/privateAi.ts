@@ -30,6 +30,13 @@ export interface WebGpuLike {
 
 export interface CloudDraftRequest {
   conversationContext: string;
+  latestActualMessage: {
+    id: string;
+    sender: "USER" | "CONTACT";
+    speaker: string;
+    text: string;
+    timestamp: string;
+  } | null;
   latestMeaningfulIncoming: {
     id: string;
     sender: "CONTACT";
@@ -241,16 +248,18 @@ export function buildConversationContext(input: PrivateAiInput): string {
 }
 
 export function buildCloudDraftRequest(input: PrivateAiInput): CloudDraftRequest {
-  const { latestMeaningfulIncoming } = selectPromptContext(input);
+  const { latestMessage, latestMeaningfulIncoming } = selectPromptContext(input);
+  const serializeCloudMessage = <TSender extends "USER" | "CONTACT">(message: Contact["chat"][number], sender: TSender) => ({
+    id: message.id.slice(0, 200),
+    sender,
+    speaker: clipForPrompt(message.speaker || (sender === "USER" ? "You" : input.contact.name), 200),
+    text: clipForPrompt(message.body || (message.attachments ?? []).map((attachment) => `[${attachment.kind}: ${attachment.label}]`).join(" "), 900),
+    timestamp: message.createdAt.slice(0, 100),
+  });
   return {
     conversationContext: buildConversationContext(input).slice(0, MAX_CLOUD_PROMPT_CHARS),
-    latestMeaningfulIncoming: latestMeaningfulIncoming ? {
-      id: latestMeaningfulIncoming.id.slice(0, 200),
-      sender: "CONTACT",
-      speaker: clipForPrompt(latestMeaningfulIncoming.speaker || input.contact.name, 200),
-      text: clipForPrompt(latestMeaningfulIncoming.body, 900),
-      timestamp: latestMeaningfulIncoming.createdAt.slice(0, 100),
-    } : null,
+    latestActualMessage: latestMessage ? serializeCloudMessage(latestMessage, latestMessage.role === "me" ? "USER" : "CONTACT") : null,
+    latestMeaningfulIncoming: latestMeaningfulIncoming ? serializeCloudMessage(latestMeaningfulIncoming, "CONTACT") : null,
     playbook: {
       role: input.guidance.role,
       relationshipGoal: input.guidance.objective.slice(0, PLAYBOOK_GOAL_MAX_CHARS),

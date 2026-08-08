@@ -1,5 +1,5 @@
 {
-  "name": "chathelp-private-cloud",
+  "name": "chathelp-private-cloud-unconfigured",
   "main": "./cloudflare/worker/src/index.js",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -14,16 +14,6 @@
   "secrets": {
     "required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD_TESTING", "ACCESS_AUD_PRODUCTION", "ANTHROPIC_API_KEY"]
   },
-  "hyperdrive": [
-    {
-      "binding": "NEON_TESTING",
-      "id": "69eb149ad82d40cba7e729279294d521"
-    },
-    {
-      "binding": "NEON_PRODUCTION",
-      "id": "0df56a4e086547eb9e15d1d964556676"
-    }
-  ],
   "assets": {
     "directory": "./out",
     "binding": "ASSETS",
@@ -42,5 +32,63 @@
   ],
   "observability": {
     "enabled": false
+  },
+  "env": {
+    "testing": {
+      "name": "testing-chathelp-private-cloud",
+      "vars": {
+        "DEPLOYMENT_ENVIRONMENT": "testing"
+      },
+      "ai": {
+        "binding": "AI"
+      },
+      "secrets": {
+        "required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD_TESTING", "ACCESS_AUD_PRODUCTION", "ANTHROPIC_API_KEY"]
+      },
+      "hyperdrive": [
+        {
+          "binding": "NEON_TESTING",
+          "id": "69eb149ad82d40cba7e729279294d521"
+        }
+      ],
+      "ratelimits": [
+        {
+          "name": "DRAFT_RATE_LIMITER",
+          "namespace_id": "7493101",
+          "simple": {
+            "limit": 10,
+            "period": 60
+          }
+        }
+      ]
+    },
+    "production": {
+      "name": "chathelp-private-cloud",
+      "vars": {
+        "DEPLOYMENT_ENVIRONMENT": "production"
+      },
+      "ai": {
+        "binding": "AI"
+      },
+      "secrets": {
+        "required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD_TESTING", "ACCESS_AUD_PRODUCTION", "ANTHROPIC_API_KEY"]
+      },
+      "hyperdrive": [
+        {
+          "binding": "NEON_PRODUCTION",
+          "id": "0df56a4e086547eb9e15d1d964556676"
+        }
+      ],
+      "ratelimits": [
+        {
+          "name": "DRAFT_RATE_LIMITER",
+          "namespace_id": "7493101",
+          "simple": {
+            "limit": 10,
+            "period": 60
+          }
+        }
+      ]
+    }
   }
 }

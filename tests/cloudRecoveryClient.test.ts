@@ -73,7 +73,7 @@ describe("DialogMint cloud recovery transport", () => {
   it("rejects invalid or excessively large JSON responses", async () => {
     const invalid = vi.fn().mockResolvedValue(jsonResponse({ envelope: { ...envelope, schemaVersion: 9 }, revision: 1, ciphertextDigest: digest }));
     await expect(readCloudVault(invalid)).rejects.toMatchObject({ code: "invalid" });
-    const oversized = vi.fn().mockResolvedValue(new Response("x".repeat(11 * 1024 * 1024 + 1), { headers: { "Content-Type": "application/json" } }));
+    const oversized = vi.fn().mockResolvedValue(new Response("x".repeat(16 * 1024 * 1024 + 1), { headers: { "Content-Type": "application/json" } }));
     await expect(readCloudVault(oversized)).rejects.toMatchObject({ code: "too-large" });
   });
 });

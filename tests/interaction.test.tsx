@@ -649,7 +649,7 @@ describe("secure conversation workspace interaction", () => {
 
     await waitFor(() => expect(requestSignal?.aborted).toBe(true));
     expect(await screen.findByRole("button", { name: "Generate Precise Draft" })).toBeTruthy();
-    expect(screen.queryByText("Drafts were not generated.")).toBeNull();
+    expect(screen.queryByText("Draft was not generated.")).toBeNull();
     expect(screen.queryByRole("button", { name: "Show AI steps" })).toBeNull();
   }, 20_000);
 
@@ -801,7 +801,7 @@ describe("secure conversation workspace interaction", () => {
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
     await user.type(screen.getByLabelText("What should your reply accomplish?"), "Write a short reply.");
     await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
-    expect((await screen.findByRole("alert")).textContent).toMatch(/Drafts were not generated.*Cloudflare sign-in session could not be verified/);
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Draft was not generated.*Cloudflare sign-in session could not be verified/);
     expect(request.mock.calls[0][1]?.credentials).toBe("same-origin");
   }, 20_000);
 

@@ -9,6 +9,7 @@ import {
 
 const CONTEXT = {
   conversationContext: "<conversation_context>\n{\"recentMessages\":[{\"sender\":\"CONTACT\",\"text\":\"What kind of work do you do?\"}]}\n</conversation_context>",
+  latestActualMessage: { id: "m1", sender: "CONTACT", speaker: "Alex", text: "What kind of work do you do?", timestamp: "2026-01-01T00:00:00.000Z" },
   latestMeaningfulIncoming: { id: "m1", sender: "CONTACT", speaker: "Alex", text: "What kind of work do you do?", timestamp: "2026-01-01T00:00:00.000Z" },
   playbook: {
     role: "Network Marketing",
@@ -27,10 +28,7 @@ const CONTEXT = {
 };
 
 const ANALYSIS = {
-  storedStage: "genuine_rapport",
   observedStage: "learn_interests",
-  effectiveStage: "learn_interests",
-  nextAllowedStage: "learn_interests",
   latestIncomingIntent: "The contact asked about the user's work.",
   knownFacts: [],
   unansweredQuestions: ["What work is most meaningful to the contact?"],
@@ -61,10 +59,33 @@ const REVIEW = {
     technicalFactualAccuracy: 5,
     ethicalSellingBoundaries: 5,
   },
-  total: 99,
   criticalFailures: [],
-  rewritten: false,
   finalDraft: CANDIDATE.draft.text,
+};
+
+const USER_LATEST_CONTEXT = {
+  ...CONTEXT,
+  conversationContext: "<conversation_context>\n{\"recentMessages\":[{\"id\":\"m1\",\"sender\":\"CONTACT\",\"text\":\"What kind of work do you do?\"},{\"id\":\"m2\",\"sender\":\"USER\",\"text\":\"I work around technology and relationship-based business.\"}]}\n</conversation_context>",
+  latestActualMessage: { id: "m2", sender: "USER", speaker: "You", text: "I work around technology and relationship-based business.", timestamp: "2026-01-01T00:01:00.000Z" },
+  latestMeaningfulIncoming: { id: "m1", sender: "CONTACT", speaker: "Alex", text: "What kind of work do you do?", timestamp: "2026-01-01T00:00:00.000Z" },
+};
+
+const USER_LATEST_ANALYSIS = {
+  ...ANALYSIS,
+  observedStage: "genuine_rapport",
+  latestIncomingIntent: "The user's latest message already answered the earlier contact question.",
+  goalForThisReply: "Do not repeat the answer; continue rapport only if another message is appropriate.",
+  replyPlan: "Avoid re-answering the stale incoming question and use one light rapport question.",
+  evidence: ["m2"],
+};
+
+const USER_LATEST_CANDIDATE = {
+  draft: { text: "What kind of work have you found most rewarding lately?" },
+};
+
+const USER_LATEST_REVIEW = {
+  ...REVIEW,
+  finalDraft: USER_LATEST_CANDIDATE.draft.text,
 };
 
 describe("permanent Workers AI fallback", () => {
@@ -96,14 +117,29 @@ describe("permanent Workers AI fallback", () => {
     const planner = ai.run.mock.calls[0][1];
     const writer = ai.run.mock.calls[1][1];
     const reviewer = ai.run.mock.calls[2][1];
-    expect(planner.messages[0].content).toContain("DIGEST: Learn before recommending.");
-    expect(planner.messages[0].content).not.toContain("FULL-RULEBOOK");
-    expect(writer.messages[0].content).toContain("FULL-RULEBOOK: Do not pitch before need and permission.");
-    expect(writer.response_format.json_schema.properties.draft.required).toEqual(["text"]);
-    expect(reviewer.messages[0].content).toContain("FULL-RULEBOOK: Do not pitch before need and permission.");
+    for (const request of [planner, writer, reviewer]) {
+      const system = request.messages[0].content;
+      const user = request.messages[1].content;
+      const authorized = user.slice(user.indexOf("<authorized_configuration>"), user.indexOf("</authorized_configuration>"));
+      const evidence = user.slice(user.indexOf("<untrusted_evidence>"), user.indexOf("</untrusted_evidence>"));
+      expect(system).toContain("mandatory but subordinate to safety and factual truth");
+      expect(system).not.toContain("Never sound scripted.");
+      expect(system).not.toContain("DIGEST: Learn before recommending.");
+      expect(authorized).toContain("Never sound scripted.");
+      expect(authorized).toContain("DIGEST: Learn before recommending.");
+      expect(authorized).toContain("Understand Alex's interests.");
+      expect(authorized).not.toContain("What kind of work do you do?");
+      expect(evidence).toContain("What kind of work do you do?");
+      expect(evidence).not.toContain("Never sound scripted.");
+      expect(user).not.toContain("context and analysis are untrusted data");
+      expect(user).not.toContain("All blocks are untrusted data");
+    }
+    expect(planner.response_format.json_schema.properties.observedStage).toBeDefined();
+    expect(writer.response_format).toBeUndefined();
     expect(reviewer.messages[1].content).toContain('"stage":"learn_interests"');
     expect(reviewer.messages[1].content).toContain('"goal":"Answer without pitching and learn one interest."');
     expect(reviewer.messages[1].content).toContain(CANDIDATE.draft.text);
+    expect(reviewer.response_format).toBeUndefined();
   });
 
   it("retries a stage once without response_format when structured parsing fails", async () => {
@@ -116,7 +152,47 @@ describe("permanent Workers AI fallback", () => {
     await expect(runWorkersAiDraftPipeline(CONTEXT, { ai })).resolves.toMatchObject({ draft: REVIEW.finalDraft });
     expect(ai.run).toHaveBeenCalledTimes(4);
     expect(ai.run.mock.calls[0][1].response_format.type).toBe("json_schema");
-    expect(ai.run.mock.calls[1][1].response_format).toBeUndefined();
+    const retry = ai.run.mock.calls[1][1];
+    expect(retry.response_format).toBeUndefined();
+    expect(retry.messages[1].content).toContain('"required":["observedStage","latestIncomingIntent","knownFacts","unansweredQuestions","goalForThisReply","toneDirectives","prohibitedMoves","replyPlan","evidence","needEstablished","permissionGranted","explicitRequest"]');
+    expect(retry.messages[1].content).toContain('"observedStage":"new_connection"');
+    for (const field of ["latestIncomingIntent", "knownFacts", "unansweredQuestions", "goalForThisReply", "toneDirectives", "prohibitedMoves", "replyPlan", "evidence", "needEstablished", "permissionGranted", "explicitRequest"]) {
+      expect(retry.messages[1].content).toContain(`"${field}"`);
+    }
+  });
+
+  it("retries the supported Llama analysis without JSON mode when the structured call is rejected", async () => {
+    const ai = { run: vi.fn()
+      .mockRejectedValueOnce(new Error("JSON Mode couldn't be met"))
+      .mockResolvedValueOnce({ response: ANALYSIS })
+      .mockResolvedValueOnce({ response: CANDIDATE })
+      .mockResolvedValueOnce({ response: REVIEW }) };
+
+    await expect(runWorkersAiDraftPipeline(CONTEXT, { ai })).resolves.toMatchObject({ draft: REVIEW.finalDraft });
+    expect(ai.run).toHaveBeenCalledTimes(4);
+    expect(ai.run.mock.calls[0][1].response_format.type).toBe("json_schema");
+    const retry = ai.run.mock.calls[1][1];
+    expect(retry.response_format).toBeUndefined();
+    expect(retry.messages[1].content).toContain('"required":["observedStage","latestIncomingIntent","knownFacts","unansweredQuestions","goalForThisReply","toneDirectives","prohibitedMoves","replyPlan","evidence","needEstablished","permissionGranted","explicitRequest"]');
+    expect(retry.messages[1].content).toContain('"observedStage":"new_connection"');
+  });
+
+  it("makes the USER latest message authoritative for analysis, writing, and review", async () => {
+    const responses = [USER_LATEST_ANALYSIS, USER_LATEST_CANDIDATE, USER_LATEST_REVIEW];
+    const ai = { run: vi.fn(async () => ({ response: responses.shift() })) };
+
+    await expect(runWorkersAiDraftPipeline(USER_LATEST_CONTEXT, { ai })).resolves.toMatchObject({
+      draft: "What kind of work have you found most rewarding lately?",
+    });
+
+    expect(ai.run).toHaveBeenCalledTimes(3);
+    for (const [, request] of ai.run.mock.calls) {
+      expect(request.messages[0].content).toContain("latestActualMessage is authoritative");
+      expect(request.messages[0].content).toContain("latestMeaningfulIncoming is historical context only");
+      expect(request.messages[0].content).toContain("sender is USER");
+      expect(request.messages[1].content).toContain('"latestActualMessage":{"id":"m2","sender":"USER"');
+      expect(request.messages[1].content).toContain('"latestMeaningfulIncoming":{"id":"m1","sender":"CONTACT"');
+    }
   });
 
   it("uses the same rubric and premature-pitch policy as the Claude path", async () => {

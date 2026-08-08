@@ -24,6 +24,11 @@ function parseEventFrame(frame: string): { event: string; payload: unknown } | n
   }
 }
 
+function nextFrameBoundary(value: string): { index: number; length: number } | null {
+  const match = /\r?\n\r?\n/.exec(value);
+  return match?.index === undefined ? null : { index: match.index, length: match[0].length };
+}
+
 export async function parseDraftProgressStream(
   response: Response,
   onProgress?: (update: DraftProgressUpdate) => void,
@@ -70,13 +75,13 @@ export async function parseDraftProgressStream(
     if (value) {
       bytesRead += value.byteLength;
       if (bytesRead > MAX_DRAFT_STREAM_BYTES) throw new Error("Cloudflare AI returned an oversized progress stream.");
-      buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      buffer += decoder.decode(value, { stream: !done });
     }
-    let separator = buffer.indexOf("\n\n");
-    while (separator >= 0) {
-      processFrame(buffer.slice(0, separator));
-      buffer = buffer.slice(separator + 2);
-      separator = buffer.indexOf("\n\n");
+    let boundary = nextFrameBoundary(buffer);
+    while (boundary) {
+      processFrame(buffer.slice(0, boundary.index));
+      buffer = buffer.slice(boundary.index + boundary.length);
+      boundary = nextFrameBoundary(buffer);
     }
     if (done) break;
   }

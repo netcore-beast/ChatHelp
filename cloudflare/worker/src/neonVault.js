@@ -2,7 +2,8 @@ import { Client } from "pg";
 
 const TESTING_HOST = "testing-chathelp-private-cloud.project-mission-ai.workers.dev";
 const PRODUCTION_HOST = "chathelp-private-cloud.project-mission-ai.workers.dev";
-const MAX_VAULT_REQUEST_BYTES = 10 * 1024 * 1024;
+const MAX_VAULT_CIPHERTEXT_BYTES = 10 * 1024 * 1024;
+const MAX_VAULT_WIRE_BYTES = 16 * 1024 * 1024;
 const HEX_DIGEST = /^[0-9a-f]{64}$/;
 const BASE64_URL = /^[A-Za-z0-9_-]+$/;
 
@@ -58,7 +59,7 @@ function validEnvelope(value) {
   if (Object.keys(value).sort().join(",") !== "ciphertext,encryptedBytes,format,iv,savedAt,schemaVersion") return false;
   if (value.format !== "dialogmint-cloud-v1" || value.schemaVersion !== 10) return false;
   if (typeof value.iv !== "string" || value.iv.length !== 16 || base64UrlBytes(value.iv) !== 12) return false;
-  if (!Number.isSafeInteger(value.encryptedBytes) || value.encryptedBytes <= 0 || value.encryptedBytes > MAX_VAULT_REQUEST_BYTES) return false;
+  if (!Number.isSafeInteger(value.encryptedBytes) || value.encryptedBytes <= 0 || value.encryptedBytes > MAX_VAULT_CIPHERTEXT_BYTES) return false;
   if (base64UrlBytes(value.ciphertext) !== value.encryptedBytes) return false;
   return typeof value.savedAt === "string" && value.savedAt.length <= 100 && Number.isFinite(Date.parse(value.savedAt));
 }
@@ -85,7 +86,7 @@ async function parseVaultWrite(request) {
     return { response: json({ error: "Expected a JSON request." }, 415) };
   }
   const declaredLength = Number(request.headers.get("Content-Length") ?? "0");
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_VAULT_REQUEST_BYTES) {
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_VAULT_WIRE_BYTES) {
     return { response: json({ error: "Encrypted backup is too large." }, 413) };
   }
   let raw;
@@ -94,7 +95,7 @@ async function parseVaultWrite(request) {
   } catch {
     return { response: json({ error: "Encrypted backup request is invalid." }, 400) };
   }
-  if (new TextEncoder().encode(raw).byteLength > MAX_VAULT_REQUEST_BYTES) {
+  if (new TextEncoder().encode(raw).byteLength > MAX_VAULT_WIRE_BYTES) {
     return { response: json({ error: "Encrypted backup is too large." }, 413) };
   }
   let payload;
@@ -126,13 +127,17 @@ const WRITE_SQL = `
     UPDATE dialogmint_vault_snapshots
     SET format_version = $2,
         schema_version = $3,
-        revision = revision + 1,
+        revision = CASE
+          WHEN expires_at <= now() AND $7 = 0 THEN 1
+          ELSE revision + 1
+        END,
         ciphertext = $4,
         ciphertext_digest = $5,
         encrypted_bytes = $6,
         updated_at = now(),
         expires_at = now() + interval '90 days'
-    WHERE account_id = $1 AND revision = $7
+    WHERE account_id = $1
+      AND ((revision = $7 AND expires_at > now()) OR ($7 = 0 AND expires_at <= now()))
     RETURNING revision, ciphertext_digest
   ), inserted AS (
     INSERT INTO dialogmint_vault_snapshots (
@@ -203,15 +208,14 @@ export async function handleVaultRequest(request, env, url, identity, options = 
 
 export async function cleanupExpiredVaults(env, options = {}) {
   const result = { testing: 0, production: 0 };
-  const targets = [["testing", env.NEON_TESTING], ["production", env.NEON_PRODUCTION]];
-  for (const [environment, binding] of targets) {
-    if (!binding?.connectionString) continue;
-    try {
-      const response = await queryDatabase(binding, "DELETE FROM dialogmint_vault_snapshots WHERE expires_at <= now()", [], options);
-      result[environment] = Math.max(0, Number(response?.rowCount) || 0);
-    } catch {
-      result[environment] = 0;
-    }
+  const environment = env.DEPLOYMENT_ENVIRONMENT;
+  const binding = environment === "testing" ? env.NEON_TESTING : environment === "production" ? env.NEON_PRODUCTION : null;
+  if (!binding?.connectionString) return result;
+  try {
+    const response = await queryDatabase(binding, "DELETE FROM dialogmint_vault_snapshots WHERE expires_at <= now()", [], options);
+    result[environment] = Math.max(0, Number(response?.rowCount) || 0);
+  } catch {
+    result[environment] = 0;
   }
   return result;
 }

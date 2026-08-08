@@ -37,18 +37,52 @@ describe("installable client boundaries", () => {
     expect(config.assets.run_worker_first).toBe(true);
   });
 
-  it("enables the Worker database runtime and daily expiry cleanup without embedding credentials", () => {
+  it("isolates each Worker environment to its own database while preserving shared runtime bindings", () => {
     const wrangler = read("wrangler.jsonc");
+    const config = JSON.parse(wrangler);
+    const requiredSecrets = ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD_TESTING", "ACCESS_AUD_PRODUCTION", "ANTHROPIC_API_KEY"];
+
     expect(wrangler).toContain('"nodejs_compat"');
     expect(wrangler).toContain('"crons": ["0 3 * * *"]');
-    expect(wrangler).toContain('"binding": "NEON_TESTING"');
-    expect(wrangler).toContain('"id": "69eb149ad82d40cba7e729279294d521"');
-    expect(wrangler).toContain('"binding": "NEON_PRODUCTION"');
-    expect(wrangler).toContain('"id": "0df56a4e086547eb9e15d1d964556676"');
-    expect(wrangler).toContain('"required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD_TESTING", "ACCESS_AUD_PRODUCTION", "ANTHROPIC_API_KEY"]');
+    expect(config.name).toBe("chathelp-private-cloud-unconfigured");
+    expect(config.name).not.toBe(config.env.testing.name);
+    expect(config.name).not.toBe(config.env.production.name);
+    expect(config.hyperdrive).toBeUndefined();
+    expect(config.env.testing).toMatchObject({
+      name: "testing-chathelp-private-cloud",
+      vars: { DEPLOYMENT_ENVIRONMENT: "testing" },
+      ai: { binding: "AI" },
+      secrets: { required: requiredSecrets },
+      hyperdrive: [{ binding: "NEON_TESTING", id: "69eb149ad82d40cba7e729279294d521" }],
+    });
+    expect(config.env.production).toMatchObject({
+      name: "chathelp-private-cloud",
+      vars: { DEPLOYMENT_ENVIRONMENT: "production" },
+      ai: { binding: "AI" },
+      secrets: { required: requiredSecrets },
+      hyperdrive: [{ binding: "NEON_PRODUCTION", id: "0df56a4e086547eb9e15d1d964556676" }],
+    });
+    expect(config.env.testing.ratelimits).toEqual(config.env.production.ratelimits);
+    expect(config.env.testing.hyperdrive.some(({ binding }: { binding: string }) => binding === "NEON_PRODUCTION")).toBe(false);
+    expect(config.env.production.hyperdrive.some(({ binding }: { binding: string }) => binding === "NEON_TESTING")).toBe(false);
     expect(wrangler).not.toContain("CHATHELP_ACCESS_TOKEN_HASH");
     expect(wrangler).not.toMatch(/postgres(?:ql)?:\/\//i);
     expect(wrangler).not.toMatch(/connectionString/i);
+  });
+
+  it("pins Cloudflare verification and release scripts to explicit environments", () => {
+    const scripts = JSON.parse(read("package.json")).scripts;
+
+    expect(scripts["verify:cloudflare"]).toContain("--env testing");
+    expect(scripts["verify:cloudflare:production"]).toContain("--env production");
+    expect(scripts["deploy:cloudflare:testing"]).toContain("deploy --env testing");
+    expect(scripts["deploy:cloudflare:testing"]).toContain("--keep-vars");
+    expect(scripts["deploy:cloudflare"]).toContain("--env production");
+  });
+
+  it("keeps generated Wrangler bundles out of source control and lint inputs", () => {
+    expect(read(".gitignore")).toContain("/.wrangler-*/");
+    expect(read("eslint.config.mjs")).toContain('".wrangler-*/**"');
   });
 
   it("hash-authorizes static bootstrap scripts without unsafe-inline", () => {

@@ -91,6 +91,7 @@ describe("cloud AI client boundary", () => {
     const body = JSON.parse(init.body);
     expect(Object.keys(body)).toEqual([
       "conversationContext",
+      "latestActualMessage",
       "latestMeaningfulIncoming",
       "playbook",
       "personalGuidelines",
@@ -112,6 +113,7 @@ describe("cloud AI client boundary", () => {
       rulebookDigest: "- No pressure",
     });
     expect(body.replyObjective).toBe("Answer Alex and suggest two times.");
+    expect(body.latestActualMessage).toMatchObject({ sender: "CONTACT", text: "Could you share the role details?" });
     expect(body.latestMeaningfulIncoming).toMatchObject({ sender: "CONTACT", text: "Could you share the role details?" });
     expect(body.personalGuidelines).toBe("Prefer plain language and one useful question.");
     expect(body.conversationGoal).toBe("Learn which challenge matters most to Alex.");
@@ -125,6 +127,25 @@ describe("cloud AI client boundary", () => {
       preferredResponse: "What part would be most useful to unpack first?",
     }]);
     expect(body.conversationContext.length).toBeLessThanOrEqual(MAX_CLOUD_PROMPT_CHARS);
+  });
+
+  it("keeps the latest actual user message authoritative over an earlier incoming message", () => {
+    const current = input();
+    current.contact.chat.push({
+      id: "m2",
+      role: "me",
+      body: "I can send the overview tomorrow.",
+      createdAt: "2026-01-01T00:01:00.000Z",
+    });
+
+    const request = buildCloudDraftRequest(current);
+
+    expect(request.latestActualMessage).toMatchObject({
+      id: "m2",
+      sender: "USER",
+      text: "I can send the overview tomorrow.",
+    });
+    expect(request.latestMeaningfulIncoming).toMatchObject({ id: "m1", sender: "CONTACT" });
   });
 
   it("keeps learning examples separate and unable to replace current priority fields", () => {
@@ -175,6 +196,25 @@ describe("cloud AI client boundary", () => {
       { kind: "stage", stage: "analyzing", status: "done" },
       { kind: "stage", stage: "drafting", status: "in-progress" },
     ]);
+  });
+
+  it("parses CRLF progress frames when a network chunk splits the CRLF pair", async () => {
+    const request = vi.fn().mockResolvedValue(sseResponse([
+      'event: stage\r',
+      '\ndata: {"stage":"analyzing","status":"done"}\r',
+      '\n\r',
+      '\nevent: result\r',
+      '\ndata: {"draft":"Reviewed reply","provider":"anthropic","model":"claude-opus-4-6","mode":"stage-aware-single-draft-v1"}\r',
+      '\n\r',
+      '\n',
+    ]));
+
+    await expect(generateWithCloud(input(), {
+      consentedAt: "2026-08-01T00:00:00.000Z",
+    }, undefined, request as unknown as typeof fetch)).resolves.toMatchObject({
+      draft: "Reviewed reply",
+      provider: "anthropic",
+    });
   });
 
   it("surfaces a safe streaming error and rejects a truncated stream", async () => {

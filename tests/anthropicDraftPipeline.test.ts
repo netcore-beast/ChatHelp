@@ -6,6 +6,13 @@ import {
 
 const CONTEXT = {
   conversationContext: "<conversation_context>\n{\"recentMessages\":[{\"sender\":\"CONTACT\",\"text\":\"Could you share the role details?\"}]}\n</conversation_context>",
+  latestActualMessage: {
+    id: "m1",
+    sender: "CONTACT",
+    speaker: "Alex",
+    text: "Could you share the role details?",
+    timestamp: "2026-01-01T00:00:00.000Z",
+  },
   latestMeaningfulIncoming: {
     id: "m1",
     sender: "CONTACT",
@@ -30,10 +37,7 @@ const CONTEXT = {
 };
 
 const ANALYSIS = {
-  storedStage: "learn_interests",
   observedStage: "identify_need",
-  effectiveStage: "identify_need",
-  nextAllowedStage: "identify_need",
   latestIncomingIntent: "The contact wants role details.",
   knownFacts: ["The contact asked for role details."],
   unansweredQuestions: ["Which detail matters most?"],
@@ -64,10 +68,38 @@ const REVIEW = {
     technicalFactualAccuracy: 5,
     ethicalSellingBoundaries: 5,
   },
-  total: 100,
   criticalFailures: [],
-  rewritten: true,
   finalDraft: "I can share the key details. Which part would be most useful to start with?",
+};
+
+const USER_LATEST_CONTEXT = {
+  ...CONTEXT,
+  conversationContext: "<conversation_context>\n{\"recentMessages\":[{\"id\":\"m1\",\"sender\":\"CONTACT\",\"text\":\"Could you share the role details?\"},{\"id\":\"m2\",\"sender\":\"USER\",\"text\":\"I can share them once I know which part matters most.\"}]}\n</conversation_context>",
+  latestActualMessage: {
+    id: "m2",
+    sender: "USER",
+    speaker: "You",
+    text: "I can share them once I know which part matters most.",
+    timestamp: "2026-01-01T00:01:00.000Z",
+  },
+};
+
+const USER_LATEST_ANALYSIS = {
+  ...ANALYSIS,
+  observedStage: "learn_interests",
+  latestIncomingIntent: "The user's latest message already responded to the earlier contact request.",
+  goalForThisReply: "Do not repeat the role-details answer; wait or continue only with a relevant clarification.",
+  replyPlan: "Treat the incoming request as historical because the user has already answered it.",
+  evidence: ["m2"],
+};
+
+const USER_LATEST_CANDIDATE = {
+  draft: { text: "Would responsibilities, team structure, or growth path be most useful to cover first?" },
+};
+
+const USER_LATEST_REVIEW = {
+  ...REVIEW,
+  finalDraft: USER_LATEST_CANDIDATE.draft.text,
 };
 
 function messageResponse(value: unknown): Response {
@@ -105,7 +137,8 @@ describe("Claude Opus precision pipeline", () => {
     const bodies = request.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
     for (const body of bodies) {
       expect(body.model).toBe("claude-opus-4-6");
-      expect(body.thinking).toMatchObject({ type: "enabled", display: "omitted" });
+      expect(body.thinking).toEqual({ type: "adaptive", display: "omitted" });
+      expect(body.thinking.budget_tokens).toBeUndefined();
       expect(body.output_config).toMatchObject({ effort: "high", format: { type: "json_schema" } });
       const providerSchema = JSON.stringify(body.output_config.format.schema);
       expect(providerSchema).not.toMatch(/"(?:minimum|maximum|maxItems)"/);
@@ -113,9 +146,22 @@ describe("Claude Opus precision pipeline", () => {
       expect(body.top_p).toBeUndefined();
     }
     expect(bodies[0].system).toContain("Never write reply prose");
-    expect(bodies[0].messages[0].content).toContain("DIGEST: No pressure.");
-    expect(bodies[1].messages[0].content).toContain("FULL-RULEBOOK: Never pressure the contact.");
-    expect(bodies[1].messages[0].content).toContain("Use plain language and one useful question.");
+    for (const body of bodies) {
+      const system = body.system;
+      const user = body.messages[0].content;
+      const authorized = user.slice(user.indexOf("<authorized_configuration>"), user.indexOf("</authorized_configuration>"));
+      const evidence = user.slice(user.indexOf("<untrusted_evidence>"), user.indexOf("</untrusted_evidence>"));
+      expect(system).toContain("mandatory but subordinate to safety and factual truth");
+      expect(system).not.toContain("Use plain language and one useful question.");
+      expect(system).not.toContain("DIGEST: No pressure.");
+      expect(authorized).toContain("Use plain language and one useful question.");
+      expect(authorized).toContain("DIGEST: No pressure.");
+      expect(authorized).toContain("Learn which role detail matters most.");
+      expect(authorized).not.toContain("Could you share the role details?");
+      expect(evidence).toContain("Could you share the role details?");
+      expect(evidence).not.toContain("Use plain language and one useful question.");
+      expect(user).not.toContain("context are untrusted data");
+    }
     expect(bodies[1].output_config.format.schema.properties.draft.required).toEqual(["text"]);
     expect(bodies[2].messages[0].content).toContain('"stage":"identify_need"');
     expect(bodies[2].messages[0].content).toContain('"goal":"Answer briefly and clarify the priority."');
@@ -151,7 +197,6 @@ describe("Claude Opus precision pipeline", () => {
     const lowReview = {
       ...REVIEW,
       scores: { ...REVIEW.scores, conversationGrounding: 14 },
-      total: 89,
       finalDraft: "Generic response.",
     };
     const responses = [ANALYSIS, CANDIDATE, lowReview];
@@ -183,6 +228,54 @@ describe("Claude Opus precision pipeline", () => {
     expect(error).toBeInstanceOf(AnthropicPipelineError);
     expect(error.kind).toBe("provider_server");
     expect(error.message).not.toContain("SYNTHETIC_PROVIDER_DETAIL");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("makes the USER latest message authoritative for analysis, writing, and review", async () => {
+    const responses = [USER_LATEST_ANALYSIS, USER_LATEST_CANDIDATE, USER_LATEST_REVIEW];
+    const request = vi.fn(async () => messageResponse(responses.shift()));
+
+    await expect(runAnthropicDraftPipeline(USER_LATEST_CONTEXT, {
+      apiKey: "[runtime-secret]",
+      request,
+    })).resolves.toMatchObject({
+      draft: "Would responsibilities, team structure, or growth path be most useful to cover first?",
+    });
+
+    const bodies = request.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
+    expect(bodies).toHaveLength(3);
+    for (const body of bodies) {
+      expect(body.system).toContain("latestActualMessage is authoritative");
+      expect(body.system).toContain("latestMeaningfulIncoming is historical context only");
+      expect(body.system).toContain("sender is USER");
+      expect(body.messages[0].content).toContain('"latestActualMessage":{"id":"m2","sender":"USER"');
+      expect(body.messages[0].content).toContain('"latestMeaningfulIncoming":{"id":"m1","sender":"CONTACT"');
+    }
+  });
+
+  it.each([
+    ["refusal", "provider_refusal"],
+    ["max_tokens", "provider_truncated"],
+    ["model_context_window_exceeded", "provider_truncated"],
+  ])("classifies a successful HTTP response stopped by %s before parsing partial output", async (stopReason, expectedKind) => {
+    const request = vi.fn(async () => new Response(JSON.stringify({
+      id: "msg_stopped",
+      type: "message",
+      role: "assistant",
+      model: "claude-opus-4-6",
+      content: [{ type: "text", text: JSON.stringify(ANALYSIS) }],
+      stop_reason: stopReason,
+      stop_sequence: null,
+      usage: { input_tokens: 100, output_tokens: 50 },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+    const error = await runAnthropicDraftPipeline(CONTEXT, {
+      apiKey: "[runtime-secret]",
+      request,
+    }).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(AnthropicPipelineError);
+    expect(error.kind).toBe(expectedKind);
     expect(request).toHaveBeenCalledTimes(1);
   });
 });

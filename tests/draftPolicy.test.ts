@@ -20,9 +20,7 @@ const PASSING_SCORES = {
 function review(overrides: Record<string, unknown> = {}) {
   return {
     scores: PASSING_SCORES,
-    total: 100,
     criticalFailures: [],
-    rewritten: false,
     finalDraft: "That makes sense. Which part of the role would be most useful to explore first?",
     ...overrides,
   };
@@ -52,15 +50,52 @@ describe("stage-aware draft policy", () => {
       explicitRequest: true,
       needEstablished: false,
       permissionGranted: false,
-    })).toBe(true);
+    })).toBe(false);
   });
 
-  it("parses bounded analysis without accepting reply prose or invalid stage jumps", () => {
+  it("allows an early introduction only for a model-identified request verified by the current contact message", () => {
+    const analysis = {
+      explicitRequest: true,
+      needEstablished: false,
+      permissionGranted: false,
+    };
+
+    expect(canIntroduceValue("genuine_rapport", analysis, {
+      sender: "CONTACT",
+      text: "Could you tell me more about your business opportunity?",
+    })).toBe(true);
+    expect(canIntroduceValue("genuine_rapport", analysis, {
+      sender: "CONTACT",
+      text: "I do not understand how your product works. Can you explain?",
+    })).toBe(true);
+    expect(canIntroduceValue("genuine_rapport", analysis, {
+      sender: "USER",
+      text: "Could you tell me more about your business opportunity?",
+    })).toBe(false);
+    expect(canIntroduceValue("genuine_rapport", analysis, {
+      sender: "CONTACT",
+      text: "I'm not interested in side-income opportunities.",
+    })).toBe(false);
+    expect(canIntroduceValue("genuine_rapport", analysis, {
+      sender: "CONTACT",
+      text: "Do you use Microsoft Sentinel in your work?",
+    })).toBe(false);
+    expect(canIntroduceValue("genuine_rapport", analysis, {
+      sender: "CONTACT",
+      text: "Can you explain how a business should secure Microsoft Sentinel?",
+    })).toBe(false);
+    expect(canIntroduceValue("genuine_rapport", {
+      ...analysis,
+      explicitRequest: false,
+    }, {
+      sender: "CONTACT",
+      text: "Please share the details of your side-income program.",
+    })).toBe(false);
+  });
+
+  it("computes server-owned stage fields instead of trusting model output", () => {
     const parsed = parseDraftAnalysis({
-      storedStage: "learn_interests",
       observedStage: "introduce_value",
-      effectiveStage: "identify_need",
-      nextAllowedStage: "identify_need",
       latestIncomingIntent: "The contact wants role details.",
       knownFacts: ["The contact asked for role details."],
       unansweredQuestions: ["Which detail matters most?"],
@@ -72,23 +107,25 @@ describe("stage-aware draft policy", () => {
       needEstablished: false,
       permissionGranted: false,
       explicitRequest: false,
-    });
+    }, "learn_interests");
 
+    expect(parsed.storedStage).toBe("learn_interests");
     expect(parsed.effectiveStage).toBe("identify_need");
+    expect(parsed.nextAllowedStage).toBe("identify_need");
     expect(() => parseDraftAnalysis({ ...parsed, finalDraft: "Hidden reply prose" })).toThrow(/analysis/i);
-    expect(() => parseDraftAnalysis({ ...parsed, effectiveStage: "introduce_value" })).toThrow(/stage/i);
   });
 
-  it("requires a truthful 90-point total and every exact weighted dimension", () => {
+  it("computes the rubric total on the server and requires every exact weighted dimension", () => {
     expect(validateFinalReview(review({
       scores: { ...PASSING_SCORES, conversationGrounding: 14 },
-      total: 89,
     }), { canIntroduceValue: false, conversationText: "" })).toEqual({ ok: false, reason: "rubric" });
 
     expect(validateFinalReview(review({
       scores: { ...PASSING_SCORES, humanTone: 9 },
-      total: 100,
-    }), { canIntroduceValue: false, conversationText: "" })).toEqual({ ok: false, reason: "total" });
+    }), { canIntroduceValue: false, conversationText: "" })).toEqual({
+      ok: true,
+      draft: "That makes sense. Which part of the role would be most useful to explore first?",
+    });
   });
 
   it("fails critical, copied, invented-history, and premature-pitch output regardless of score", () => {
@@ -110,6 +147,32 @@ describe("stage-aware draft policy", () => {
     expect(validateFinalReview(review({
       finalDraft: "My business opportunity could be the perfect product for you.",
     }), { canIntroduceValue: false, conversationText: "" })).toEqual({ ok: false, reason: "premature_pitch" });
+  });
+
+  it.each([
+    "I can share how our side-income program works if that would be useful.",
+    "I have a business idea that could be a good fit for your goals.",
+    "Our DialogMint service could help you connect with more people.",
+    "I can show you Acme Growth if you would like.",
+    "I can share DialogMint Pro when you are ready.",
+    "I can recommend Acme Growth Platform for building your network.",
+    "I help professionals create another income stream through a flexible community. Want me to explain how it works?",
+  ])("blocks contextual offering language at an early stage: %s", (finalDraft) => {
+    expect(validateFinalReview(review({ finalDraft }), {
+      canIntroduceValue: false,
+      conversationText: "",
+    })).toEqual({ ok: false, reason: "premature_pitch" });
+  });
+
+  it.each([
+    "Microsoft Sentinel is one SIEM option. Which capabilities are you comparing?",
+    "That sounds like a useful product-design challenge. What are you optimizing?",
+    "Your business idea sounds thoughtful. What led you to it?",
+  ])("does not mistake ordinary technical or contact-led discussion for a pitch: %s", (finalDraft) => {
+    expect(validateFinalReview(review({ finalDraft }), {
+      canIntroduceValue: false,
+      conversationText: "",
+    })).toEqual({ ok: true, draft: finalDraft });
   });
 
   it("returns exactly one validated paste-ready final draft", () => {

@@ -21,10 +21,7 @@ export const RUBRIC_WEIGHTS = {
 };
 
 const ANALYSIS_KEYS = [
-  "storedStage",
   "observedStage",
-  "effectiveStage",
-  "nextAllowedStage",
   "latestIncomingIntent",
   "knownFacts",
   "unansweredQuestions",
@@ -41,10 +38,7 @@ const ANALYSIS_KEYS = [
 export const ANALYSIS_SCHEMA = {
   type: "object",
   properties: {
-    storedStage: { type: "string", enum: RELATIONSHIP_STAGES },
     observedStage: { type: "string", enum: RELATIONSHIP_STAGES },
-    effectiveStage: { type: "string", enum: RELATIONSHIP_STAGES },
-    nextAllowedStage: { type: "string", enum: RELATIONSHIP_STAGES },
     latestIncomingIntent: { type: "string" },
     knownFacts: { type: "array", maxItems: 12, items: { type: "string" } },
     unansweredQuestions: { type: "array", maxItems: 12, items: { type: "string" } },
@@ -86,12 +80,10 @@ export const REVIEW_SCHEMA = {
       required: Object.keys(RUBRIC_WEIGHTS),
       additionalProperties: false,
     },
-    total: { type: "integer", minimum: 0, maximum: 100 },
     criticalFailures: { type: "array", maxItems: 8, items: { type: "string" } },
-    rewritten: { type: "boolean" },
     finalDraft: { type: "string" },
   },
-  required: ["scores", "total", "criticalFailures", "rewritten", "finalDraft"],
+  required: ["scores", "criticalFailures", "finalDraft"],
   additionalProperties: false,
 };
 
@@ -133,23 +125,39 @@ export function effectiveStage(storedStage, observedStage, evidence = []) {
   return RELATIONSHIP_STAGES[Math.min(observedIndex, storedIndex + 1)];
 }
 
-export function canIntroduceValue(stage, context) {
-  if (context?.explicitRequest === true) return true;
+const INTRODUCTION_REQUEST_SUBJECT = "(?:business\\s+(?:idea|opportunity)|(?:your|this|that)\\s+business(?:\\s+(?:idea|opportunity))?|side[-\\s]?income\\s+(?:program|opportunity)|income\\s+opportunity|(?:your|this|that)\\s+(?:product|service|program|platform|solution|offer))";
+const INTRODUCTION_REQUEST_PATTERNS = [
+  new RegExp(`\\b(?:tell|share|explain|show|send|describe|outline)\\b.{0,100}\\b${INTRODUCTION_REQUEST_SUBJECT}\\b`, "i"),
+  new RegExp(`\\b(?:want|would\\s+like|like)\\s+to\\s+(?:know|hear|learn)\\b.{0,100}\\b${INTRODUCTION_REQUEST_SUBJECT}\\b`, "i"),
+  new RegExp(`\\b${INTRODUCTION_REQUEST_SUBJECT}\\b.{0,80}\\b(?:details|information|info|works?|involves?|costs?|price)\\b`, "i"),
+];
+const INTRODUCTION_REQUEST_REJECTION = /\b(?:(?:do\s+not|don't)\s+(?:want|need|contact|message|send|share|explain|discuss)|not\s+interested|no\s+thanks|never\s+contact|stop)\b/i;
+
+function hasVerifiedIntroductionRequest(message) {
+  if (message?.sender !== "CONTACT" || typeof message.text !== "string") return false;
+  const text = message.text.trim().slice(0, 5_000);
+  if (!text || INTRODUCTION_REQUEST_REJECTION.test(text)) return false;
+  return INTRODUCTION_REQUEST_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+export function canIntroduceValue(stage, context, latestActualMessage) {
+  if (context?.explicitRequest === true && hasVerifiedIntroductionRequest(latestActualMessage)) return true;
   return RELATIONSHIP_STAGES.indexOf(stage) >= RELATIONSHIP_STAGES.indexOf("introduce_value")
     && context?.needEstablished === true
     && context?.permissionGranted === true;
 }
 
-export function parseDraftAnalysis(value) {
+export function parseDraftAnalysis(value, storedStage) {
   if (!hasExactKeys(value, ANALYSIS_KEYS)) throw new Error("Invalid analysis fields");
-  if (!isStage(value.storedStage) || !isStage(value.observedStage) || !isStage(value.effectiveStage) || !isStage(value.nextAllowedStage)) {
+  if (!isStage(storedStage) || !isStage(value.observedStage)) {
     throw new Error("Invalid relationship stage");
   }
+  const evidence = boundedList(value.evidence, 12, 200);
   const parsed = {
-    storedStage: value.storedStage,
+    storedStage,
     observedStage: value.observedStage,
-    effectiveStage: value.effectiveStage,
-    nextAllowedStage: value.nextAllowedStage,
+    effectiveStage: effectiveStage(storedStage, value.observedStage, evidence),
+    nextAllowedStage: nextStage(storedStage),
     latestIncomingIntent: boundedText(value.latestIncomingIntent, 1_000),
     knownFacts: boundedList(value.knownFacts, 12, 500),
     unansweredQuestions: boundedList(value.unansweredQuestions, 12, 500),
@@ -157,17 +165,13 @@ export function parseDraftAnalysis(value) {
     toneDirectives: boundedList(value.toneDirectives, 12, 300),
     prohibitedMoves: boundedList(value.prohibitedMoves, 16, 500),
     replyPlan: boundedText(value.replyPlan, 2_000),
-    evidence: boundedList(value.evidence, 12, 200),
+    evidence,
     needEstablished: value.needEstablished,
     permissionGranted: value.permissionGranted,
     explicitRequest: value.explicitRequest,
   };
   if ([parsed.needEstablished, parsed.permissionGranted, parsed.explicitRequest].some((item) => typeof item !== "boolean")) {
     throw new Error("Invalid analysis flags");
-  }
-  if (parsed.nextAllowedStage !== nextStage(parsed.storedStage)
-      || parsed.effectiveStage !== effectiveStage(parsed.storedStage, parsed.observedStage, parsed.evidence)) {
-    throw new Error("Invalid stage progression");
   }
   return parsed;
 }
@@ -180,7 +184,7 @@ export function parseDraftCandidate(value) {
 }
 
 export function parseFinalReview(value) {
-  if (!hasExactKeys(value, ["scores", "total", "criticalFailures", "rewritten", "finalDraft"])) throw new Error("Invalid review object");
+  if (!hasExactKeys(value, ["scores", "criticalFailures", "finalDraft"])) throw new Error("Invalid review object");
   if (!hasExactKeys(value.scores, Object.keys(RUBRIC_WEIGHTS))) throw new Error("Invalid review scores");
   const scores = {};
   for (const [dimension, maximum] of Object.entries(RUBRIC_WEIGHTS)) {
@@ -188,16 +192,12 @@ export function parseFinalReview(value) {
     if (!Number.isInteger(score) || score < 0 || score > maximum) throw new Error("Invalid review scores");
     scores[dimension] = score;
   }
-  if (!Number.isInteger(value.total) || value.total < 0 || value.total > 100) throw new Error("Invalid review total");
   if (!Array.isArray(value.criticalFailures) || value.criticalFailures.length > 8 || value.criticalFailures.some((item) => typeof item !== "string")) {
     throw new Error("Invalid critical failures");
   }
-  if (typeof value.rewritten !== "boolean") throw new Error("Invalid review rewrite flag");
   return {
     scores,
-    total: value.total,
     criticalFailures: value.criticalFailures.map((item) => item.trim().slice(0, 200)).filter(Boolean),
-    rewritten: value.rewritten,
     finalDraft: boundedText(value.finalDraft, 5_000),
   };
 }
@@ -214,7 +214,17 @@ const UNSUPPORTED_PERSONAL_HISTORY_PATTERNS = [
   /\bi\s+(?:started|chose|decided)\b[^.!?]{0,100}\b(?:because|after|when)\b/i,
 ];
 
-const VALUE_INTRODUCTION_PATTERN = /\b(?:business opportunity|product|income opportunity|join (?:my|our)|compensation plan|purchase|buy|customer offer)\b/i;
+const VALUE_INTRODUCTION_PATTERNS = [
+  /\b(?:my|our|this)\s+(?:business\s+(?:idea|opportunity)|side[-\s]?income\s+(?:program|opportunity)|income\s+opportunity|compensation\s+plan|customer\s+offer)\b/i,
+  /\b(?:i|we)\s+(?:have|offer|run|created|built|want\s+to\s+share|would\s+like\s+to\s+share)\s+(?:a|an|the)?\s*(?:business\s+(?:idea|opportunity)|side[-\s]?income\s+(?:program|opportunity)|income\s+opportunity)\b/i,
+  /\bjoin\s+(?:my|our)\b/i,
+  /\b(?:purchase|buy|subscribe\s+to|sign\s+up\s+for)\s+(?:my|our|this|the)\s+(?:[a-z0-9&'-]+\s+){0,5}(?:service|product|program|platform|solution|offer)\b/i,
+  /\b(?:my|our)\s+(?:[a-z0-9&'-]+\s+){0,5}(?:service|product|program|platform|solution|offer)\b/i,
+  /\b(?:i|we)\s+(?:can|could|would|would\s+like\s+to|'d\s+like\s+to)?\s*(?:show|share|introduce|offer|recommend)\b[^.!?]{0,100}\b(?:my|our|a|an|this)\s+(?:[a-z0-9&'-]+\s+){0,5}(?:service|product|program|platform|solution|offer)\b/i,
+  /\b(?:I|We)\s+(?:(?:can|could|would)\s+)?(?:show|share|introduce|recommend)\s+(?:you\s+)?(?:the\s+)?[A-Z][A-Za-z0-9&'-]*(?:\s+[A-Z][A-Za-z0-9&'-]*){1,4}\b/,
+  /\b(?:i|we)\s+(?:(?:can|could)\s+)?(?:help|show|teach|guide|support|work\s+with)\b[^.!?]{0,120}\b(?:create|build|generate|develop|earn|make)\b[^.!?]{0,80}\b(?:(?:extra|additional|another|side|supplemental|passive)\s+income|(?:income|revenue)\s+stream)\b/i,
+  /\b(?:earn|make|generate)\s+(?:an?\s+)?(?:extra|additional|side|supplemental|passive)\s+income\b/i,
+];
 
 export function validateFinalReview(value, context = {}) {
   let review;
@@ -225,14 +235,15 @@ export function validateFinalReview(value, context = {}) {
   }
   if (review.criticalFailures.length) return { ok: false, reason: "critical" };
   const calculatedTotal = Object.values(review.scores).reduce((total, score) => total + score, 0);
-  if (calculatedTotal !== review.total) return { ok: false, reason: "total" };
-  if (review.total < 90) return { ok: false, reason: "rubric" };
+  if (calculatedTotal < 90) return { ok: false, reason: "rubric" };
 
   const normalizedDraft = normalizedComparableText(review.finalDraft);
   const normalizedContext = normalizedComparableText(context.conversationText ?? "");
   if (normalizedDraft.length >= 30 && normalizedContext.includes(normalizedDraft)) return { ok: false, reason: "copied" };
   if (UNSUPPORTED_PERSONAL_HISTORY_PATTERNS.some((pattern) => pattern.test(review.finalDraft))) return { ok: false, reason: "unsupported_history" };
-  if (context.canIntroduceValue !== true && VALUE_INTRODUCTION_PATTERN.test(review.finalDraft)) return { ok: false, reason: "premature_pitch" };
+  if (context.canIntroduceValue !== true && VALUE_INTRODUCTION_PATTERNS.some((pattern) => pattern.test(review.finalDraft))) {
+    return { ok: false, reason: "premature_pitch" };
+  }
   if ((review.finalDraft.match(/\?/g) ?? []).length > 1) return { ok: false, reason: "question_heavy" };
   return { ok: true, draft: review.finalDraft };
 }

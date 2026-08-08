@@ -71,9 +71,10 @@ ChatHelp is a drafting assistant, not a messaging automation client. After expli
 ## Deployment channels
 
 - Production remains `https://chathelp-private-cloud.project-mission-ai.workers.dev/` until a public custom domain is purchased and explicitly attached.
-- Testing uses the stable aliased preview `https://testing-chathelp-private-cloud.project-mission-ai.workers.dev/`.
-- The testing link is a preview version of the same Worker, not a duplicate Worker. Uploading a test version does not promote it to production.
-- GitHub remains the release source of truth: changes are reviewed through a pull request and production is promoted only after checks and testing pass.
+- Testing uses the stable Worker route `https://testing-chathelp-private-cloud.project-mission-ai.workers.dev/`.
+- GitHub remains the release source of truth. Cloudflare serves the verified static frontend assets and the private API from the Worker bundle built from that source.
+- Testing and production use explicit Wrangler environments and separate Worker/database bindings. Deploy testing with `npm run deploy:cloudflare:testing`; it updates only the stable testing URL and cannot access the production database.
+- Production deployment remains a separate, explicitly authorized action through `npm run deploy:cloudflare` after checks and testing pass.
 
 
 ## Guided LinkedIn profile test

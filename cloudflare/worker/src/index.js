@@ -30,10 +30,10 @@ const MAX_CONVERSATION_GOAL_CHARS = 5_000;
 const SAFE_GENERATION_ERROR = "Cloud AI could not produce a safe draft. Please try again.";
 
 class DraftPipelineFailure extends Error {
-  constructor(primaryKind, fallbackKind) {
+  constructor(primaryError, fallbackError) {
     super(SAFE_GENERATION_ERROR);
     this.name = "DraftPipelineFailure";
-    this.diagnosticCode = `anthropic_${primaryKind}__cloudflare_${fallbackKind}`;
+    this.diagnosticCode = `anthropic_${primaryError.kind}_${primaryError.code ?? primaryError.kind}__cloudflare_${fallbackError.kind}_${fallbackError.code ?? fallbackError.kind}`;
   }
 }
 
@@ -47,6 +47,16 @@ function safeGenerationErrorPayload(error) {
     error: `${SAFE_GENERATION_ERROR} Diagnostic: ${diagnosticCode}`,
     diagnosticCode,
   };
+}
+
+function reportPipelineFailure(options, primaryError, fallbackError) {
+  const entry = {
+    event: "draft_pipeline_failed",
+    primary: { provider: "anthropic", kind: primaryError.kind, code: primaryError.code ?? primaryError.kind },
+    fallback: { provider: "cloudflare", kind: fallbackError.kind, code: fallbackError.code ?? fallbackError.kind },
+  };
+  if (typeof options.logError === "function") options.logError(entry);
+  else console.error(JSON.stringify(entry));
 }
 
 const RESPONSE_HEADERS = {
@@ -96,12 +106,13 @@ function parseBoundedList(value, maximumItems, maximumCharacters) {
   }).filter(Boolean);
 }
 
-function parseLatestIncoming(value) {
+function parseConversationMessage(value, requiredSender) {
   if (value === null) return null;
-  if (!value || typeof value !== "object" || Array.isArray(value) || value.sender !== "CONTACT") throw new Error("invalid");
+  if (!value || typeof value !== "object" || Array.isArray(value) || !["USER", "CONTACT"].includes(value.sender)) throw new Error("invalid");
+  if (requiredSender && value.sender !== requiredSender) throw new Error("invalid");
   const parsed = {
     id: limitedText(value.id, 200),
-    sender: "CONTACT",
+    sender: value.sender,
     speaker: limitedText(value.speaker, 200),
     text: limitedText(value.text, 900),
     timestamp: limitedText(value.timestamp, 100),
@@ -146,7 +157,8 @@ function parseDraftPayload(payload) {
 
   return {
     conversationContext,
-    latestMeaningfulIncoming: parseLatestIncoming(payload.latestMeaningfulIncoming),
+    latestActualMessage: parseConversationMessage(payload.latestActualMessage ?? payload.latestMeaningfulIncoming ?? null),
+    latestMeaningfulIncoming: parseConversationMessage(payload.latestMeaningfulIncoming ?? null, "CONTACT"),
     playbook,
     personalGuidelines: rawGuidelines,
     conversationGoal: limitedText(payload.conversationGoal, MAX_CONVERSATION_GOAL_CHARS),
@@ -210,7 +222,10 @@ async function runProviderPipeline(context, env, options, emit) {
     try {
       result = await runWorkersAiWithQualityRetry(context, env, orderedEmit);
     } catch (fallbackError) {
-      if (fallbackError instanceof WorkersAiPipelineError) throw new DraftPipelineFailure(error.kind, fallbackError.kind);
+      if (fallbackError instanceof WorkersAiPipelineError) {
+        reportPipelineFailure(options, error, fallbackError);
+        throw new DraftPipelineFailure(error, fallbackError);
+      }
       throw fallbackError;
     }
     orderedEmit("stage", { stage: "finalizing", status: "in-progress" });

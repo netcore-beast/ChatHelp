@@ -104,13 +104,23 @@ describe("DialogMint Neon vault Worker boundary", () => {
       vaultRequest("PUT", { envelope, expectedRevision: -1, ciphertextDigest }),
       vaultRequest("PUT", { envelope, expectedRevision: 0, ciphertextDigest: "not-a-digest" }),
       new Request(url, { method: "PUT", headers: { "Content-Type": "text/plain" }, body: "{}" }),
-      new Request(url, { method: "PUT", headers: { "Content-Type": "application/json", "Content-Length": String(10 * 1024 * 1024 + 1) }, body: "{}" }),
+      new Request(url, { method: "PUT", headers: { "Content-Type": "application/json", "Content-Length": String(16 * 1024 * 1024 + 1) }, body: "{}" }),
     ];
 
     const statuses = [];
     for (const request of cases) statuses.push((await handleVaultRequest(request, env(), url, identity, { query }))?.status);
     expect(statuses).toEqual([400, 400, 400, 415, 413]);
     expect(query).not.toHaveBeenCalled();
+  });
+
+  it("reserves wire overhead for a ciphertext envelope up to the ten MiB ciphertext limit", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [{ revision: "1", ciphertext_digest: ciphertextDigest }], rowCount: 1 });
+    const request = vaultRequest("PUT", { envelope, expectedRevision: 0, ciphertextDigest }, { "Content-Length": String(14 * 1024 * 1024) });
+
+    const response = await handleVaultRequest(request, env(), new URL(`https://${TESTING_HOST}/api/vault`), { accountId: ACCOUNT_ID, environment: "testing" }, { query });
+
+    expect(response?.status).toBe(200);
+    expect(query).toHaveBeenCalledTimes(1);
   });
 
   it("creates and conditionally updates revisions in one parameterized statement", async () => {
@@ -126,6 +136,16 @@ describe("DialogMint Neon vault Worker boundary", () => {
     expect(sql).not.toContain(ACCOUNT_ID);
     expect(sql).not.toContain(ciphertextDigest);
     expect(values).toEqual([ACCOUNT_ID, 1, 10, envelope, ciphertextDigest, 1, 0]);
+  });
+
+  it("allows revision zero to atomically replace an expired row hidden by GET", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [{ revision: "1", ciphertext_digest: ciphertextDigest }], rowCount: 1 });
+    const response = await handleVaultRequest(vaultRequest("PUT", { envelope, expectedRevision: 0, ciphertextDigest }), env(), new URL(`https://${TESTING_HOST}/api/vault`), { accountId: ACCOUNT_ID, environment: "testing" }, { query });
+
+    expect(response?.status).toBe(200);
+    const [, sql] = query.mock.calls[0];
+    expect(sql).toMatch(/CASE\s+WHEN expires_at <= now\(\) AND \$7 = 0\s+THEN 1\s+ELSE revision \+ 1\s+END/);
+    expect(sql).toMatch(/\(revision = \$7 AND expires_at > now\(\)\)\s+OR \(\$7 = 0 AND expires_at <= now\(\)\)/);
   });
 
   it("returns a revision conflict without retrying or overwriting", async () => {
@@ -146,19 +166,31 @@ describe("DialogMint Neon vault Worker boundary", () => {
     expect(values).toEqual([ACCOUNT_ID]);
   });
 
-  it("cleans both environments and continues after one environment fails", async () => {
+  it("cleans only the database selected by the current deployment environment", async () => {
     const bindings = env();
-    const query = vi.fn().mockImplementation(async (binding) => {
-      if (binding === bindings.NEON_TESTING) throw new Error("synthetic database failure");
-      return { rows: [], rowCount: 3 };
-    });
-    const result = await cleanupExpiredVaults(bindings, { query });
+    const query = vi.fn().mockResolvedValue({ rows: [], rowCount: 3 });
 
-    expect(result).toEqual({ testing: 0, production: 3 });
-    expect(query).toHaveBeenCalledTimes(2);
-    for (const [, sql, values] of query.mock.calls) {
-      expect(sql).toContain("DELETE FROM dialogmint_vault_snapshots WHERE expires_at <= now()");
-      expect(values).toEqual([]);
-    }
+    const testingResult = await cleanupExpiredVaults({ ...bindings, DEPLOYMENT_ENVIRONMENT: "testing" }, { query });
+
+    expect(testingResult).toEqual({ testing: 3, production: 0 });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0]).toBe(bindings.NEON_TESTING);
+    expect(query.mock.calls[0][1]).toContain("DELETE FROM dialogmint_vault_snapshots WHERE expires_at <= now()");
+    expect(query.mock.calls[0][2]).toEqual([]);
+
+    query.mockClear();
+    const productionResult = await cleanupExpiredVaults({ ...bindings, DEPLOYMENT_ENVIRONMENT: "production" }, { query });
+
+    expect(productionResult).toEqual({ testing: 0, production: 3 });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0]).toBe(bindings.NEON_PRODUCTION);
+  });
+
+  it("fails closed when the scheduled cleanup environment is absent or invalid", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [], rowCount: 3 });
+
+    await expect(cleanupExpiredVaults(env(), { query })).resolves.toEqual({ testing: 0, production: 0 });
+    await expect(cleanupExpiredVaults({ ...env(), DEPLOYMENT_ENVIRONMENT: "preview" }, { query })).resolves.toEqual({ testing: 0, production: 0 });
+    expect(query).not.toHaveBeenCalled();
   });
 });
