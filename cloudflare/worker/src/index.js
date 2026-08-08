@@ -27,7 +27,6 @@ const MAX_REPLY_OBJECTIVE_CHARS = 5_000;
 const MAX_PERSONAL_GUIDELINES_CHARS = 2_000;
 const MAX_CONVERSATION_GOAL_CHARS = 5_000;
 const SAFE_GENERATION_ERROR = "Cloud AI could not produce a safe draft. Please try again.";
-const FALLBACK_KINDS = new Set(["provider_unavailable", "provider_timeout", "provider_rate_limited", "provider_server"]);
 
 const RESPONSE_HEADERS = {
   "Cache-Control": "no-store",
@@ -176,7 +175,7 @@ async function runProviderPipeline(context, env, options, emit) {
     orderedEmit("stage", { stage: "finalizing", status: "done" });
     return result;
   } catch (error) {
-    if (!(error instanceof AnthropicPipelineError) || !FALLBACK_KINDS.has(error.kind)) throw error;
+    if (!(error instanceof AnthropicPipelineError) || error.kind === "cancelled") throw error;
     const result = await runWorkersAiDraftPipeline(context, { ai: env.AI, emit: orderedEmit });
     orderedEmit("stage", { stage: "finalizing", status: "in-progress" });
     orderedEmit("stage", { stage: "finalizing", status: "done" });

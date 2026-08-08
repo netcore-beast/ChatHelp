@@ -204,17 +204,22 @@ describe("Cloudflare private inference Worker", () => {
     expect(env.AI.run).toHaveBeenCalledTimes(3);
   });
 
-  it.each([401, 403, 400])("does not fall back for Anthropic HTTP %s", async (status) => {
+  it.each([401, 403, 400])("uses the permanent fallback for Anthropic HTTP %s", async (status) => {
     const env = workerEnv();
     const anthropicFetch = vi.fn(async () => new Response("synthetic provider detail", { status }));
     const response = await handleRequest(draftRequest(structuredPayload()), env, { verifyAccess, anthropicFetch });
 
-    expect(response.status).toBe(502);
-    await expect(response.json()).resolves.toEqual({ error: "Cloud AI could not produce a safe draft. Please try again." });
-    expect(env.AI.run).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      draft: REVIEW.finalDraft,
+      provider: "cloudflare",
+      model: WORKERS_AI_MODEL,
+      mode: "stage-aware-single-draft-v1",
+    });
+    expect(env.AI.run).toHaveBeenCalledTimes(3);
   });
 
-  it("does not fall back when Claude returns invalid quality or a critical policy failure", async () => {
+  it("uses the permanent fallback when Claude returns invalid quality or a critical policy failure", async () => {
     for (const responses of [
       [{ invalid: "analysis" }],
       [ANALYSIS, CANDIDATE, { ...REVIEW, criticalFailures: ["premature_pitch"] }],
@@ -222,8 +227,14 @@ describe("Cloudflare private inference Worker", () => {
       const anthropicFetch = vi.fn(async () => anthropicResponse(responses.shift()));
       const env = workerEnv();
       const response = await handleRequest(draftRequest(structuredPayload()), env, { verifyAccess, anthropicFetch });
-      expect(response.status).toBe(502);
-      expect(env.AI.run).not.toHaveBeenCalled();
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        draft: REVIEW.finalDraft,
+        provider: "cloudflare",
+        model: WORKERS_AI_MODEL,
+        mode: "stage-aware-single-draft-v1",
+      });
+      expect(env.AI.run).toHaveBeenCalledTimes(3);
     }
   });
 

@@ -109,6 +109,8 @@ describe("Claude Opus precision pipeline", () => {
       expect(body.model).toBe("claude-opus-4-6");
       expect(body.thinking).toMatchObject({ type: "enabled", display: "omitted" });
       expect(body.output_config).toMatchObject({ effort: "high", format: { type: "json_schema" } });
+      const providerSchema = JSON.stringify(body.output_config.format.schema);
+      expect(providerSchema).not.toMatch(/"(?:minimum|maximum|maxItems)"/);
       expect(body.temperature).toBeUndefined();
       expect(body.top_p).toBeUndefined();
     }

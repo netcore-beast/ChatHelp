@@ -14,6 +14,7 @@ export const SINGLE_DRAFT_MODE = "stage-aware-single-draft-v1";
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const MAX_PROVIDER_RESPONSE_BYTES = 512_000;
 const DEFAULT_STAGE_TIMEOUT_MS = 45_000;
+const UNSUPPORTED_SCHEMA_CONSTRAINTS = new Set(["minimum", "maximum", "maxItems"]);
 
 export class AnthropicPipelineError extends Error {
   constructor(kind) {
@@ -25,6 +26,14 @@ export class AnthropicPipelineError extends Error {
 
 function safeJson(value) {
   return JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+}
+
+function anthropicSchema(value) {
+  if (Array.isArray(value)) return value.map(anthropicSchema);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !UNSUPPORTED_SCHEMA_CONSTRAINTS.has(key))
+    .map(([key, nestedValue]) => [key, anthropicSchema(nestedValue)]));
 }
 
 function untrustedContext(context) {
@@ -122,7 +131,7 @@ async function callStructuredStage(options, requestBody, schema) {
         ...requestBody,
         output_config: {
           effort: "high",
-          format: { type: "json_schema", schema },
+          format: { type: "json_schema", schema: anthropicSchema(schema) },
         },
       }),
     });
