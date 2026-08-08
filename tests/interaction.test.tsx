@@ -374,6 +374,38 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.queryByRole("textbox", { name: "Preferred response for learning" })).toBeNull();
   }, 30_000);
 
+  it("shows only one response from legacy three-draft history", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.inboxRole = "Network Marketing";
+    workspace.contacts = [{
+      id: "legacy-drafts-contact",
+      name: "Amit Dabral",
+      headline: "",
+      profileNotes: "",
+      platform: "linkedin",
+      platformUrl: "",
+      chat: [{ id: "incoming", role: "them", body: "Happy to connect.", createdAt: "2026-08-02T11:59:00.000Z" }],
+      documents: [],
+      outcomes: [],
+      retentionDays: 90,
+      draftHistory: [{
+        id: "legacy-three-draft-set",
+        agenda: "Continue the conversation",
+        drafts: ["First legacy response", "Second legacy response", "Third legacy response"],
+        createdAt: "2026-08-02T12:00:00.000Z",
+        role: "Network Marketing",
+      }],
+    }];
+    await createDeviceVault(workspace);
+
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+
+    expect((screen.getByLabelText("Edit draft 1") as HTMLTextAreaElement).value).toBe("First legacy response");
+    expect(screen.queryByLabelText("Edit draft 2")).toBeNull();
+    expect(screen.getByRole("button", { name: "Generate Precise Draft" })).toBeTruthy();
+  });
+
   it("sends no more than three locally selected learning examples", async () => {
     const workspace = createEmptyWorkspace();
     workspace.cloudInference.consentedAt = "2026-08-01T00:00:00.000Z";

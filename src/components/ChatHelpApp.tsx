@@ -186,9 +186,10 @@ function hasConversationContext(contact: Contact): boolean {
 
 function latestDraftsForRole(contact: Contact | null | undefined, role: MessagingRole): string[] {
   const history = contact?.draftHistory ?? [];
-  return history.findLast((entry) => entry.role === role)?.drafts
+  const latestDrafts = history.findLast((entry) => entry.role === role)?.drafts
     ?? history.findLast((entry) => !entry.role)?.drafts
     ?? [];
+  return latestDrafts.slice(0, 1);
 }
 
 function createDraftInput(
