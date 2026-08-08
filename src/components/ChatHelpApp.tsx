@@ -7,6 +7,7 @@ import { captureVisibleScreen, cropImageToRegion, extractTextFromImage, type Nor
 import { buildDraftContextSummary, CLOUDFLARE_MODEL_NAME, generatePrivateDraft, type PrivateAiInput } from "@/lib/privateAi";
 import { selectLearningExamples } from "@/lib/personalLearning";
 import { extractRelationshipStageFeatures, predictRelationshipStage, trainStageClassifier } from "@/lib/relationshipStageClassifier";
+import { buildTrainingExportBundle } from "@/lib/trainingExport";
 import { type DraftPipelineStage, type DraftProgressUpdate, type DraftStageStatus } from "@/lib/draftProgress";
 import { DraftProgressPanel } from "@/components/DraftProgressPanel";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -691,6 +692,28 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     }
   }
 
+  function downloadTrainingArtifact(kind: "manifest" | "classifier" | "generative") {
+    try {
+      const bundle = buildTrainingExportBundle(workspaceRef.current);
+      const artifact = kind === "manifest"
+        ? { filename: "dialogmint-training-manifest.json", text: JSON.stringify(bundle.manifest, null, 2) + "\n", type: "application/json;charset=utf-8" }
+        : kind === "classifier"
+          ? { filename: "dialogmint-stage-classifier.jsonl", text: bundle.classifierJsonl, type: "application/x-ndjson;charset=utf-8" }
+          : { filename: "dialogmint-user-authored-generative.jsonl", text: bundle.userAuthoredGenerativeJsonl, type: "application/x-ndjson;charset=utf-8" };
+      const url = URL.createObjectURL(new Blob([artifact.text], { type: artifact.type }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = artifact.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      setPlaybookStatus(`Downloaded ${artifact.filename}. No upload or training was started.`);
+    } catch (error) {
+      setAppError(formatError(error));
+    }
+  }
+
   async function uploadRulesDocument(file: File) {
     setPlaybookStatus("");
     try {
@@ -1234,6 +1257,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     });
     return predictRelationshipStage(trainStageClassifier(workspace.stageTrainingRecords), features, currentStage, 0.30);
   }, [contact, workspace.inboxRole, workspace.personalLearning.enabled, workspace.stageTrainingRecords]);
+  const trainingExportPreview = useMemo(() => buildTrainingExportBundle(workspace, "preview"), [workspace]);
   const draftContextSummary = useMemo(() => contact
     ? buildDraftContextSummary(createDraftInput(contact, resolveRoleGuidance(workspace.guidance, workspace.inboxRole), agenda.trim(), workspace))
     : null, [agenda, contact, workspace]);
@@ -1436,6 +1460,22 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                     </article>;
                   })}
                 </div>}
+              </section>
+              <section className="panel-card training-export-card">
+                <p className="eyebrow">LOCAL TRAINING READINESS</p>
+                <h3>Preview approved training data</h3>
+                <p className="section-explainer">Exports are built locally only when you click Download. They exclude contact identifiers, raw conversations, provider reasoning, Claude drafts, provider-assisted text, secrets, and unapproved records.</p>
+                <div className="training-counts">
+                  <strong>{trainingExportPreview.manifest.counts.classifierRecords} classifier confirmations</strong>
+                  <strong>{trainingExportPreview.manifest.counts.userAuthoredGenerativeRecords} independently authored generative examples</strong>
+                  <span>{trainingExportPreview.manifest.counts.excludedStageRecords + trainingExportPreview.manifest.counts.excludedGenerativeRecords} records excluded by provenance or approval gates</span>
+                </div>
+                <div className="training-stage-counts">{RELATIONSHIP_STAGES.map((stage) => {
+                  const counts = trainingExportPreview.manifest.byStage[stage];
+                  return counts.classifier || counts.generative ? <span key={stage}><strong>{RELATIONSHIP_STAGE_LABELS[stage]}</strong> {counts.classifier} classifier · {counts.generative} generative</span> : null;
+                })}</div>
+                <div className="playbook-actions"><button type="button" aria-label="Download training manifest" onClick={() => downloadTrainingArtifact("manifest")}>Download manifest</button><button type="button" aria-label="Download classifier JSONL" disabled={!trainingExportPreview.classifierJsonl} onClick={() => downloadTrainingArtifact("classifier")}>Download classifier JSONL</button><button type="button" aria-label="Download independently authored generative JSONL" disabled={!trainingExportPreview.userAuthoredGenerativeJsonl} onClick={() => downloadTrainingArtifact("generative")}>Download user-authored JSONL</button></div>
+                <p className="section-explainer"><strong>Cloudflare adapter upload is disabled in this release.</strong> Compatibility validation is offline and informational; no download starts training or sends data anywhere.</p>
               </section>
               <section className="panel-card cloud-backup-card">
                 <p className="eyebrow">ENCRYPTED RECOVERY</p>

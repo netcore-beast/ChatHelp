@@ -482,6 +482,59 @@ describe("secure conversation workspace interaction", () => {
     });
   }, 20_000);
 
+  it("previews and downloads approved training exports without a LoRA upload action", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.stageTrainingRecords = [{
+      id: "confirmed-stage",
+      featureSchemaVersion: 1,
+      role: "Network Marketing",
+      messageCountBucket: "medium",
+      hasIncomingQuestion: true,
+      hasNeedSignal: true,
+      hasPermissionSignal: false,
+      hasValueDiscussionSignal: false,
+      hasNextStepSignal: false,
+      semanticTokens: ["career"],
+      confirmedStage: "learn_interests",
+      humanConfirmed: true,
+      createdAt: "2026-08-01T00:00:00.000Z",
+    }];
+    workspace.feedback = [{
+      id: "approved-response",
+      contactId: "contact-a",
+      role: "Network Marketing",
+      relationshipStage: "learn_interests",
+      conversationGoal: "Learn priorities",
+      provider: "local",
+      modelId: "independent-user-example",
+      action: "edited",
+      draft: "",
+      preferredResponse: "Which priority would be most useful to explore?",
+      outcome: "",
+      reason: "",
+      origin: "independently_user_authored",
+      independentlyAuthoredAttested: true,
+      eligibleForRetrieval: true,
+      enabled: true,
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    }];
+    await createDeviceVault(workspace);
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.getByText("1 classifier confirmations")).toBeTruthy();
+    expect(screen.getByText("1 independently authored generative examples")).toBeTruthy();
+    expect(screen.getByText(/Cloudflare adapter upload is disabled in this release/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Download training manifest" }));
+    await user.click(screen.getByRole("button", { name: "Download classifier JSONL" }));
+    await user.click(screen.getByRole("button", { name: "Download independently authored generative JSONL" }));
+    expect(anchorClick).toHaveBeenCalledTimes(3);
+    expect(screen.queryByRole("button", { name: /upload.*LoRA/i })).toBeNull();
+  }, 20_000);
+
   it("shows real AI stages behind a persistent accessible arrow panel", async () => {
     let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
     const encoder = new TextEncoder();

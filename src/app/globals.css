@@ -199,6 +199,9 @@ p.error { margin: 0; padding: .7rem; border-radius: 8px; }
 .origin-independent { color: var(--green); background: var(--mint); }
 .learning-notes-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem; }
 .learning-example-actions label { display: flex; align-items: center; gap: .35rem; font-size: .7rem; }
+.training-export-card { border-top: 4px solid #536c9a; }
+.training-counts, .training-stage-counts { display: grid; gap: .35rem; padding: .7rem; border: 1px solid var(--line); border-radius: 9px; background: var(--soft); font-size: .72rem; }
+.training-counts span, .training-stage-counts span { color: var(--muted); }
 .playbook-actions { display: flex; flex-wrap: wrap; gap: .55rem; }
 .playbook-actions button { flex: 1 1 150px; }
 .compose-card { border-top: 4px solid var(--green); }
