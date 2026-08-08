@@ -324,6 +324,114 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.getByRole("link", { name: /Open LinkedIn to review and paste/ })).toBeTruthy();
   }, 20_000);
 
+  it("keeps personal learning off until opt-in and requires independent authorship before retrieval", async () => {
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      draft: "I can share the brief. Which part would be most useful to explore first?",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      mode: "stage-aware-single-draft-v1",
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", request);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await announceExtension();
+    await deliverSnapshot();
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const learningToggle = screen.getByRole("checkbox", { name: "Enable encrypted personal learning" }) as HTMLInputElement;
+    expect(learningToggle.checked).toBe(false);
+    expect(screen.getByText(/retrieval uses your approved examples as context and does not retrain any model/i)).toBeTruthy();
+    await user.click(learningToggle);
+    await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
+    await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
+    const generated = await screen.findByLabelText("Edit draft 1") as HTMLTextAreaElement;
+    expect(JSON.parse(request.mock.calls[0][1]?.body as string).learningExamples).toEqual([]);
+
+    await user.clear(generated);
+    await user.type(generated, "What part of the role would help you decide whether it is relevant?");
+    await user.click(screen.getByRole("button", { name: "Save edited draft 1 as feedback" }));
+    expect((await screen.findAllByText(/Saved encrypted feedback locally/)).length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.getByText("Provider-assisted by default")).toBeTruthy();
+    const eligibility = screen.getByRole("checkbox", { name: "Use this response as a learning example" }) as HTMLInputElement;
+    expect(eligibility.checked).toBe(false);
+    expect(eligibility.disabled).toBe(true);
+    await user.click(screen.getByRole("checkbox", { name: "I independently authored or have rights to this response" }));
+    expect(eligibility.disabled).toBe(false);
+    await user.click(eligibility);
+    expect(eligibility.checked).toBe(true);
+    await user.clear(screen.getByRole("textbox", { name: "Preferred response for learning" }));
+    await user.type(screen.getByRole("textbox", { name: "Preferred response for learning" }), "Which detail would be most useful to understand first?");
+    await user.click(screen.getByRole("button", { name: "Delete learning example" }));
+    expect(screen.queryByRole("textbox", { name: "Preferred response for learning" })).toBeNull();
+  }, 30_000);
+
+  it("sends no more than three locally selected learning examples", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.cloudInference.consentedAt = "2026-08-01T00:00:00.000Z";
+    workspace.personalLearning.enabled = true;
+    workspace.inboxRole = "Network Marketing";
+    workspace.contacts = [{
+      id: "learning-contact",
+      name: "Taylor Lee",
+      headline: "Talent Partner",
+      profileNotes: "",
+      platform: "linkedin",
+      platformUrl: "",
+      chat: [{ id: "incoming", role: "them", body: "What kind of work are you focused on?", createdAt: "2026-08-02T11:59:00.000Z" }],
+      documents: [],
+      outcomes: [],
+      retentionDays: 90,
+      relationshipStage: "learn_interests",
+      conversationGoal: "Learn which professional priorities matter most",
+    }];
+    workspace.feedback = Array.from({ length: 5 }, (_, index) => ({
+      id: `approved-${index}`,
+      contactId: `other-contact-${index}`,
+      role: "Network Marketing" as const,
+      relationshipStage: "learn_interests" as const,
+      conversationGoal: "Learn which professional priorities matter most",
+      provider: "local" as const,
+      modelId: "independent-user-example",
+      action: "edited" as const,
+      draft: "",
+      preferredResponse: `Approved response ${index}`,
+      outcome: "",
+      reason: "",
+      origin: "independently_user_authored" as const,
+      independentlyAuthoredAttested: true,
+      eligibleForRetrieval: true,
+      enabled: true,
+      createdAt: `2026-08-0${index + 1}T00:00:00.000Z`,
+      updatedAt: `2026-08-0${index + 1}T00:00:00.000Z`,
+    }));
+    await createDeviceVault(workspace);
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      draft: "I focus on helping people explore options that fit their priorities. What matters most in your work right now?",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      mode: "stage-aware-single-draft-v1",
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", request);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
+
+    await screen.findByLabelText("Edit draft 1");
+    const body = JSON.parse(request.mock.calls[0][1]?.body as string);
+    expect(body.learningExamples).toHaveLength(3);
+    expect(body.learningExamples.map((item: { preferredResponse: string }) => item.preferredResponse)).toEqual([
+      "Approved response 4",
+      "Approved response 3",
+      "Approved response 2",
+    ]);
+    expect(JSON.stringify(body.learningExamples)).not.toContain("other-contact");
+  }, 20_000);
+
   it("shows real AI stages behind a persistent accessible arrow panel", async () => {
     let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
     const encoder = new TextEncoder();

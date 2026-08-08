@@ -5,6 +5,7 @@ import { applyRetention } from "@/lib/retention";
 import { buildOutcomeSummary, containsLinkedInPageNoise, isConversationCapture, isLikelyFullLinkedInPageCapture, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
 import { captureVisibleScreen, cropImageToRegion, extractTextFromImage, type NormalizedCropRegion } from "@/lib/localOcr";
 import { buildDraftContextSummary, CLOUDFLARE_MODEL_NAME, generatePrivateDraft, type PrivateAiInput } from "@/lib/privateAi";
+import { selectLearningExamples } from "@/lib/personalLearning";
 import { type DraftPipelineStage, type DraftProgressUpdate, type DraftStageStatus } from "@/lib/draftProgress";
 import { DraftProgressPanel } from "@/components/DraftProgressPanel";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -71,6 +72,7 @@ import {
   updateRolePlaybookRules,
   type Contact,
   type ConversationPlatform,
+  type Feedback,
   type MessagingRole,
   type MessageRole,
   type PipelineStage,
@@ -194,7 +196,7 @@ function createDraftInput(
 ): PrivateAiInput {
   const query = [requestAgenda, activeContact.profileNotes, activeContact.chat.slice(-8).map((item) => item.body).join(" ")].join(" ");
   const relevant = selectRelevantContext(activeContact.documents.filter((document) => !isConversationCapture(document) && !isLikelyFullLinkedInPageCapture(document)), query);
-  const feedbackSummary = workspace.feedback.filter((item) => item.contactId === activeContact.id).slice(-20).map((item) => item.rating + ": " + item.note).join("\n");
+  const feedbackSummary = workspace.feedback.filter((item) => item.contactId === activeContact.id).slice(-20).map((item) => item.action + ": " + item.reason).join("\n");
   return {
     contact: activeContact,
     guidance,
@@ -210,7 +212,12 @@ function createDraftInput(
       activeContact.company ? `Contact company: ${activeContact.company}` : "",
     ].filter(Boolean),
     unansweredQuestions: [],
-    learningExamples: [],
+    learningExamples: workspace.personalLearning.enabled ? selectLearningExamples(workspace.feedback, {
+      currentContactId: activeContact.id,
+      role: guidance.role,
+      relationshipStage: normalizeRelationshipStage(activeContact.relationshipStage),
+      conversationGoal: activeContact.conversationGoal ?? "",
+    }) : [],
   };
 }
 
@@ -1056,11 +1063,14 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     }
   }
 
-  function rateDraft(draft: string, rating: "useful" | "not-useful") {
-    if (!contact) return;
-    const note = window.prompt("Optional: what should DialogMint learn from this draft?", "") ?? "";
+  function recordDraftFeedback(draft: string, action: "accepted" | "edited" | "rejected") {
+    if (!contact || !workspace.personalLearning.enabled) {
+      setExtensionStatus("Enable encrypted personal learning in Settings before saving feedback.");
+      return;
+    }
     const history = contact.draftHistory?.findLast((entry) => entry.role === workspace.inboxRole);
     const timestamp = new Date().toISOString();
+    const originalDraft = history?.drafts[0] ?? draft;
     updateWorkspace((current) => ({ ...current, feedback: [...current.feedback, {
       id: newId("feedback"),
       contactId: contact.id,
@@ -1069,20 +1079,30 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       conversationGoal: (contact.conversationGoal ?? "").slice(0, CONVERSATION_GOAL_MAX_CHARS),
       provider: history?.provider ?? "unknown",
       modelId: history?.modelId ?? "",
-      action: rating === "useful" ? "accepted" : "rejected",
-      draft: draft.slice(0, 5_000),
-      preferredResponse: rating === "useful" ? draft.slice(0, 5_000) : "",
+      action,
+      draft: originalDraft.slice(0, 5_000),
+      preferredResponse: action === "rejected" ? "" : draft.slice(0, 5_000),
       outcome: "",
-      reason: note.slice(0, 1_000),
+      reason: "",
       origin: "provider_assisted",
       independentlyAuthoredAttested: false,
       eligibleForRetrieval: false,
       enabled: true,
       createdAt: timestamp,
       updatedAt: timestamp,
-      rating,
-      note: note.slice(0, 1_000),
     }].slice(-1000) }));
+    setExtensionStatus("Saved encrypted feedback locally. It will not affect future drafts unless you separately approve it as a learning example.");
+  }
+
+  function updateLearningFeedback(feedbackId: string, updater: (feedback: Feedback) => Feedback) {
+    updateWorkspace((current) => ({
+      ...current,
+      feedback: current.feedback.map((item) => item.id === feedbackId ? updater(item) : item),
+    }));
+  }
+
+  function deleteLearningFeedback(feedbackId: string) {
+    updateWorkspace((current) => ({ ...current, feedback: current.feedback.filter((item) => item.id !== feedbackId) }));
   }
 
   function addOutcome() {
@@ -1353,6 +1373,33 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 <p className="section-explainer">Type rules above, upload a plain-text or Markdown document, or use both. Uploaded text is appended to existing rules for the selected role and saved in the encrypted local vault. Download exports the current combined rules field as a text file.</p>
                 {playbookStatus && <p className="status" role="status" aria-live="polite">{playbookStatus}</p>}
               </section>
+              <section className="panel-card learning-card">
+                <p className="eyebrow">ENCRYPTED PERSONAL LEARNING</p>
+                <h3>Learn only from examples you approve</h3>
+                <label className="consent-check"><input type="checkbox" aria-label="Enable encrypted personal learning" checked={workspace.personalLearning.enabled} onChange={(event) => updateWorkspace((current) => ({ ...current, personalLearning: { enabled: event.target.checked } }))} /><span>Enable encrypted personal learning for this workspace.</span></label>
+                <p className="section-explainer">Retrieval uses your approved examples as context and does not retrain any model. Feedback and examples stay in the encrypted workspace and its opaque encrypted recovery copy. Turning this off immediately excludes every example from generation.</p>
+                <div className="learning-summary"><strong>{workspace.feedback.filter((item) => item.eligibleForRetrieval && item.enabled).length} approved learning examples</strong><span>{workspace.feedback.length} feedback records stored locally</span></div>
+                {workspace.feedback.length === 0 ? <p className="section-explainer">No feedback has been saved. Enable learning, generate a reply, then accept, edit, or reject it from the draft card.</p> : <div className="learning-example-list">
+                  {workspace.feedback.slice().reverse().map((item) => {
+                    const independentlyAuthored = item.origin === "independently_user_authored" && item.independentlyAuthoredAttested;
+                    const canRetrieve = independentlyAuthored && item.enabled && Boolean(item.preferredResponse.trim()) && item.action !== "rejected";
+                    return <article className="learning-example" key={item.id}>
+                      <header><div><strong>{item.action === "accepted" ? "Accepted reply" : item.action === "edited" ? "Edited reply" : "Rejected reply"}</strong><small>{item.role} · {RELATIONSHIP_STAGE_LABELS[item.relationshipStage]}</small></div><span className={independentlyAuthored ? "origin-independent" : "origin-provider"}>{independentlyAuthored ? "Independently authored / licensed" : "Provider-assisted by default"}</span></header>
+                      <label>Preferred response<textarea aria-label="Preferred response for learning" maxLength={5_000} value={item.preferredResponse} onChange={(event) => {
+                        const preferredResponse = event.target.value.slice(0, 5_000);
+                        updateLearningFeedback(item.id, (current) => ({ ...current, preferredResponse, eligibleForRetrieval: preferredResponse.trim() ? current.eligibleForRetrieval : false, updatedAt: new Date().toISOString() }));
+                      }} /></label>
+                      <div className="learning-notes-grid">
+                        <label>Reason <span className="field-optional">Optional</span><input aria-label={`Feedback reason ${item.id}`} maxLength={1_000} value={item.reason} onChange={(event) => updateLearningFeedback(item.id, (current) => ({ ...current, reason: event.target.value.slice(0, 1_000), updatedAt: new Date().toISOString() }))} /></label>
+                        <label>Outcome <span className="field-optional">Optional</span><input aria-label={`Feedback outcome ${item.id}`} maxLength={1_000} value={item.outcome} onChange={(event) => updateLearningFeedback(item.id, (current) => ({ ...current, outcome: event.target.value.slice(0, 1_000), updatedAt: new Date().toISOString() }))} /></label>
+                      </div>
+                      <label className="consent-check"><input type="checkbox" aria-label="I independently authored or have rights to this response" checked={independentlyAuthored} onChange={(event) => updateLearningFeedback(item.id, (current) => ({ ...current, origin: event.target.checked ? "independently_user_authored" : "provider_assisted", independentlyAuthoredAttested: event.target.checked, eligibleForRetrieval: false, updatedAt: new Date().toISOString() }))} /><span>I independently authored this response or have the rights needed to use it.</span></label>
+                      <label className="consent-check"><input type="checkbox" aria-label="Use this response as a learning example" disabled={!canRetrieve} checked={item.eligibleForRetrieval} onChange={(event) => updateLearningFeedback(item.id, (current) => ({ ...current, eligibleForRetrieval: canRetrieve && event.target.checked, updatedAt: new Date().toISOString() }))} /><span>Use this response as a learning example for future drafts.</span></label>
+                      <div className="learning-example-actions"><label><input type="checkbox" checked={item.enabled} onChange={(event) => updateLearningFeedback(item.id, (current) => ({ ...current, enabled: event.target.checked, eligibleForRetrieval: event.target.checked ? current.eligibleForRetrieval : false, updatedAt: new Date().toISOString() }))} /> Example enabled</label><button type="button" className="danger-link" aria-label="Delete learning example" onClick={() => deleteLearningFeedback(item.id)}>Delete</button></div>
+                    </article>;
+                  })}
+                </div>}
+              </section>
               <section className="panel-card cloud-backup-card">
                 <p className="eyebrow">ENCRYPTED RECOVERY</p>
                 <h3>Encrypted 90-day backup</h3>
@@ -1451,7 +1498,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                   {draftError && <div className="notice error inline-draft-error" role="alert"><span><strong>Drafts were not generated.</strong> {draftError}</span><button aria-label="Dismiss draft generation error" onClick={() => setDraftError("")}>×</button></div>}
                 </section>
 
-                <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={contact.id + "-" + index}><div><span>DRAFT {index + 1}</span><div><button onClick={() => void navigator.clipboard.writeText(draft).then(() => setExtensionStatus("Draft copied. Review and send it yourself."), () => setAppError("Clipboard access was blocked."))}>Copy</button><button onClick={() => markDraftManuallySent(draft)}>Mark manually sent</button><button aria-label={"Dismiss draft " + (index + 1)} onClick={() => { const nextDrafts = drafts.filter((_item, draftIndex) => draftIndex !== index); setDrafts(nextDrafts); persistDrafts(nextDrafts); }}>Dismiss</button><button title="Useful" aria-label={"Rate draft " + (index + 1) + " useful"} onClick={() => rateDraft(draft, "useful")}>Useful</button><button title="Not useful" aria-label={"Rate draft " + (index + 1) + " not useful"} onClick={() => rateDraft(draft, "not-useful")}>Not useful</button></div></div><textarea aria-label={"Edit draft " + (index + 1)} value={draft} onChange={(event) => setDrafts((current) => current.map((item, draftIndex) => draftIndex === index ? event.target.value.slice(0, 5_000) : item))} onBlur={() => persistDrafts()} /></article>)}</div>
+                <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={contact.id + "-" + index}><div><span>DRAFT {index + 1}</span><div><button onClick={() => void navigator.clipboard.writeText(draft).then(() => setExtensionStatus("Draft copied. Review and send it yourself."), () => setAppError("Clipboard access was blocked."))}>Copy</button><button onClick={() => markDraftManuallySent(draft)}>Mark manually sent</button><button aria-label={"Dismiss draft " + (index + 1)} onClick={() => { const nextDrafts = drafts.filter((_item, draftIndex) => draftIndex !== index); setDrafts(nextDrafts); persistDrafts(nextDrafts); }}>Dismiss</button>{workspace.personalLearning.enabled ? <><button aria-label={"Accept draft " + (index + 1)} onClick={() => recordDraftFeedback(draft, "accepted")}>Accept</button><button aria-label={"Save edited draft " + (index + 1) + " as feedback"} onClick={() => recordDraftFeedback(draft, "edited")}>Save edit</button><button aria-label={"Reject draft " + (index + 1)} onClick={() => recordDraftFeedback(draft, "rejected")}>Reject</button></> : <small title="Enable encrypted personal learning in Settings">Learning off</small>}</div></div><textarea aria-label={"Edit draft " + (index + 1)} value={draft} onChange={(event) => setDrafts((current) => current.map((item, draftIndex) => draftIndex === index ? event.target.value.slice(0, 5_000) : item))} onBlur={() => persistDrafts()} /></article>)}</div>
                 {handoffUrl && <a className="platform-link" href={handoffUrl} target="_blank" rel="noreferrer">Open LinkedIn to review and paste ↗</a>}
                 </div>
               </div>
