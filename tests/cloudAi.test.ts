@@ -53,11 +53,33 @@ describe("cloud AI client boundary", () => {
 
   it("sends the grounded prompt and structured playbook to the same-origin Worker", async () => {
     const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      drafts: ["Draft one", "Draft two", "Draft three"],
+      draft: "Reviewed reply",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      mode: "stage-aware-single-draft-v1",
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
-    await expect(generateWithCloud(input(), {
+    const preciseInput = Object.assign(input(), {
+      personalGuidelines: "Prefer plain language and one useful question.",
+      conversationGoal: "Learn which challenge matters most to Alex.",
+      relationshipStage: "learn_interests" as const,
+      knownFacts: ["Alex is a people leader."],
+      unansweredQuestions: ["Which challenge is most important?"],
+      learningExamples: [{
+        id: "example-1",
+        role: "Human Resource",
+        relationshipStage: "learn_interests" as const,
+        conversationGoal: "Learn priorities",
+        preferredResponse: "What part would be most useful to unpack first?",
+      }],
+    });
+    await expect(generateWithCloud(preciseInput, {
       consentedAt: "2026-08-01T00:00:00.000Z",
-    }, undefined, request as unknown as typeof fetch)).resolves.toEqual(["Draft one", "Draft two", "Draft three"]);
+    }, undefined, request as unknown as typeof fetch)).resolves.toEqual({
+      draft: "Reviewed reply",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      mode: "stage-aware-single-draft-v1",
+    });
 
     expect(request).toHaveBeenCalledTimes(1);
     const [url, init] = request.mock.calls[0];
@@ -67,7 +89,18 @@ describe("cloud AI client boundary", () => {
     expect(init.headers.Authorization).toBeUndefined();
     expect(init.headers.Accept).toBe("text/event-stream, application/json");
     const body = JSON.parse(init.body);
-    expect(Object.keys(body)).toEqual(["conversationContext", "playbook", "replyObjective"]);
+    expect(Object.keys(body)).toEqual([
+      "conversationContext",
+      "latestMeaningfulIncoming",
+      "playbook",
+      "personalGuidelines",
+      "conversationGoal",
+      "relationshipStage",
+      "knownFacts",
+      "unansweredQuestions",
+      "learningExamples",
+      "replyObjective",
+    ]);
     expect(body.conversationContext).toContain("<conversation_context>");
     expect(body.conversationContext).toContain("Could you share the role details?");
     expect(body.conversationContext).not.toContain("No pressure");
@@ -79,24 +112,41 @@ describe("cloud AI client boundary", () => {
       rulebookDigest: "- No pressure",
     });
     expect(body.replyObjective).toBe("Answer Alex and suggest two times.");
+    expect(body.latestMeaningfulIncoming).toMatchObject({ sender: "CONTACT", text: "Could you share the role details?" });
+    expect(body.personalGuidelines).toBe("Prefer plain language and one useful question.");
+    expect(body.conversationGoal).toBe("Learn which challenge matters most to Alex.");
+    expect(body.relationshipStage).toBe("learn_interests");
+    expect(body.knownFacts).toEqual(["Alex is a people leader."]);
+    expect(body.unansweredQuestions).toEqual(["Which challenge is most important?"]);
+    expect(body.learningExamples).toEqual([{
+      role: "Human Resource",
+      relationshipStage: "learn_interests",
+      conversationGoal: "Learn priorities",
+      preferredResponse: "What part would be most useful to unpack first?",
+    }]);
     expect(body.conversationContext.length).toBeLessThanOrEqual(MAX_CLOUD_PROMPT_CHARS);
   });
 
-  it("parses bounded live stage events and the final three drafts", async () => {
+  it("parses bounded live stage events and exactly one final draft", async () => {
     const progress = vi.fn();
     const request = vi.fn().mockResolvedValue(sseResponse([
-      'event: stage\r\ndata: {"stage":"planning","status":"in-progress"}\r\n\r\n',
-      'event: stage\ndata: {"stage":"planning","status":"done"}\n\nevent: stage\ndata: {"stage":"drafting",',
-      '"status":"in-progress"}\n\nevent: result\ndata: {"drafts":["Draft one","Draft two","Draft three"]}\n\n',
+      'event: stage\r\ndata: {"stage":"analyzing","status":"in-progress"}\r\n\r\n',
+      'event: stage\ndata: {"stage":"analyzing","status":"done"}\n\nevent: stage\ndata: {"stage":"drafting",',
+      '"status":"in-progress"}\n\nevent: result\ndata: {"draft":"Reviewed reply","provider":"cloudflare","model":"auto:llama-3.1-8b+gpt-oss-120b","mode":"stage-aware-single-draft-v1"}\n\n',
     ]));
 
     await expect(generateWithCloud(input(), {
       consentedAt: "2026-08-01T00:00:00.000Z",
-    }, progress, request as unknown as typeof fetch)).resolves.toEqual(["Draft one", "Draft two", "Draft three"]);
+    }, progress, request as unknown as typeof fetch)).resolves.toEqual({
+      draft: "Reviewed reply",
+      provider: "cloudflare",
+      model: "auto:llama-3.1-8b+gpt-oss-120b",
+      mode: "stage-aware-single-draft-v1",
+    });
 
     expect(progress.mock.calls.map(([update]) => update)).toEqual([
-      { kind: "stage", stage: "planning", status: "in-progress" },
-      { kind: "stage", stage: "planning", status: "done" },
+      { kind: "stage", stage: "analyzing", status: "in-progress" },
+      { kind: "stage", stage: "analyzing", status: "done" },
       { kind: "stage", stage: "drafting", status: "in-progress" },
     ]);
   });
@@ -104,15 +154,35 @@ describe("cloud AI client boundary", () => {
   it("surfaces a safe streaming error and rejects a truncated stream", async () => {
     const consent = { consentedAt: "2026-08-01T00:00:00.000Z" };
     const safeError = vi.fn().mockResolvedValue(sseResponse([
-      'event: stage\ndata: {"stage":"planning","status":"in-progress"}\n\n',
-      'event: error\ndata: {"error":"Cloud AI could not produce three safe drafts. Please try again."}\n\n',
+      'event: stage\ndata: {"stage":"analyzing","status":"in-progress"}\n\n',
+      'event: error\ndata: {"error":"Cloud AI could not produce a safe draft. Please try again."}\n\n',
     ]));
-    await expect(generateWithCloud(input(), consent, undefined, safeError as unknown as typeof fetch)).rejects.toThrow("Cloud AI could not produce three safe drafts. Please try again.");
+    await expect(generateWithCloud(input(), consent, undefined, safeError as unknown as typeof fetch)).rejects.toThrow("Cloud AI could not produce a safe draft. Please try again.");
 
     const truncated = vi.fn().mockResolvedValue(sseResponse([
-      'event: stage\ndata: {"stage":"planning","status":"done"}\n\n',
+      'event: stage\ndata: {"stage":"analyzing","status":"done"}\n\n',
     ]));
     await expect(generateWithCloud(input(), consent, undefined, truncated as unknown as typeof fetch)).rejects.toThrow(/incomplete response/i);
+  });
+
+  it("rejects extra hidden fields and multi-draft responses at the cloud boundary", async () => {
+    const consent = { consentedAt: "2026-08-01T00:00:00.000Z" };
+    const hidden = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      draft: "Reviewed reply",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      mode: "stage-aware-single-draft-v1",
+      scores: { total: 100 },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(generateWithCloud(input(), consent, undefined, hidden as unknown as typeof fetch)).rejects.toThrow(/invalid response/i);
+
+    const multiple = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      drafts: ["One", "Two"],
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      mode: "stage-aware-single-draft-v1",
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(generateWithCloud(input(), consent, undefined, multiple as unknown as typeof fetch)).rejects.toThrow(/invalid response/i);
   });
 
   it("surfaces the Worker's safe error message", async () => {

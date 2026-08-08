@@ -1,4 +1,4 @@
-export type DraftPipelineStage = "planning" | "drafting" | "reviewing" | "finalizing";
+export type DraftPipelineStage = "analyzing" | "drafting" | "reviewing" | "finalizing";
 export type DraftStageStatus = "pending" | "in-progress" | "done" | "error";
 
 export type DraftProgressUpdate =
@@ -6,7 +6,7 @@ export type DraftProgressUpdate =
   | { kind: "stage"; stage: DraftPipelineStage; status: "in-progress" | "done" };
 
 const MAX_DRAFT_STREAM_BYTES = 512_000;
-const VALID_STAGES = new Set<DraftPipelineStage>(["planning", "drafting", "reviewing", "finalizing"]);
+const VALID_STAGES = new Set<DraftPipelineStage>(["analyzing", "drafting", "reviewing", "finalizing"]);
 const VALID_STATUSES = new Set(["in-progress", "done"]);
 
 function parseEventFrame(frame: string): { event: string; payload: unknown } | null {
