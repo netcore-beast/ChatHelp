@@ -47,8 +47,6 @@ const ANALYSIS = {
 const CANDIDATE = {
   draft: {
     text: "I work around technology and relationship-based business. What kind of work do you find most rewarding?",
-    stage: "learn_interests",
-    goal: "Answer without pitching and learn one interest.",
   },
 };
 
@@ -101,7 +99,10 @@ describe("permanent Workers AI fallback", () => {
     expect(planner.messages[0].content).toContain("DIGEST: Learn before recommending.");
     expect(planner.messages[0].content).not.toContain("FULL-RULEBOOK");
     expect(writer.messages[0].content).toContain("FULL-RULEBOOK: Do not pitch before need and permission.");
+    expect(writer.response_format.json_schema.properties.draft.required).toEqual(["text"]);
     expect(reviewer.messages[0].content).toContain("FULL-RULEBOOK: Do not pitch before need and permission.");
+    expect(reviewer.messages[1].content).toContain('"stage":"learn_interests"');
+    expect(reviewer.messages[1].content).toContain('"goal":"Answer without pitching and learn one interest."');
     expect(reviewer.messages[1].content).toContain(CANDIDATE.draft.text);
   });
 

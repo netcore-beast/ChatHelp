@@ -68,10 +68,8 @@ export const DRAFT_SCHEMA = {
       type: "object",
       properties: {
         text: { type: "string" },
-        stage: { type: "string", enum: RELATIONSHIP_STAGES },
-        goal: { type: "string" },
       },
-      required: ["text", "stage", "goal"],
+      required: ["text"],
       additionalProperties: false,
     },
   },
@@ -175,12 +173,9 @@ export function parseDraftAnalysis(value) {
 }
 
 export function parseDraftCandidate(value) {
-  if (!hasExactKeys(value, ["draft"]) || !hasExactKeys(value.draft, ["text", "stage", "goal"])) throw new Error("Invalid draft object");
-  if (!isStage(value.draft.stage)) throw new Error("Invalid draft stage");
+  if (!hasExactKeys(value, ["draft"]) || !hasExactKeys(value.draft, ["text"])) throw new Error("Invalid draft object");
   return {
     text: boundedText(value.draft.text, 5_000),
-    stage: value.draft.stage,
-    goal: boundedText(value.draft.goal, 1_000),
   };
 }
 

@@ -204,11 +204,14 @@ export async function runAnthropicDraftPipeline(context, options) {
   ), DRAFT_SCHEMA);
   let candidate;
   try {
-    candidate = parseDraftCandidate(candidateValue);
+    candidate = {
+      ...parseDraftCandidate(candidateValue),
+      stage: analysis.effectiveStage,
+      goal: analysis.goalForThisReply,
+    };
   } catch {
     throw new AnthropicPipelineError("quality");
   }
-  if (candidate.stage !== analysis.effectiveStage || candidate.goal !== analysis.goalForThisReply) throw new AnthropicPipelineError("policy");
   emitStage(options.emit, "drafting", "done");
 
   emitStage(options.emit, "reviewing", "in-progress");

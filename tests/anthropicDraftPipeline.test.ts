@@ -50,8 +50,6 @@ const ANALYSIS = {
 const CANDIDATE = {
   draft: {
     text: "I can share the key details. Which part would be most useful to start with?",
-    stage: "identify_need",
-    goal: "Answer briefly and clarify the priority.",
   },
 };
 
@@ -118,6 +116,9 @@ describe("Claude Opus precision pipeline", () => {
     expect(bodies[0].messages[0].content).toContain("DIGEST: No pressure.");
     expect(bodies[1].messages[0].content).toContain("FULL-RULEBOOK: Never pressure the contact.");
     expect(bodies[1].messages[0].content).toContain("Use plain language and one useful question.");
+    expect(bodies[1].output_config.format.schema.properties.draft.required).toEqual(["text"]);
+    expect(bodies[2].messages[0].content).toContain('"stage":"identify_need"');
+    expect(bodies[2].messages[0].content).toContain('"goal":"Answer briefly and clarify the priority."');
     expect(bodies[2].messages[0].content).toContain(CANDIDATE.draft.text);
   });
 

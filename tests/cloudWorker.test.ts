@@ -33,8 +33,6 @@ const ANALYSIS = {
 const CANDIDATE = {
   draft: {
     text: "I can share the key details. Which part would be most useful to start with?",
-    stage: "identify_need",
-    goal: "Answer briefly and clarify the priority.",
   },
 };
 

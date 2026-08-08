@@ -110,7 +110,7 @@ export async function runWorkersAiDraftPipeline(context, options) {
   emitStage(options.emit, "analyzing", "done");
 
   emitStage(options.emit, "drafting", "in-progress");
-  const candidate = await runStructuredStage(options.ai, GPT_REVIEW_MODEL, {
+  const writerDraft = await runStructuredStage(options.ai, GPT_REVIEW_MODEL, {
     messages: [
       {
         role: "system",
@@ -131,7 +131,11 @@ export async function runWorkersAiDraftPipeline(context, options) {
     top_p: 0.9,
     max_tokens: 1_000,
   }, DRAFT_SCHEMA, parseDraftCandidate);
-  if (candidate.stage !== analysis.effectiveStage || candidate.goal !== analysis.goalForThisReply) throw new WorkersAiPipelineError("policy");
+  const candidate = {
+    ...writerDraft,
+    stage: analysis.effectiveStage,
+    goal: analysis.goalForThisReply,
+  };
   emitStage(options.emit, "drafting", "done");
 
   emitStage(options.emit, "reviewing", "in-progress");
