@@ -262,6 +262,26 @@ describe("Cloudflare private inference Worker", () => {
     expect(body).not.toContain("runtime-secret");
   });
 
+  it("returns only categorical primary and fallback diagnostics when both providers fail", async () => {
+    const env = workerEnv();
+    env.AI.run = vi.fn(async () => ({ response: "not-json" }));
+    const anthropicFetch = vi.fn(async () => anthropicResponse({ invalid: "analysis" }));
+    const response = await handleRequest(draftRequest(structuredPayload(), TESTING_ORIGIN, true), env, { verifyAccess, anthropicFetch });
+    const body = await response.text();
+    const events = parseSseEvents(body);
+
+    expect(events.at(-1)).toEqual({
+      event: "error",
+      data: {
+        error: "Cloud AI could not produce a safe draft. Please try again.",
+        diagnosticCode: "anthropic_quality__cloudflare_quality",
+      },
+    });
+    expect(body).not.toContain("runtime-secret");
+    expect(body).not.toContain("not-json");
+    expect(body).not.toContain("Could you share the role details?");
+  });
+
   it("rejects invalid stage and oversized guidelines before inference", async () => {
     for (const [payload, expectedStatus] of [
       [structuredPayload({ relationshipStage: "invented-stage" }), 400],

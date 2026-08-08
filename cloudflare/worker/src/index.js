@@ -11,6 +11,7 @@ import {
   GPT_REVIEW_MODEL,
   LLAMA_CANDIDATE_MODEL,
   WORKERS_AI_MODEL,
+  WorkersAiPipelineError,
   runWorkersAiDraftPipeline,
 } from "./workersAiDraftPipeline.js";
 
@@ -27,6 +28,18 @@ const MAX_REPLY_OBJECTIVE_CHARS = 5_000;
 const MAX_PERSONAL_GUIDELINES_CHARS = 2_000;
 const MAX_CONVERSATION_GOAL_CHARS = 5_000;
 const SAFE_GENERATION_ERROR = "Cloud AI could not produce a safe draft. Please try again.";
+
+class DraftPipelineFailure extends Error {
+  constructor(primaryKind, fallbackKind) {
+    super(SAFE_GENERATION_ERROR);
+    this.name = "DraftPipelineFailure";
+    this.diagnosticCode = `anthropic_${primaryKind}__cloudflare_${fallbackKind}`;
+  }
+}
+
+function safeDiagnosticCode(error) {
+  return error instanceof DraftPipelineFailure ? error.diagnosticCode : "pipeline_unclassified";
+}
 
 const RESPONSE_HEADERS = {
   "Cache-Control": "no-store",
@@ -176,7 +189,13 @@ async function runProviderPipeline(context, env, options, emit) {
     return result;
   } catch (error) {
     if (!(error instanceof AnthropicPipelineError) || error.kind === "cancelled") throw error;
-    const result = await runWorkersAiDraftPipeline(context, { ai: env.AI, emit: orderedEmit });
+    let result;
+    try {
+      result = await runWorkersAiDraftPipeline(context, { ai: env.AI, emit: orderedEmit });
+    } catch (fallbackError) {
+      if (fallbackError instanceof WorkersAiPipelineError) throw new DraftPipelineFailure(error.kind, fallbackError.kind);
+      throw fallbackError;
+    }
     orderedEmit("stage", { stage: "finalizing", status: "in-progress" });
     orderedEmit("stage", { stage: "finalizing", status: "done" });
     return result;
@@ -256,8 +275,8 @@ export async function handleRequest(request, env, options = {}) {
         try {
           const result = await runProviderPipeline(context, env, { ...options, signal: request.signal }, emit);
           emit("result", result);
-        } catch {
-          emit("error", { error: SAFE_GENERATION_ERROR });
+        } catch (error) {
+          emit("error", { error: SAFE_GENERATION_ERROR, diagnosticCode: safeDiagnosticCode(error) });
         } finally {
           controller.close();
         }
@@ -271,8 +290,8 @@ export async function handleRequest(request, env, options = {}) {
 
   try {
     return json(await runProviderPipeline(context, env, { ...options, signal: request.signal }, () => {}));
-  } catch {
-    return json({ error: SAFE_GENERATION_ERROR }, 502);
+  } catch (error) {
+    return json({ error: SAFE_GENERATION_ERROR, diagnosticCode: safeDiagnosticCode(error) }, 502);
   }
 }
 

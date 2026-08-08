@@ -56,7 +56,11 @@ export async function parseDraftProgressStream(
     }
     if (parsed.event === "error") {
       const error = (parsed.payload as { error?: unknown }).error;
-      throw new Error(typeof error === "string" ? error : "Cloudflare AI is temporarily unavailable.");
+      const diagnosticCode = (parsed.payload as { diagnosticCode?: unknown }).diagnosticCode;
+      const diagnostic = typeof diagnosticCode === "string" && /^[a-z0-9_]{1,120}$/.test(diagnosticCode)
+        ? ` Diagnostic: ${diagnosticCode}`
+        : "";
+      throw new Error(`${typeof error === "string" ? error : "Cloudflare AI is temporarily unavailable."}${diagnostic}`);
     }
   };
 

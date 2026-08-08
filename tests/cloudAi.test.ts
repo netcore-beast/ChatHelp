@@ -181,9 +181,9 @@ describe("cloud AI client boundary", () => {
     const consent = { consentedAt: "2026-08-01T00:00:00.000Z" };
     const safeError = vi.fn().mockResolvedValue(sseResponse([
       'event: stage\ndata: {"stage":"analyzing","status":"in-progress"}\n\n',
-      'event: error\ndata: {"error":"Cloud AI could not produce a safe draft. Please try again."}\n\n',
+      'event: error\ndata: {"error":"Cloud AI could not produce a safe draft. Please try again.","diagnosticCode":"anthropic_quality__cloudflare_quality"}\n\n',
     ]));
-    await expect(generateWithCloud(input(), consent, undefined, safeError as unknown as typeof fetch)).rejects.toThrow("Cloud AI could not produce a safe draft. Please try again.");
+    await expect(generateWithCloud(input(), consent, undefined, safeError as unknown as typeof fetch)).rejects.toThrow("Cloud AI could not produce a safe draft. Please try again. Diagnostic: anthropic_quality__cloudflare_quality");
 
     const truncated = vi.fn().mockResolvedValue(sseResponse([
       'event: stage\ndata: {"stage":"analyzing","status":"done"}\n\n',
