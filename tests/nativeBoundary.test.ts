@@ -32,6 +32,11 @@ describe("installable client boundaries", () => {
     expect(worker).not.toContain("localStorage");
   });
 
+  it("routes static assets through the selected Worker version before serving them", () => {
+    const config = JSON.parse(read("wrangler.jsonc"));
+    expect(config.assets.run_worker_first).toBe(true);
+  });
+
   it("enables the Worker database runtime and daily expiry cleanup without embedding credentials", () => {
     const wrangler = read("wrangler.jsonc");
     expect(wrangler).toContain('"nodejs_compat"');
