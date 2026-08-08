@@ -275,9 +275,12 @@ describe("secure conversation workspace interaction", () => {
     expect(within(draftContext).getByText(/Could you share the role brief\?/)).toBeTruthy();
   });
 
-  it("generates exactly three editable drafts for a newly synchronized contact", async () => {
+  it("generates exactly one editable precise draft with stage, goal, and personal guidance", async () => {
     const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      drafts: ["I can share the brief here.", "Happy to send the details—what would be most useful?", "I’ll send a concise overview for you to review."],
+      draft: "I can share the brief here. Which part would be most useful to start with?",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      mode: "stage-aware-single-draft-v1",
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", request);
     const user = userEvent.setup();
@@ -289,15 +292,22 @@ describe("secure conversation workspace interaction", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.queryByLabelText(/Cloud access code/)).toBeNull();
-    await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
+    expect(screen.getByText(/Claude Opus 4\.6 Thinking analyzes, writes, and independently reviews one reply/)).toBeTruthy();
+    expect(screen.getByText(/Llama 3\.1 8B and GPT-OSS 120B remain available as the permanent Cloudflare fallback/)).toBeTruthy();
+    await user.type(screen.getByRole("textbox", { name: "Personal conversation guidelines" }), "Prefer plain language and one useful question.");
+    expect(screen.getByText("46 / 2,000 characters")).toBeTruthy();
+    const consent = screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ });
+    expect(consent.closest("label")?.textContent).toMatch(/Anthropic.*Cloudflare-hosted fallback/);
+    await user.click(consent);
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
     expect((screen.getByLabelText("What should your reply accomplish?") as HTMLTextAreaElement).value).toBe("");
-    await user.click(screen.getByRole("button", { name: "Generate 3 Drafts" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Relationship stage" }), "learn_interests");
+    await user.type(screen.getByRole("textbox", { name: "Conversation goal" }), "Learn which role detail matters most.");
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
 
     expect(await screen.findByLabelText("Edit draft 1")).toBeTruthy();
-    expect(screen.getByLabelText("Edit draft 2")).toBeTruthy();
-    expect(screen.getByLabelText("Edit draft 3")).toBeTruthy();
+    expect(screen.queryByLabelText("Edit draft 2")).toBeNull();
     expect(request).toHaveBeenCalledTimes(1);
     expect(request.mock.calls[0][1]?.credentials).toBe("same-origin");
     const requestBody = JSON.parse(request.mock.calls[0][1]?.body as string);
@@ -305,8 +315,12 @@ describe("secure conversation workspace interaction", () => {
     expect(requestBody.conversationContext).toContain("Could you share the role brief?");
     expect(requestBody.playbook.rulebookFull).toBeTruthy();
     expect(requestBody.playbook.rulebookDigest).toBeTruthy();
-    expect(screen.getByText(/independently reviewed against the full Socializing\/Networking rulebook/i)).toBeTruthy();
-    expect(screen.getByText("Finalizing drafts").closest("li")?.dataset.status).toBe("done");
+    expect(requestBody.personalGuidelines).toBe("Prefer plain language and one useful question.");
+    expect(requestBody.relationshipStage).toBe("learn_interests");
+    expect(requestBody.conversationGoal).toBe("Learn which role detail matters most.");
+    expect(requestBody.latestMeaningfulIncoming).toMatchObject({ sender: "CONTACT", text: "Could you share the role brief?" });
+    expect(screen.getByText(/Generated one precise draft with Claude Opus 4.6/i)).toBeTruthy();
+    expect(screen.getByText("Finalizing precise draft").closest("li")?.dataset.status).toBe("done");
     expect(screen.getByRole("link", { name: /Open LinkedIn to review and paste/ })).toBeTruthy();
   }, 20_000);
 
@@ -330,11 +344,11 @@ describe("secure conversation workspace interaction", () => {
     const objective = screen.getByRole("textbox", { name: "What should your reply accomplish?" });
     const promptComposer = objective.closest(".prompt-composer");
     expect(promptComposer).toBeTruthy();
-    expect(within(promptComposer as HTMLElement).getByRole("button", { name: "Generate 3 Drafts" })).toBeTruthy();
+    expect(within(promptComposer as HTMLElement).getByRole("button", { name: "Generate Precise Draft" })).toBeTruthy();
     expect(promptComposer?.querySelector(".prompt-composer-actions")).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: "Generate 3 Drafts" }));
-    const stopButton = screen.getByRole("button", { name: "Stop generating drafts" });
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
+    const stopButton = screen.getByRole("button", { name: "Stop generating draft" });
     expect((stopButton as HTMLButtonElement).disabled).toBe(false);
     expect(stopButton.getAttribute("aria-busy")).toBe("true");
     expect(stopButton.querySelector(".draft-button-spinner")).toBeTruthy();
@@ -344,17 +358,17 @@ describe("secure conversation workspace interaction", () => {
     expect(progressToggle.getAttribute("aria-expanded")).toBe("false");
     await user.click(progressToggle);
     expect(progressToggle.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByText("Planning reply with Llama 3.1 8B")).toBeTruthy();
+    expect(screen.getByText("Analyzing conversation stage")).toBeTruthy();
 
-    streamController?.enqueue(encoder.encode('event: stage\ndata: {"stage":"planning","status":"in-progress"}\n\n'));
-    streamController?.enqueue(encoder.encode('event: stage\ndata: {"stage":"planning","status":"done"}\n\nevent: stage\ndata: {"stage":"drafting","status":"in-progress"}\n\n'));
-    await waitFor(() => expect(screen.getByText("Drafting 3 replies with GPT-OSS 120B").closest("li")?.dataset.status).toBe("in-progress"));
-    streamController?.enqueue(encoder.encode('event: stage\ndata: {"stage":"drafting","status":"done"}\n\nevent: stage\ndata: {"stage":"reviewing","status":"in-progress"}\n\nevent: stage\ndata: {"stage":"reviewing","status":"done"}\n\nevent: stage\ndata: {"stage":"finalizing","status":"in-progress"}\n\nevent: stage\ndata: {"stage":"finalizing","status":"done"}\n\nevent: result\ndata: {"drafts":["One","Two","Three"]}\n\n'));
+    streamController?.enqueue(encoder.encode('event: stage\ndata: {"stage":"analyzing","status":"in-progress"}\n\n'));
+    streamController?.enqueue(encoder.encode('event: stage\ndata: {"stage":"analyzing","status":"done"}\n\nevent: stage\ndata: {"stage":"drafting","status":"in-progress"}\n\n'));
+    await waitFor(() => expect(screen.getByText("Writing one precise reply").closest("li")?.dataset.status).toBe("in-progress"));
+    streamController?.enqueue(encoder.encode('event: stage\ndata: {"stage":"drafting","status":"done"}\n\nevent: stage\ndata: {"stage":"reviewing","status":"in-progress"}\n\nevent: stage\ndata: {"stage":"reviewing","status":"done"}\n\nevent: stage\ndata: {"stage":"finalizing","status":"in-progress"}\n\nevent: stage\ndata: {"stage":"finalizing","status":"done"}\n\nevent: result\ndata: {"draft":"One precise reply","provider":"anthropic","model":"claude-opus-4-6","mode":"stage-aware-single-draft-v1"}\n\n'));
     streamController?.close();
 
-    expect((await screen.findByRole("button", { name: "Generate 3 Drafts" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((await screen.findByRole("button", { name: "Generate Precise Draft" }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.getByRole("button", { name: "Hide AI steps" }).getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByText("Finalizing drafts").closest("li")?.dataset.status).toBe("done");
+    expect(screen.getByText("Finalizing precise draft").closest("li")?.dataset.status).toBe("done");
     expect(screen.getByLabelText("Edit draft 1")).toBeTruthy();
   }, 20_000);
 
@@ -380,13 +394,13 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
 
-    await user.click(screen.getByRole("button", { name: "Generate 3 Drafts" }));
-    const stopButton = screen.getByRole("button", { name: "Stop generating drafts" });
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
+    const stopButton = screen.getByRole("button", { name: "Stop generating draft" });
     expect(stopButton.textContent).not.toContain("Generating");
     await user.click(stopButton);
 
     await waitFor(() => expect(requestSignal?.aborted).toBe(true));
-    expect(await screen.findByRole("button", { name: "Generate 3 Drafts" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Generate Precise Draft" })).toBeTruthy();
     expect(screen.queryByText("Drafts were not generated.")).toBeNull();
     expect(screen.queryByRole("button", { name: "Show AI steps" })).toBeNull();
   }, 20_000);
@@ -437,8 +451,18 @@ describe("secure conversation workspace interaction", () => {
 
   it("keeps role playbooks isolated and applies the persisted Inbox role to every draft request", async () => {
     const request = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ drafts: ["Network draft one", "Network draft two", "Network draft three"] }), { status: 200, headers: { "Content-Type": "application/json" } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ drafts: ["HR draft one", "HR draft two", "HR draft three"] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        draft: "Network draft one",
+        provider: "cloudflare",
+        model: "@cf/meta/llama-3.1-8b-instruct-fast + @cf/openai/gpt-oss-120b",
+        mode: "stage-aware-single-draft-v1",
+      }), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        draft: "HR draft one",
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        mode: "stage-aware-single-draft-v1",
+      }), { status: 200, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", request);
     const user = userEvent.setup();
     const firstRender = render(<ChatHelpApp />);
@@ -483,7 +507,7 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.getByRole("button", { name: "About the Network Marketing playbook" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "About the optional reply objective" })).toBeTruthy();
     await user.type(screen.getByLabelText("What should your reply accomplish?"), "Reply naturally using the selected playbook.");
-    await user.click(screen.getByRole("button", { name: "Generate 3 Drafts" }));
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
     expect(await screen.findByDisplayValue("Network draft one")).toBeTruthy();
     expect(screen.getByText(/independently reviewed against the full Network Marketing rulebook/)).toBeTruthy();
     const networkRequest = JSON.parse(request.mock.calls[0][1]?.body as string);
@@ -495,7 +519,7 @@ describe("secure conversation workspace interaction", () => {
 
     await user.selectOptions(inboxRole, "Human Resource");
     expect(screen.queryByLabelText("Edit draft 1")).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Generate 3 Drafts" }));
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
     expect(await screen.findByDisplayValue("HR draft one")).toBeTruthy();
     const hrRequest = JSON.parse(request.mock.calls[1][1]?.body as string);
     expect(hrRequest.playbook.role).toBe("Human Resource");
@@ -528,7 +552,7 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
     await user.type(screen.getByLabelText("What should your reply accomplish?"), "Write a short reply.");
-    await user.click(screen.getByRole("button", { name: "Generate 3 Drafts" }));
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
     expect((await screen.findByRole("alert")).textContent).toMatch(/Drafts were not generated.*Cloudflare sign-in session could not be verified/);
     expect(request.mock.calls[0][1]?.credentials).toBe("same-origin");
   }, 20_000);

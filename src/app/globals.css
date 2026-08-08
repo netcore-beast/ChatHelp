@@ -683,6 +683,10 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 .objective-tooltip { left: 0; right: auto; }
 .field-optional { display: inline-block; margin-left: .35rem; padding: .15rem .38rem; border-radius: 999px; background: #eef3ef; color: var(--muted); font-size: .6rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; vertical-align: middle; }
 .prompt-composer { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.stage-goal-controls { display: grid; grid-template-columns: minmax(12rem, .7fr) minmax(16rem, 1.3fr); gap: .65rem; }
+.stage-goal-controls label { min-width: 0; display: grid; gap: .28rem; color: var(--muted); font-size: .7rem; font-weight: 800; }
+.stage-goal-controls select, .stage-goal-controls textarea { width: 100%; }
+.stage-goal-controls textarea { min-height: 3.2rem; resize: vertical; }
 .prompt-composer textarea { width: 100%; height: 42px; min-height: 34px; padding: .38rem .5rem .2rem; border: 0; border-radius: 0; box-shadow: none; resize: vertical; }
 .prompt-composer textarea:focus { border-color: transparent; outline: 0; box-shadow: none; }
 .prompt-composer:focus-within { outline: 3px solid rgba(20, 92, 62, .34); outline-offset: 1px; }
@@ -861,6 +865,7 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
   .draft-playbook-control { grid-template-columns: minmax(0, 1fr); }
   .objective-field-label { align-items: flex-start; }
   .prompt-composer-actions { flex-wrap: wrap; }
+  .stage-goal-controls { grid-template-columns: 1fr; }
   .prompt-composer-actions .status { flex-basis: 100%; }
   .prompt-composer-actions .draft-generate-button { width: 100%; }
 }

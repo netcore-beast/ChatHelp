@@ -79,7 +79,7 @@ export interface DraftContextSummary {
 
 export const CPU_FALLBACK_MODEL_ID = "cpu:qwen2.5-0.5b-instruct-q4";
 export const CPU_FALLBACK_MODEL_NAME = "Qwen 2.5 0.5B · private CPU/WASM";
-export const CLOUDFLARE_MODEL_NAME = "Auto · Llama 3.1 8B + GPT-OSS 120B";
+export const CLOUDFLARE_MODEL_NAME = "Claude Opus 4.6 Thinking · Llama 3.1 8B + GPT-OSS 120B fallback";
 export const MAX_CLOUD_PROMPT_CHARS = 180_000;
 export const REPLY_OBJECTIVE_MAX_CHARS = 5_000;
 

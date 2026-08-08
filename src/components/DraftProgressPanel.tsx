@@ -1,10 +1,10 @@
 import type { DraftPipelineStage, DraftStageStatus } from "@/lib/draftProgress";
 
 const STAGES: Array<{ id: DraftPipelineStage; label: (role: string, ruleCharacters: number) => string }> = [
-  { id: "planning", label: () => "Planning reply with Llama 3.1 8B" },
-  { id: "drafting", label: () => "Drafting 3 replies with GPT-OSS 120B" },
-  { id: "reviewing", label: (role, count) => `Reviewing drafts against ${role} rulebook (${count.toLocaleString()} characters)` },
-  { id: "finalizing", label: () => "Finalizing drafts" },
+  { id: "analyzing", label: () => "Analyzing conversation stage" },
+  { id: "drafting", label: () => "Writing one precise reply" },
+  { id: "reviewing", label: (role, count) => `Reviewing against 100-point rubric and ${role} rulebook (${count.toLocaleString()} characters)` },
+  { id: "finalizing", label: () => "Finalizing precise draft" },
 ];
 
 interface DraftProgressPanelProps {

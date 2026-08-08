@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyRetention } from "@/lib/retention";
 import { buildOutcomeSummary, containsLinkedInPageNoise, isConversationCapture, isLikelyFullLinkedInPageCapture, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
 import { captureVisibleScreen, cropImageToRegion, extractTextFromImage, type NormalizedCropRegion } from "@/lib/localOcr";
-import { buildDraftContextSummary, CLOUDFLARE_MODEL_NAME, generatePrivateDrafts, type PrivateAiInput } from "@/lib/privateAi";
+import { buildDraftContextSummary, CLOUDFLARE_MODEL_NAME, generatePrivateDraft, type PrivateAiInput } from "@/lib/privateAi";
 import { type DraftPipelineStage, type DraftProgressUpdate, type DraftStageStatus } from "@/lib/draftProgress";
 import { DraftProgressPanel } from "@/components/DraftProgressPanel";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -56,12 +56,17 @@ import {
 } from "@/lib/secureVault";
 import {
   CLOUDFLARE_MODEL_ID,
+  CONVERSATION_GOAL_MAX_CHARS,
   MESSAGING_ROLES,
+  PERSONAL_GUIDELINES_MAX_CHARS,
   PLAYBOOK_GOAL_MAX_CHARS,
   PLAYBOOK_RULES_MAX_CHARS,
   PLAYBOOK_VOICE_MAX_CHARS,
+  RELATIONSHIP_STAGES,
+  RELATIONSHIP_STAGE_LABELS,
   createEmptyWorkspace,
   newId,
+  normalizeRelationshipStage,
   resolveRoleGuidance,
   updateRolePlaybookRules,
   type Contact,
@@ -197,6 +202,15 @@ function createDraftInput(
     retrievedContext: relevant,
     feedbackSummary,
     outcomeSummary: buildOutcomeSummary(activeContact),
+    personalGuidelines: workspace.personalGuidelines,
+    conversationGoal: activeContact.conversationGoal ?? "",
+    relationshipStage: normalizeRelationshipStage(activeContact.relationshipStage),
+    knownFacts: [
+      activeContact.headline ? `Contact headline: ${activeContact.headline}` : "",
+      activeContact.company ? `Contact company: ${activeContact.company}` : "",
+    ].filter(Boolean),
+    unansweredQuestions: [],
+    learningExamples: [],
   };
 }
 
@@ -324,7 +338,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [draftAbortController, setDraftAbortController] = useState<AbortController | null>(null);
   const [draftProgressAvailable, setDraftProgressAvailable] = useState(false);
   const [draftProgressExpanded, setDraftProgressExpanded] = useState(false);
-  const [draftStageStatuses, setDraftStageStatuses] = useState<Record<DraftPipelineStage, DraftStageStatus>>({ planning: "pending", drafting: "pending", reviewing: "pending", finalizing: "pending" });
+  const [draftStageStatuses, setDraftStageStatuses] = useState<Record<DraftPipelineStage, DraftStageStatus>>({ analyzing: "pending", drafting: "pending", reviewing: "pending", finalizing: "pending" });
   const [draftError, setDraftError] = useState("");
   const [appError, setAppError] = useState("");
   const [playbookStatus, setPlaybookStatus] = useState("");
@@ -980,7 +994,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setIsGenerating(true);
     setDraftProgressAvailable(true);
     setDraftProgressExpanded(false);
-    setDraftStageStatuses({ planning: "pending", drafting: "pending", reviewing: "pending", finalizing: "pending" });
+    setDraftStageStatuses({ analyzing: "pending", drafting: "pending", reviewing: "pending", finalizing: "pending" });
     const abortController = new AbortController();
     setDraftAbortController(abortController);
     let receivedStageEvent = false;
@@ -993,8 +1007,9 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       setDraftStageStatuses((current) => ({ ...current, [update.stage]: update.status }));
     };
     try {
-      const nextDrafts = await generatePrivateDrafts(CLOUDFLARE_MODEL_ID, createDraftInput(activeContact, draftingGuidance, requestAgenda, workspace), handleDraftProgress, workspace.cloudInference, abortController.signal);
-      if (!receivedStageEvent) setDraftStageStatuses({ planning: "done", drafting: "done", reviewing: "done", finalizing: "done" });
+      const result = await generatePrivateDraft(CLOUDFLARE_MODEL_ID, createDraftInput(activeContact, draftingGuidance, requestAgenda, workspace), handleDraftProgress, workspace.cloudInference, abortController.signal);
+      const nextDrafts = [result.draft];
+      if (!receivedStageEvent) setDraftStageStatuses({ analyzing: "done", drafting: "done", reviewing: "done", finalizing: "done" });
       if (workspaceRef.current.inboxRole !== draftingRole) {
         setAiStatus("");
         return;
@@ -1005,19 +1020,22 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         ...current,
         contacts: current.contacts.map((item) => item.id === activeContact.id ? {
           ...item,
-          draftHistory: [...(item.draftHistory ?? []), { id: newId("draft-set"), agenda: requestAgenda.slice(0, 5_000), drafts: nextDrafts, createdAt: generatedAt, role: draftingRole }].slice(-20),
+          draftHistory: [...(item.draftHistory ?? []), { id: newId("draft-set"), agenda: requestAgenda.slice(0, 5_000), drafts: nextDrafts, createdAt: generatedAt, role: draftingRole, provider: result.provider, modelId: result.model }].slice(-20),
         } : item),
         aiUsage: [...(current.aiUsage ?? []), {
           id: newId("ai-usage"),
           contactId: activeContact.id,
-          modelId: CLOUDFLARE_MODEL_ID,
+          modelId: result.model,
           promptCharacters: requestAgenda.length + activeContact.profileNotes.length + activeContact.chat.slice(-40).reduce((total, message) => total + message.body.length, 0),
           variants: nextDrafts.length,
           estimatedCostUsd: 0,
           createdAt: generatedAt,
         }].slice(-1000),
       }));
-      setAiStatus(`Generated and independently reviewed against the full ${draftingRole} rulebook (${draftingGuidance.boundaries.trim().length.toLocaleString()} rule characters) in Cloudflare Workers AI. Nothing was sent to LinkedIn.`);
+      const providerName = result.provider === "anthropic"
+        ? "Claude Opus 4.6 Thinking"
+        : "the Llama 3.1 8B + GPT-OSS 120B Cloudflare fallback";
+      setAiStatus(`Generated one precise draft with ${providerName}, independently reviewed against the full ${draftingRole} rulebook (${draftingGuidance.boundaries.trim().length.toLocaleString()} rule characters). Nothing was sent to LinkedIn.`);
     } catch (error) {
       setAiStatus("");
       if (isAbortError(error)) {
@@ -1302,6 +1320,10 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 <label>Your role or team<select value={workspace.guidance.selectedRole} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, selectedRole: event.target.value as MessagingRole } }))}>{MESSAGING_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
                 <label>Your relationship goal<textarea aria-label="Your relationship goal" maxLength={PLAYBOOK_GOAL_MAX_CHARS} value={selectedSettingsPlaybook.objective} onChange={(event) => updateSelectedPlaybook("objective", event.target.value)} /><small>{selectedSettingsPlaybook.objective.length.toLocaleString()} / {PLAYBOOK_GOAL_MAX_CHARS.toLocaleString()} characters</small></label>
                 <label>How your messages should sound<input maxLength={PLAYBOOK_VOICE_MAX_CHARS} value={workspace.guidance.voice} onChange={(event) => updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: event.target.value.slice(0, PLAYBOOK_VOICE_MAX_CHARS) } }))} /></label>
+                <label>Personal conversation guidelines<textarea aria-label="Personal conversation guidelines" maxLength={PERSONAL_GUIDELINES_MAX_CHARS} value={workspace.personalGuidelines} onChange={(event) => {
+                  const value = Array.from(event.target.value.normalize("NFC")).slice(0, PERSONAL_GUIDELINES_MAX_CHARS).join("");
+                  updateWorkspace((current) => ({ ...current, personalGuidelines: value }));
+                }} /><small>{Array.from(workspace.personalGuidelines).length.toLocaleString()} / {PERSONAL_GUIDELINES_MAX_CHARS.toLocaleString()} characters</small></label>
                 <label>Rules every reply must follow<textarea aria-label="Rules every reply must follow" maxLength={PLAYBOOK_RULES_MAX_CHARS} value={selectedSettingsPlaybook.boundaries} onChange={(event) => updateSelectedPlaybook("boundaries", event.target.value)} /><small>{selectedSettingsPlaybook.boundaries.length.toLocaleString()} / {PLAYBOOK_RULES_MAX_CHARS.toLocaleString()} characters</small></label>
                 <input ref={rulesFileRef} hidden type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" onChange={(event) => event.target.files?.[0] && void uploadRulesDocument(event.target.files[0])} />
                 <div className="playbook-actions"><button type="button" className="primary" onClick={() => void saveMessagingPlaybooks()}>Save playbook settings</button><button type="button" onClick={() => rulesFileRef.current?.click()}>Upload rules document</button><button type="button" onClick={downloadCurrentRules}>Download rules</button></div>
@@ -1329,15 +1351,15 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 </div>
               </section>
               <section className="panel-card">
-                <p className="eyebrow">CLOUDFLARE PRIVATE AI</p>
+                <p className="eyebrow">PRIVATE PRECISION AI</p>
                 <h3>Draft-generation consent</h3>
                 <div className="provider-summary">
-                  <span>Automatic three-stage planning, writing, and review</span>
+                  <span>Three isolated precision stages</span>
                   <strong>{CLOUDFLARE_MODEL_NAME}</strong>
-                  <small>Llama plans from the selected role&apos;s rulebook digest. GPT-OSS writes three replies, then independently reviews every draft against the full rulebook and actual conversation. Conversation text is sent only when you click Generate.</small>
+                  <small>Claude Opus 4.6 Thinking analyzes, writes, and independently reviews one reply. Llama 3.1 8B and GPT-OSS 120B remain available as the permanent Cloudflare fallback. Conversation text is sent only when you click Generate.</small>
                 </div>
                 <p className="section-explainer">Your validated Cloudflare Access login authorizes draft generation. DialogMint never asks for or stores a separate cloud access code.</p>
-                <label className="consent-check"><input type="checkbox" checked={Boolean(workspace.cloudInference.consentedAt)} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, consentedAt: event.target.checked ? new Date().toISOString() : "" } }))} /><span>I understand that relevant visible conversation text, my guidance, and my objective will be sent to DialogMint&apos;s authenticated Cloudflare Worker and processed by both configured Cloudflare-hosted models only when I request drafts. Screenshots, cookies, the full vault, and access credentials are not included in the AI request.</span></label>
+                <label className="consent-check"><input type="checkbox" checked={Boolean(workspace.cloudInference.consentedAt)} onChange={(event) => updateWorkspace((current) => ({ ...current, cloudInference: { ...current.cloudInference, consentedAt: event.target.checked ? new Date().toISOString() : "" } }))} /><span>I understand that relevant visible conversation text, the selected playbook, my personal guidelines, conversation goal, relationship stage, and optional objective are sent as plaintext through DialogMint&apos;s authenticated Worker to Anthropic when I request a draft. Llama 3.1 8B and GPT-OSS 120B are the Cloudflare-hosted fallback. Screenshots, cookies, the full vault, Cloudflare Access credentials, API keys, and recovery keys are never included. The workspace and recovery copy remain encrypted at rest, and I review and send every reply manually.</span></label>
               </section>
             </div>
           </section> : <section className={"conversation-column" + (!mobileConversationOpen ? " mobile-conversation-hidden" : "")}>
@@ -1389,11 +1411,15 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                       </> : <span>No draft context available</span>}
                     </div>
                   </details>
+                  <div className="stage-goal-controls">
+                    <label><span>Relationship stage</span><select aria-label="Relationship stage" value={normalizeRelationshipStage(contact.relationshipStage)} onChange={(event) => updateContact((current) => ({ ...current, relationshipStage: normalizeRelationshipStage(event.target.value) }))}>{RELATIONSHIP_STAGES.map((stage) => <option key={stage} value={stage}>{RELATIONSHIP_STAGE_LABELS[stage]}</option>)}</select></label>
+                    <label><span>Conversation goal</span><textarea aria-label="Conversation goal" maxLength={CONVERSATION_GOAL_MAX_CHARS} value={contact.conversationGoal ?? ""} onChange={(event) => updateContact((current) => ({ ...current, conversationGoal: event.target.value.slice(0, CONVERSATION_GOAL_MAX_CHARS) }))} placeholder="What is the next relationship outcome—not a sales target?" /></label>
+                  </div>
                   <div className="objective-field">
                     <div className="objective-field-label"><label htmlFor="reply-objective">What should your reply accomplish? <span className="field-optional">Optional</span></label><span className="composer-info"><button className="info-button" type="button" aria-label="About the optional reply objective" aria-describedby="objective-description">i</button><span className="composer-tooltip objective-tooltip" id="objective-description" role="tooltip">Leave blank to reply strictly from the existing chat, latest message, and selected-role rules. When provided, the objective is applied together with—not instead of—the conversation and playbook rules.</span></span></div>
                     <div className="prompt-composer">
                       <textarea id="reply-objective" aria-label="What should your reply accomplish?" ref={agendaRef} maxLength={5_000} value={agenda} onChange={(event) => setAgenda(event.target.value.slice(0, 5_000))} placeholder="Optional objective for this reply" />
-                      <div className="prompt-composer-actions">{aiStatus && <span className="status" aria-live="polite">{aiStatus}</span>}<button className={`primary draft-generate-button${isGenerating ? " is-loading" : ""}`} disabled={!isGenerating && (!conversationReady || !cloudReady || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("processed locally")))} aria-label={isGenerating ? "Stop generating drafts" : "Generate 3 Drafts"} title={isGenerating ? "Stop generating drafts" : undefined} aria-busy={isGenerating} onClick={() => isGenerating ? stopGenerating() : void generate()}>{isGenerating ? <span className="draft-processing-symbols" aria-hidden="true"><span className="draft-button-spinner" /><span className="draft-stop-symbol">■</span></span> : <span>Generate 3 Drafts</span>}</button></div>
+                      <div className="prompt-composer-actions">{aiStatus && <span className="status" aria-live="polite">{aiStatus}</span>}<button className={`primary draft-generate-button${isGenerating ? " is-loading" : ""}`} disabled={!isGenerating && (!conversationReady || !cloudReady || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("processed locally")))} aria-label={isGenerating ? "Stop generating draft" : "Generate Precise Draft"} title={isGenerating ? "Stop generating draft" : undefined} aria-busy={isGenerating} onClick={() => isGenerating ? stopGenerating() : void generate()}>{isGenerating ? <span className="draft-processing-symbols" aria-hidden="true"><span className="draft-button-spinner" /><span className="draft-stop-symbol">■</span></span> : <span>Generate Precise Draft</span>}</button></div>
                     </div>
                   </div>
                   {!cloudReady && <p className="missing-context">Finish Cloudflare draft consent in Settings before generating.</p>}
