@@ -2,6 +2,7 @@ import { CONVERSATION_GOAL_MAX_CHARS, MESSAGING_ROLES, PLAYBOOK_GOAL_MAX_CHARS, 
 import { PIPELINE_STAGES } from "./linkedinExtension";
 import { repairLegacyLinkedInMessages } from "./messageDedup";
 import { buildRulebookDigest } from "./rulebookDigest";
+import { normalizeFeedback } from "./personalLearning";
 
 const DB_NAME = "chathelp-secure";
 const DB_VERSION = 1;
@@ -326,7 +327,7 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
   };
   const inboxRole = isMessagingRole(source.inboxRole) ? source.inboxRole : selectedRole;
   return {
-    version: 11,
+    version: 12,
     modelId: normalizeWorkspaceModelId(),
     cloudInference: {
       consentedAt: typeof cloudInference.consentedAt === "string" ? cloudInference.consentedAt.slice(0, 100) : "",
@@ -404,7 +405,10 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
         conversationGoal: typeof contact.conversationGoal === "string" ? contact.conversationGoal.slice(0, CONVERSATION_GOAL_MAX_CHARS) : "",
       };
     }),
-    feedback: Array.isArray(source.feedback) ? source.feedback.slice(-1000) as WorkspaceData["feedback"] : [],
+    feedback: Array.isArray(source.feedback) ? source.feedback.slice(-1000).flatMap((feedback, feedbackIndex) => {
+      const normalized = normalizeFeedback(feedback, feedbackIndex);
+      return normalized ? [normalized] : [];
+    }) : [],
     aiUsage: Array.isArray(source.aiUsage) ? source.aiUsage.slice(-1000).flatMap((usage, usageIndex) => {
       if (!usage || typeof usage !== "object") return [];
       const item = usage as Record<string, unknown>;
@@ -419,6 +423,9 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
       }];
     }) : [],
     personalGuidelines: normalizePersonalGuidelines(source.personalGuidelines),
+    personalLearning: {
+      enabled: Boolean(source.personalLearning && typeof source.personalLearning === "object" && (source.personalLearning as Record<string, unknown>).enabled === true),
+    },
   };
 }
 

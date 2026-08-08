@@ -1059,7 +1059,30 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   function rateDraft(draft: string, rating: "useful" | "not-useful") {
     if (!contact) return;
     const note = window.prompt("Optional: what should DialogMint learn from this draft?", "") ?? "";
-    updateWorkspace((current) => ({ ...current, feedback: [...current.feedback, { id: newId("feedback"), contactId: contact.id, draft: draft.slice(0, 2000), rating, note: note.slice(0, 1000), createdAt: new Date().toISOString() }].slice(-1000) }));
+    const history = contact.draftHistory?.findLast((entry) => entry.role === workspace.inboxRole);
+    const timestamp = new Date().toISOString();
+    updateWorkspace((current) => ({ ...current, feedback: [...current.feedback, {
+      id: newId("feedback"),
+      contactId: contact.id,
+      role: workspace.inboxRole,
+      relationshipStage: normalizeRelationshipStage(contact.relationshipStage),
+      conversationGoal: (contact.conversationGoal ?? "").slice(0, CONVERSATION_GOAL_MAX_CHARS),
+      provider: history?.provider ?? "unknown",
+      modelId: history?.modelId ?? "",
+      action: rating === "useful" ? "accepted" : "rejected",
+      draft: draft.slice(0, 5_000),
+      preferredResponse: rating === "useful" ? draft.slice(0, 5_000) : "",
+      outcome: "",
+      reason: note.slice(0, 1_000),
+      origin: "provider_assisted",
+      independentlyAuthoredAttested: false,
+      eligibleForRetrieval: false,
+      enabled: true,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      rating,
+      note: note.slice(0, 1_000),
+    }].slice(-1000) }));
   }
 
   function addOutcome() {

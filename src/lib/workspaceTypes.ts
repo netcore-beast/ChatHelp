@@ -142,10 +142,28 @@ export interface MessagingGuidance {
 export interface Feedback {
   id: string;
   contactId: string;
+  role: MessagingRole;
+  relationshipStage: RelationshipStage;
+  conversationGoal: string;
+  provider: "anthropic" | "cloudflare" | "local" | "unknown";
+  modelId: string;
+  action: "accepted" | "edited" | "rejected";
   draft: string;
-  rating: "useful" | "not-useful";
-  note: string;
+  preferredResponse: string;
+  outcome: string;
+  reason: string;
+  origin: "provider_assisted" | "independently_user_authored";
+  independentlyAuthoredAttested: boolean;
+  eligibleForRetrieval: boolean;
+  enabled: boolean;
   createdAt: string;
+  updatedAt: string;
+  rating?: "useful" | "not-useful";
+  note?: string;
+}
+
+export interface PersonalLearningSettings {
+  enabled: boolean;
 }
 
 export interface CloudInferenceSettings {
@@ -179,7 +197,7 @@ export interface AiUsageEntry {
 }
 
 export interface WorkspaceData {
-  version: 11;
+  version: 12;
   modelId: string;
   cloudInference: CloudInferenceSettings;
   cloudRecovery: CloudRecoverySettings;
@@ -190,6 +208,7 @@ export interface WorkspaceData {
   feedback: Feedback[];
   aiUsage: AiUsageEntry[];
   personalGuidelines: string;
+  personalLearning: PersonalLearningSettings;
 }
 
 export const CLOUDFLARE_MODEL_ID = "cloud:cloudflare:auto-llama-3.1-8b-gpt-oss-120b";
@@ -283,7 +302,7 @@ export function updateRolePlaybookRules(playbook: RolePlaybook, boundaries: stri
 export function createEmptyWorkspace(): WorkspaceData {
   const guidance = createDefaultMessagingGuidance();
   return {
-    version: 11,
+    version: 12,
     modelId: DEFAULT_MODEL_ID,
     cloudInference: {
       consentedAt: "",
@@ -304,5 +323,6 @@ export function createEmptyWorkspace(): WorkspaceData {
     feedback: [],
     aiUsage: [],
     personalGuidelines: "",
+    personalLearning: { enabled: false },
   };
 }

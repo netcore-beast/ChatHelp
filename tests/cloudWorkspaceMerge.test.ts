@@ -63,13 +63,13 @@ describe("encrypted workspace merge", () => {
       draftHistory: [{ id: "local-draft", agenda: "local", drafts: ["One", "Two", "Three"], createdAt: "2026-08-01T00:00:00.000Z" }],
     })]);
     local.guidance.playbooks["Network Marketing"].boundaries = "LOCAL RULE";
-    local.feedback = [{ id: "local-feedback", contactId: "local", draft: "draft", rating: "useful", note: "", createdAt: "2026-08-01T00:00:00.000Z" }];
+    local.feedback = [{ id: "local-feedback", contactId: "local", role: "Socializing/Networking", relationshipStage: "new_connection", conversationGoal: "", provider: "unknown", modelId: "", action: "accepted", draft: "draft", preferredResponse: "draft", outcome: "", reason: "", origin: "provider_assisted", independentlyAuthoredAttested: false, eligibleForRetrieval: false, enabled: true, rating: "useful", note: "", createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z" }];
     const remote = workspace([contact({
       id: "remote", profileUrl: "https://www.linkedin.com/in/merge/", documents: [{ id: "remote-doc", name: "Remote", text: "remote", createdAt: "2026-08-02T00:00:00.000Z" }],
       outcomes: [{ id: "remote-outcome", result: "neutral", note: "remote", createdAt: "2026-08-02T00:00:00.000Z" }],
       draftHistory: [{ id: "remote-draft", agenda: "remote", drafts: ["Four", "Five", "Six"], createdAt: "2026-08-02T00:00:00.000Z" }],
     })]);
-    remote.feedback = [{ id: "remote-feedback", contactId: "remote", draft: "draft", rating: "not-useful", note: "", createdAt: "2026-08-02T00:00:00.000Z" }];
+    remote.feedback = [{ id: "remote-feedback", contactId: "remote", role: "Socializing/Networking", relationshipStage: "new_connection", conversationGoal: "", provider: "unknown", modelId: "", action: "rejected", draft: "draft", preferredResponse: "", outcome: "", reason: "", origin: "provider_assisted", independentlyAuthoredAttested: false, eligibleForRetrieval: false, enabled: true, rating: "not-useful", note: "", createdAt: "2026-08-02T00:00:00.000Z", updatedAt: "2026-08-02T00:00:00.000Z" }];
 
     const merged = await mergeCloudWorkspaces(local, remote);
     expect(merged.contacts[0].documents.map((item) => item.id)).toEqual(["local-doc", "remote-doc"]);

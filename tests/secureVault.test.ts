@@ -39,7 +39,7 @@ describe("encrypted device vault", () => {
       },
     });
 
-    expect(workspace.version).toBe(11);
+    expect(workspace.version).toBe(12);
     expect(workspace.guidance.selectedRole).toBe("Human Resource");
     expect(workspace.inboxRole).toBe("Human Resource");
     expect(workspace.guidance.playbooks["Human Resource"]).toEqual({
@@ -177,7 +177,7 @@ describe("encrypted device vault", () => {
       }],
     });
 
-    expect(migrated.version).toBe(11);
+    expect(migrated.version).toBe(12);
     expect(migrated.personalGuidelines).toBe("Prefer one thoughtful question.");
     expect(migrated.contacts[0]).toMatchObject({
       relationshipStage: "new_connection",
@@ -195,6 +195,38 @@ describe("encrypted device vault", () => {
     expect(reopened.personalGuidelines).toBe("Prefer one thoughtful question.");
     expect(reopened.contacts[0].relationshipStage).toBe("learn_interests");
     expect(reopened.contacts[0].conversationGoal).toBe("Learn what kind of support would be useful.");
+  });
+
+  it("migrates learning disabled and keeps approved examples only inside encrypted vault data", async () => {
+    const legacy = normalizeWorkspace({
+      version: 11,
+      feedback: [{
+        id: "legacy-feedback",
+        contactId: "alex",
+        draft: "Legacy provider response",
+        rating: "useful",
+        note: "Helpful",
+        createdAt: "2026-08-01T00:00:00.000Z",
+      }],
+    });
+    expect(legacy.personalLearning).toEqual({ enabled: false });
+    expect(legacy.feedback[0]).toMatchObject({ action: "accepted", origin: "provider_assisted", eligibleForRetrieval: false });
+
+    legacy.personalLearning.enabled = true;
+    legacy.feedback[0] = {
+      ...legacy.feedback[0],
+      origin: "independently_user_authored",
+      independentlyAuthoredAttested: true,
+      preferredResponse: "What would make this opportunity useful to you?",
+      eligibleForRetrieval: true,
+    };
+    await createDeviceVault(legacy);
+
+    const stored = JSON.stringify(await readVaultEnvelopeForTests());
+    expect(stored).not.toContain("What would make this opportunity useful to you?");
+    const reopened = (await openDeviceVault()).workspace;
+    expect(reopened.personalLearning.enabled).toBe(true);
+    expect(reopened.feedback[0]).toMatchObject({ eligibleForRetrieval: true, preferredResponse: "What would make this opportunity useful to you?" });
   });
 
   it("stores no readable workspace content and opens without a passphrase", async () => {
