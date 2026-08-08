@@ -1,5 +1,5 @@
-const SHELL_CACHE = "chathelp-shell-v1";
-const STATIC_CACHE = "chathelp-static-v1";
+const SHELL_CACHE = "chathelp-shell-v2";
+const STATIC_CACHE = "chathelp-static-v2";
 const SHELL = ["/", "/offline.html", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -30,11 +30,15 @@ self.addEventListener("fetch", (event) => {
   const cacheable = ["/_next/static/", "/tesseract/", "/tesseract-core/", "/tessdata/"].some((prefix) => url.pathname.startsWith(prefix)) || ["/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"].includes(url.pathname);
   if (!cacheable) return;
 
-  event.respondWith(caches.match(request).then((cached) => cached || fetch(request).then(async (response) => {
+  event.respondWith(fetch(request).then(async (response) => {
     if (response.ok) {
       const cacheCopy = response.clone();
       try { await (await caches.open(STATIC_CACHE)).put(request, cacheCopy); } catch { /* Continue with the network response. */ }
     }
     return response;
-  })));
+  }).catch(async () => {
+    const cached = await caches.match(request);
+    if (cached) return cached;
+    throw new Error("Static asset unavailable");
+  }));
 });
