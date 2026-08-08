@@ -39,7 +39,7 @@ describe("encrypted device vault", () => {
       },
     });
 
-    expect(workspace.version).toBe(12);
+    expect(workspace.version).toBe(13);
     expect(workspace.guidance.selectedRole).toBe("Human Resource");
     expect(workspace.inboxRole).toBe("Human Resource");
     expect(workspace.guidance.playbooks["Human Resource"]).toEqual({
@@ -177,7 +177,7 @@ describe("encrypted device vault", () => {
       }],
     });
 
-    expect(migrated.version).toBe(12);
+    expect(migrated.version).toBe(13);
     expect(migrated.personalGuidelines).toBe("Prefer one thoughtful question.");
     expect(migrated.contacts[0]).toMatchObject({
       relationshipStage: "new_connection",

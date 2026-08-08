@@ -432,6 +432,56 @@ describe("secure conversation workspace interaction", () => {
     expect(JSON.stringify(body.learningExamples)).not.toContain("other-contact");
   }, 20_000);
 
+  it("keeps a local stage suggestion non-authoritative until the user applies it", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.personalLearning.enabled = true;
+    workspace.inboxRole = "Network Marketing";
+    workspace.contacts = [{
+      id: "stage-contact",
+      name: "Taylor Lee",
+      headline: "Talent Partner",
+      profileNotes: "",
+      platform: "linkedin",
+      platformUrl: "",
+      chat: [{ id: "incoming", role: "them", body: "I am thinking about my career priorities.", createdAt: "2026-08-02T11:59:00.000Z" }],
+      documents: [],
+      outcomes: [],
+      retentionDays: 90,
+      relationshipStage: "new_connection",
+      conversationGoal: "Learn about career priorities",
+    }];
+    (workspace as unknown as { stageTrainingRecords: unknown[] }).stageTrainingRecords = Array.from({ length: 4 }, (_, index) => ({
+      id: `confirmation-${index}`,
+      featureSchemaVersion: 1,
+      role: "Network Marketing",
+      messageCountBucket: "low",
+      hasIncomingQuestion: false,
+      hasNeedSignal: false,
+      hasPermissionSignal: false,
+      hasValueDiscussionSignal: false,
+      hasNextStepSignal: false,
+      semanticTokens: ["career", "priorities"],
+      confirmedStage: "learn_interests",
+      humanConfirmed: true,
+      createdAt: `2026-08-0${index + 1}T00:00:00.000Z`,
+    }));
+    await createDeviceVault(workspace);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+
+    const stageSelect = screen.getByRole("combobox", { name: "Relationship stage" }) as HTMLSelectElement;
+    expect(stageSelect.value).toBe("new_connection");
+    expect(screen.getByText(/Suggested stage: Learn interests and situation/)).toBeTruthy();
+    expect(stageSelect.value).toBe("new_connection");
+    await user.click(screen.getByRole("button", { name: "Apply suggested relationship stage" }));
+    expect(stageSelect.value).toBe("learn_interests");
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace as unknown as { stageTrainingRecords: unknown[] };
+      expect(reopened.stageTrainingRecords).toHaveLength(5);
+    });
+  }, 20_000);
+
   it("shows real AI stages behind a persistent accessible arrow panel", async () => {
     let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
     const encoder = new TextEncoder();

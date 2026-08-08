@@ -6,6 +6,7 @@ import { buildOutcomeSummary, containsLinkedInPageNoise, isConversationCapture, 
 import { captureVisibleScreen, cropImageToRegion, extractTextFromImage, type NormalizedCropRegion } from "@/lib/localOcr";
 import { buildDraftContextSummary, CLOUDFLARE_MODEL_NAME, generatePrivateDraft, type PrivateAiInput } from "@/lib/privateAi";
 import { selectLearningExamples } from "@/lib/personalLearning";
+import { extractRelationshipStageFeatures, predictRelationshipStage, trainStageClassifier } from "@/lib/relationshipStageClassifier";
 import { type DraftPipelineStage, type DraftProgressUpdate, type DraftStageStatus } from "@/lib/draftProgress";
 import { DraftProgressPanel } from "@/components/DraftProgressPanel";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -76,6 +77,7 @@ import {
   type MessagingRole,
   type MessageRole,
   type PipelineStage,
+  type RelationshipStage,
   type WorkspaceData,
 } from "@/lib/workspaceTypes";
 
@@ -1105,6 +1107,30 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     updateWorkspace((current) => ({ ...current, feedback: current.feedback.filter((item) => item.id !== feedbackId) }));
   }
 
+  function confirmRelationshipStage(stage: RelationshipStage) {
+    if (!contact) return;
+    const features = extractRelationshipStageFeatures({
+      role: workspace.inboxRole,
+      conversationGoal: contact.conversationGoal,
+      latestIncoming: contact.chat.findLast((message) => message.role === "them")?.body,
+      messageCount: contact.chat.length,
+    });
+    const confirmation = {
+      id: newId("stage-confirmation"),
+      ...features,
+      confirmedStage: stage,
+      humanConfirmed: true,
+      createdAt: new Date().toISOString(),
+    };
+    updateWorkspace((current) => ({
+      ...current,
+      contacts: current.contacts.map((item) => item.id === contact.id ? { ...item, relationshipStage: stage } : item),
+      stageTrainingRecords: current.personalLearning.enabled
+        ? [...current.stageTrainingRecords, confirmation].slice(-2_000)
+        : current.stageTrainingRecords,
+    }));
+  }
+
   function addOutcome() {
     if (!contact) return;
     updateContact((current) => ({ ...current, outcomes: [...current.outcomes, { id: newId("outcome"), result: outcomeResult, note: outcomeNote.trim().slice(0, 2000), createdAt: new Date().toISOString() }].slice(-200) }));
@@ -1197,6 +1223,17 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const selectedSettingsPlaybook = workspace.guidance.playbooks[workspace.guidance.selectedRole];
   const activeDraftGuidance = resolveRoleGuidance(workspace.guidance, workspace.inboxRole);
   const activeConversationState = contact ? deriveConversationState(contact, now) : null;
+  const stageSuggestion = useMemo(() => {
+    if (!contact || !workspace.personalLearning.enabled || !workspace.stageTrainingRecords.length) return null;
+    const currentStage = normalizeRelationshipStage(contact.relationshipStage);
+    const features = extractRelationshipStageFeatures({
+      role: workspace.inboxRole,
+      conversationGoal: contact.conversationGoal,
+      latestIncoming: contact.chat.findLast((message) => message.role === "them")?.body,
+      messageCount: contact.chat.length,
+    });
+    return predictRelationshipStage(trainStageClassifier(workspace.stageTrainingRecords), features, currentStage, 0.30);
+  }, [contact, workspace.inboxRole, workspace.personalLearning.enabled, workspace.stageTrainingRecords]);
   const draftContextSummary = useMemo(() => contact
     ? buildDraftContextSummary(createDraftInput(contact, resolveRoleGuidance(workspace.guidance, workspace.inboxRole), agenda.trim(), workspace))
     : null, [agenda, contact, workspace]);
@@ -1482,9 +1519,10 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                     </div>
                   </details>
                   <div className="stage-goal-controls">
-                    <label><span>Relationship stage</span><select aria-label="Relationship stage" value={normalizeRelationshipStage(contact.relationshipStage)} onChange={(event) => updateContact((current) => ({ ...current, relationshipStage: normalizeRelationshipStage(event.target.value) }))}>{RELATIONSHIP_STAGES.map((stage) => <option key={stage} value={stage}>{RELATIONSHIP_STAGE_LABELS[stage]}</option>)}</select></label>
+                    <label><span>Relationship stage</span><select aria-label="Relationship stage" value={normalizeRelationshipStage(contact.relationshipStage)} onChange={(event) => confirmRelationshipStage(normalizeRelationshipStage(event.target.value))}>{RELATIONSHIP_STAGES.map((stage) => <option key={stage} value={stage}>{RELATIONSHIP_STAGE_LABELS[stage]}</option>)}</select></label>
                     <label><span>Conversation goal</span><textarea aria-label="Conversation goal" maxLength={CONVERSATION_GOAL_MAX_CHARS} value={contact.conversationGoal ?? ""} onChange={(event) => updateContact((current) => ({ ...current, conversationGoal: event.target.value.slice(0, CONVERSATION_GOAL_MAX_CHARS) }))} placeholder="What is the next relationship outcome—not a sales target?" /></label>
                   </div>
+                  {stageSuggestion && <div className="stage-suggestion" role="status"><span>{stageSuggestion.usedFallback ? `No confident local stage suggestion yet (${Math.round(stageSuggestion.confidence * 100)}%). Current stage retained.` : `Suggested stage: ${RELATIONSHIP_STAGE_LABELS[stageSuggestion.suggestedStage]} (${Math.round(stageSuggestion.confidence * 100)}% confidence)`}</span>{!stageSuggestion.usedFallback && stageSuggestion.suggestedStage !== normalizeRelationshipStage(contact.relationshipStage) && <button type="button" aria-label="Apply suggested relationship stage" onClick={() => confirmRelationshipStage(stageSuggestion.suggestedStage)}>Apply suggestion</button>}</div>}
                   <div className="objective-field">
                     <div className="objective-field-label"><label htmlFor="reply-objective">What should your reply accomplish? <span className="field-optional">Optional</span></label><span className="composer-info"><button className="info-button" type="button" aria-label="About the optional reply objective" aria-describedby="objective-description">i</button><span className="composer-tooltip objective-tooltip" id="objective-description" role="tooltip">Leave blank to reply strictly from the existing chat, latest message, and selected-role rules. When provided, the objective is applied together with—not instead of—the conversation and playbook rules.</span></span></div>
                     <div className="prompt-composer">

@@ -3,6 +3,7 @@ import { PIPELINE_STAGES } from "./linkedinExtension";
 import { repairLegacyLinkedInMessages } from "./messageDedup";
 import { buildRulebookDigest } from "./rulebookDigest";
 import { normalizeFeedback } from "./personalLearning";
+import { normalizeStageTrainingRecord } from "./relationshipStageClassifier";
 
 const DB_NAME = "chathelp-secure";
 const DB_VERSION = 1;
@@ -327,7 +328,7 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
   };
   const inboxRole = isMessagingRole(source.inboxRole) ? source.inboxRole : selectedRole;
   return {
-    version: 12,
+    version: 13,
     modelId: normalizeWorkspaceModelId(),
     cloudInference: {
       consentedAt: typeof cloudInference.consentedAt === "string" ? cloudInference.consentedAt.slice(0, 100) : "",
@@ -426,6 +427,10 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
     personalLearning: {
       enabled: Boolean(source.personalLearning && typeof source.personalLearning === "object" && (source.personalLearning as Record<string, unknown>).enabled === true),
     },
+    stageTrainingRecords: Array.isArray(source.stageTrainingRecords) ? source.stageTrainingRecords.slice(-2_000).flatMap((record, recordIndex) => {
+      const normalized = normalizeStageTrainingRecord(record, recordIndex);
+      return normalized ? [normalized] : [];
+    }) : [],
   };
 }
 

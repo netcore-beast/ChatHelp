@@ -166,6 +166,24 @@ export interface PersonalLearningSettings {
   enabled: boolean;
 }
 
+export type StageMessageCountBucket = "unknown" | "low" | "medium" | "high";
+
+export interface RelationshipStageFeatureRecord {
+  id: string;
+  featureSchemaVersion: 1;
+  role: MessagingRole;
+  messageCountBucket: StageMessageCountBucket;
+  hasIncomingQuestion: boolean;
+  hasNeedSignal: boolean;
+  hasPermissionSignal: boolean;
+  hasValueDiscussionSignal: boolean;
+  hasNextStepSignal: boolean;
+  semanticTokens: string[];
+  confirmedStage: RelationshipStage;
+  humanConfirmed: boolean;
+  createdAt: string;
+}
+
 export interface CloudInferenceSettings {
   consentedAt: string;
 }
@@ -197,7 +215,7 @@ export interface AiUsageEntry {
 }
 
 export interface WorkspaceData {
-  version: 12;
+  version: 13;
   modelId: string;
   cloudInference: CloudInferenceSettings;
   cloudRecovery: CloudRecoverySettings;
@@ -209,6 +227,7 @@ export interface WorkspaceData {
   aiUsage: AiUsageEntry[];
   personalGuidelines: string;
   personalLearning: PersonalLearningSettings;
+  stageTrainingRecords: RelationshipStageFeatureRecord[];
 }
 
 export const CLOUDFLARE_MODEL_ID = "cloud:cloudflare:auto-llama-3.1-8b-gpt-oss-120b";
@@ -302,7 +321,7 @@ export function updateRolePlaybookRules(playbook: RolePlaybook, boundaries: stri
 export function createEmptyWorkspace(): WorkspaceData {
   const guidance = createDefaultMessagingGuidance();
   return {
-    version: 12,
+    version: 13,
     modelId: DEFAULT_MODEL_ID,
     cloudInference: {
       consentedAt: "",
@@ -324,5 +343,6 @@ export function createEmptyWorkspace(): WorkspaceData {
     aiUsage: [],
     personalGuidelines: "",
     personalLearning: { enabled: false },
+    stageTrainingRecords: [],
   };
 }
