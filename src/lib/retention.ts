@@ -31,6 +31,8 @@ export function applyRetention(workspace: WorkspaceData, now = Date.now()): Work
     stageTrainingRecords: workspace.stageTrainingRecords.filter((item) => isRetained(item.createdAt, LEARNING_RETENTION_DAYS, now)),
     pendingLearningRecords: workspace.pendingLearningRecords.filter((item) => isRetained(item.createdAt, LEARNING_RETENTION_DAYS, now) && hasNotExpired(item.expiresAt, now)),
     cloudLearningSync: workspace.cloudLearningSync.filter((item) => isRetained(item.updatedAt, LEARNING_RETENTION_DAYS, now)),
+    cloudLearningDeletionMarkers: workspace.cloudLearningDeletionMarkers.filter((item) => isRetained(item.deletedAt, LEARNING_RETENTION_DAYS, now)),
+    cloudLearningClearedAt: workspace.cloudLearningClearedAt && isRetained(workspace.cloudLearningClearedAt, LEARNING_RETENTION_DAYS, now) ? workspace.cloudLearningClearedAt : "",
   };
 }
 

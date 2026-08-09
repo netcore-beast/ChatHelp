@@ -329,7 +329,7 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.getByRole("link", { name: /Open LinkedIn to review and paste/ })).toBeTruthy();
   }, 20_000);
 
-  it("keeps personal learning off until opt-in and requires independent authorship before retrieval", async () => {
+  it("defaults approved learning on and still requires independent authorship before retrieval", async () => {
     const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       draft: "I can share the brief. Which part would be most useful to explore first?",
       provider: "anthropic",
@@ -345,9 +345,8 @@ describe("secure conversation workspace interaction", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     const learningToggle = screen.getByRole("checkbox", { name: "Enable encrypted personal learning" }) as HTMLInputElement;
-    expect(learningToggle.checked).toBe(false);
+    expect(learningToggle.checked).toBe(true);
     expect(screen.getByText(/retrieval uses your approved examples as context and does not retrain any model/i)).toBeTruthy();
-    await user.click(learningToggle);
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
@@ -514,6 +513,301 @@ describe("secure conversation workspace interaction", () => {
     await waitFor(async () => {
       const reopened = (await openDeviceVault()).workspace as unknown as { stageTrainingRecords: unknown[] };
       expect(reopened.stageTrainingRecords).toHaveLength(5);
+    });
+  }, 20_000);
+
+  it("retains pending cloud learning until a user retry receives an acknowledgement", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.stageTrainingRecords = [{
+      id: "stage-pending",
+      featureSchemaVersion: 1,
+      role: "Human Resource",
+      messageCountBucket: "low",
+      hasIncomingQuestion: false,
+      hasNeedSignal: false,
+      hasPermissionSignal: false,
+      hasValueDiscussionSignal: false,
+      hasNextStepSignal: false,
+      semanticTokens: [],
+      confirmedStage: "new_connection",
+      humanConfirmed: true,
+      createdAt: "2026-08-09T00:00:00.000Z",
+    }];
+    workspace.pendingLearningRecords = [{
+      recordId: "record-pending",
+      recordKind: "classifier",
+      sanitizedPayload: {
+        recordKind: "classifier",
+        roleId: "human_resource",
+        relationshipStage: "new_connection",
+        goalCategory: "connect",
+        provenance: "human_confirmed",
+        classifierFeatures: {
+          messageCountBucket: "low",
+          hasIncomingQuestion: false,
+          hasNeedSignal: false,
+          hasPermissionSignal: false,
+          hasValueDiscussionSignal: false,
+          hasNextStepSignal: false,
+        },
+      },
+      sourceCollection: "stageTrainingRecords",
+      sourceLocalId: "stage-pending",
+      createdAt: "2026-08-09T00:00:00.000Z",
+      expiresAt: "2027-08-09T00:00:00.000Z",
+    }];
+    await createDeviceVault(workspace);
+    const request = vi.fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        accepted: [{ recordId: "record-pending", contentDigest: "a".repeat(64) }],
+        duplicates: [],
+      }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", request);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    expect(screen.getByText("Cloud learning sync pending")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Retry cloud learning sync" }));
+    await waitFor(async () => expect((await openDeviceVault()).workspace.pendingLearningRecords).toHaveLength(1));
+
+    await user.click(screen.getByRole("button", { name: "Retry cloud learning sync" }));
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace;
+      expect(reopened.pendingLearningRecords).toEqual([]);
+      expect(reopened.stageTrainingRecords).toEqual([]);
+    });
+    expect(request).toHaveBeenCalledTimes(2);
+  }, 20_000);
+
+  it("persists acknowledged cloud learning while another encrypted record remains pending", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.stageTrainingRecords = ["accepted", "pending"].map((suffix) => ({
+      id: `stage-${suffix}`,
+      featureSchemaVersion: 1 as const,
+      role: "Human Resource" as const,
+      messageCountBucket: "low" as const,
+      hasIncomingQuestion: false,
+      hasNeedSignal: false,
+      hasPermissionSignal: false,
+      hasValueDiscussionSignal: false,
+      hasNextStepSignal: false,
+      semanticTokens: [],
+      confirmedStage: "new_connection" as const,
+      humanConfirmed: true,
+      createdAt: "2026-08-09T00:00:00.000Z",
+    }));
+    workspace.pendingLearningRecords = ["accepted", "pending"].map((suffix) => ({
+      recordId: `record-${suffix}`,
+      recordKind: "classifier" as const,
+      sanitizedPayload: {
+        recordKind: "classifier",
+        roleId: "human_resource",
+        relationshipStage: "new_connection",
+        goalCategory: "connect",
+        provenance: "human_confirmed",
+        classifierFeatures: {
+          messageCountBucket: "low",
+          hasIncomingQuestion: false,
+          hasNeedSignal: false,
+          hasPermissionSignal: false,
+          hasValueDiscussionSignal: false,
+          hasNextStepSignal: false,
+        },
+      },
+      sourceCollection: "stageTrainingRecords" as const,
+      sourceLocalId: `stage-${suffix}`,
+      createdAt: "2026-08-09T00:00:00.000Z",
+      expiresAt: "2027-08-09T00:00:00.000Z",
+    }));
+    await createDeviceVault(workspace);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      accepted: [{ recordId: "record-accepted", contentDigest: "c".repeat(64) }],
+      duplicates: [],
+    }), { status: 200, headers: { "Content-Type": "application/json" } })));
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    await user.click(screen.getByRole("button", { name: "Retry cloud learning sync" }));
+
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace;
+      expect(reopened.pendingLearningRecords.map((record) => record.recordId)).toEqual(["record-pending"]);
+      expect(reopened.stageTrainingRecords.map((record) => record.id)).toEqual(["stage-pending"]);
+      expect(reopened.cloudLearningSync).toEqual([expect.objectContaining({
+        recordId: "record-accepted",
+        contentDigest: "c".repeat(64),
+        status: "synced",
+      })]);
+    });
+    expect(screen.getByText("Cloud learning sync pending")).toBeTruthy();
+  }, 20_000);
+
+  it("preserves ordinary workspace updates made while a cloud learning retry is in flight", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.guidance.voice = "Stale custom voice";
+    workspace.stageTrainingRecords = [{ id: "stage-pending", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" }];
+    workspace.pendingLearningRecords = [{ recordId: "record-pending", recordKind: "classifier", sanitizedPayload: { recordKind: "classifier", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", provenance: "human_confirmed", classifierFeatures: { messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false } }, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-pending", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
+    await createDeviceVault(workspace);
+    let resolveUpload!: (response: Response) => void;
+    const request = vi.fn().mockImplementation(() => new Promise<Response>((resolve) => { resolveUpload = resolve; }));
+    vi.stubGlobal("fetch", request);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    await user.click(screen.getByRole("button", { name: "Retry cloud learning sync" }));
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    await user.clear(screen.getByRole("textbox", { name: "How your messages should sound" }));
+    await deliverSnapshot();
+    await act(async () => resolveUpload(new Response(JSON.stringify({
+      accepted: [{ recordId: "record-pending", contentDigest: "a".repeat(64) }],
+      duplicates: [],
+    }), { status: 200, headers: { "Content-Type": "application/json" } })));
+
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace;
+      expect(reopened.contacts.map((contact) => contact.name)).toContain("Taylor Lee");
+      expect(reopened.contacts.find((contact) => contact.name === "Taylor Lee")?.chat.map((message) => message.body)).toEqual(["Could you share the role brief?"]);
+      expect(reopened.guidance.voice).toBe("");
+      expect(reopened.pendingLearningRecords).toEqual([]);
+      expect(reopened.cloudLearningSync).toEqual([expect.objectContaining({ recordId: "record-pending", status: "synced" })]);
+    });
+  }, 20_000);
+
+  it("deletes an individual synced learning record locally only after server success", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.cloudLearningSync = [
+      { recordId: "record-1", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" },
+      { recordId: "record-2", contentDigest: "b".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" },
+    ];
+    await createDeviceVault(workspace);
+    vi.stubGlobal("fetch", vi.fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ deleted: true, recordId: "record-1" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })));
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    await user.click(screen.getByRole("button", { name: "Delete cloud learning record record-1" }));
+    await waitFor(async () => expect((await openDeviceVault()).workspace.cloudLearningSync.map((entry) => entry.recordId)).toEqual(["record-1", "record-2"]));
+
+    await user.click(screen.getByRole("button", { name: "Delete cloud learning record record-1" }));
+    await waitFor(async () => expect((await openDeviceVault()).workspace.cloudLearningSync.map((entry) => entry.recordId)).toEqual(["record-2"]));
+  }, 20_000);
+
+  it("disables and deletes eligible learning locally only after server success while preserving ordinary history", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.contacts = [{
+      id: "contact-1", name: "Alex", headline: "", profileNotes: "", platform: "linkedin", platformUrl: "",
+      chat: [{ id: "message-1", role: "them", body: "Keep this ordinary message", createdAt: "2026-08-09T00:00:00.000Z" }],
+      documents: [], outcomes: [], retentionDays: 90,
+      draftHistory: [{ id: "draft-1", agenda: "Keep this draft", drafts: ["Ordinary draft"], createdAt: "2026-08-09T00:00:00.000Z" }],
+    }];
+    workspace.feedback = [
+      { id: "eligible", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "", preferredResponse: "Keep eligible feedback", outcome: "", reason: "", origin: "independently_user_authored", independentlyAuthoredAttested: true, eligibleForRetrieval: true, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
+      { id: "ordinary-feedback", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "Ordinary feedback", preferredResponse: "", outcome: "", reason: "", origin: "provider_assisted", independentlyAuthoredAttested: false, eligibleForRetrieval: false, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
+    ];
+    workspace.stageTrainingRecords = [{ id: "stage-1", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" }];
+    workspace.pendingLearningRecords = [{ recordId: "record-1", recordKind: "classifier", sanitizedPayload: { recordKind: "classifier", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", provenance: "human_confirmed", classifierFeatures: { messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false } }, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-1", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
+    workspace.cloudLearningSync = [{ recordId: "record-2", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" }];
+    await createDeviceVault(workspace);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    vi.stubGlobal("fetch", vi.fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ enabled: false, deleted: 2 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })));
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    await user.click(screen.getByRole("button", { name: "Disable and delete cloud learning" }));
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace;
+      expect(reopened.personalLearning.enabled).toBe(true);
+      expect(reopened.feedback.map((item) => item.id)).toEqual(["eligible", "ordinary-feedback"]);
+      expect(reopened.pendingLearningRecords).toHaveLength(1);
+      expect(reopened.cloudLearningSync).toHaveLength(1);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Disable and delete cloud learning" }));
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace;
+      expect(reopened.personalLearning.enabled).toBe(false);
+      expect(reopened.feedback.map((item) => item.id)).toEqual(["ordinary-feedback"]);
+      expect(reopened.stageTrainingRecords).toEqual([]);
+      expect(reopened.pendingLearningRecords).toEqual([]);
+      expect(reopened.cloudLearningSync).toEqual([]);
+      expect(reopened.contacts[0].chat.map((message) => message.body)).toEqual(["Keep this ordinary message"]);
+      expect((reopened.contacts[0].draftHistory ?? []).map((history) => history.drafts)).toEqual([["Ordinary draft"]]);
+    });
+  }, 20_000);
+
+  it("persists monotonic learning deletion markers while encrypted recovery is enabled", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.cloudRecovery.enabled = true;
+    workspace.contacts = [{
+      id: "contact-1", name: "Alex", headline: "", profileNotes: "", platform: "linkedin", platformUrl: "",
+      chat: [{ id: "message-1", role: "them", body: "Keep this message", createdAt: "2026-08-09T00:00:00.000Z" }],
+      documents: [], outcomes: [], retentionDays: 90,
+      draftHistory: [{ id: "draft-1", agenda: "Keep", drafts: ["Keep this draft"], createdAt: "2026-08-09T00:00:00.000Z" }],
+    }];
+    workspace.feedback = [
+      { id: "eligible", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "", preferredResponse: "Eligible", outcome: "", reason: "", origin: "independently_user_authored", independentlyAuthoredAttested: true, eligibleForRetrieval: true, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
+      { id: "ordinary", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "Ordinary feedback", preferredResponse: "", outcome: "", reason: "", origin: "provider_assisted", independentlyAuthoredAttested: false, eligibleForRetrieval: false, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
+    ];
+    workspace.stageTrainingRecords = ["acknowledged", "pending"].map((suffix) => ({ id: `stage-${suffix}`, featureSchemaVersion: 1 as const, role: "Human Resource" as const, messageCountBucket: "low" as const, hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection" as const, humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" }));
+    workspace.pendingLearningRecords = ["acknowledged", "pending"].map((suffix) => ({ recordId: `record-${suffix}`, recordKind: "classifier" as const, sanitizedPayload: { recordKind: "classifier", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", provenance: "human_confirmed", classifierFeatures: { messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false } }, sourceCollection: "stageTrainingRecords" as const, sourceLocalId: `stage-${suffix}`, createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }));
+    workspace.cloudLearningSync = [{ recordId: "record-delete", contentDigest: "f".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" }];
+    await createDeviceVault(workspace);
+    await saveCloudRecoveryKey(await importRecoveryKey((await createRecoveryBundle()).encryptionKey));
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/vault") return new Promise<Response>(() => undefined);
+      if (path === "/api/learning/records" && init?.method === "PUT") return new Response(JSON.stringify({ accepted: [{ recordId: "record-acknowledged", contentDigest: "a".repeat(64) }], duplicates: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (path === "/api/learning/records/record-delete" && init?.method === "DELETE") return new Response(JSON.stringify({ deleted: true, recordId: "record-delete" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (path === "/api/learning" && init?.method === "DELETE") return new Response(JSON.stringify({ enabled: false, deleted: 2 }), { status: 200, headers: { "Content-Type": "application/json" } });
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
+    }));
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    await user.click(screen.getByRole("button", { name: "Retry cloud learning sync" }));
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace;
+      expect(reopened.pendingLearningRecords.map((row) => row.recordId)).toEqual(["record-pending"]);
+      expect(reopened.cloudLearningDeletionMarkers).toEqual([expect.objectContaining({ recordId: "record-acknowledged", disposition: "acknowledged", sourceLocalId: "stage-acknowledged" })]);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Delete cloud learning record record-delete" }));
+    await waitFor(async () => expect((await openDeviceVault()).workspace.cloudLearningDeletionMarkers).toEqual(expect.arrayContaining([expect.objectContaining({ recordId: "record-delete", disposition: "deleted" })])));
+
+    await user.click(screen.getByRole("button", { name: "Disable and delete cloud learning" }));
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace;
+      expect(reopened.cloudLearningClearedAt).not.toBe("");
+      expect(reopened.feedback.map((row) => row.id)).toEqual(["ordinary"]);
+      expect(reopened.stageTrainingRecords).toEqual([]);
+      expect(reopened.pendingLearningRecords).toEqual([]);
+      expect(reopened.cloudLearningSync).toEqual([]);
+      expect(reopened.contacts[0].chat.map((message) => message.body)).toEqual(["Keep this message"]);
+      expect((reopened.contacts[0].draftHistory ?? []).map((history) => history.drafts)).toEqual([["Keep this draft"]]);
+      expect(reopened.cloudRecovery.enabled).toBe(true);
     });
   }, 20_000);
 

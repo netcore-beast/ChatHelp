@@ -173,6 +173,14 @@ export interface CloudLearningSyncEntry {
   updatedAt: string;
 }
 
+export interface CloudLearningDeletionMarker {
+  recordId: string;
+  disposition: "acknowledged" | "deleted";
+  sourceCollection: "feedback" | "stageTrainingRecords" | "";
+  sourceLocalId: string;
+  deletedAt: string;
+}
+
 export interface PendingLearningRecord {
   recordId: string;
   recordKind: "classifier" | "evaluation" | "generative";
@@ -247,6 +255,8 @@ export interface WorkspaceData {
   stageTrainingRecords: RelationshipStageFeatureRecord[];
   pendingLearningRecords: PendingLearningRecord[];
   cloudLearningSync: CloudLearningSyncEntry[];
+  cloudLearningDeletionMarkers: CloudLearningDeletionMarker[];
+  cloudLearningClearedAt: string;
 }
 
 export const CLOUDFLARE_MODEL_ID = "cloud:cloudflare:auto-llama-3.1-8b-gpt-oss-120b";
@@ -365,5 +375,7 @@ export function createEmptyWorkspace(): WorkspaceData {
     stageTrainingRecords: [],
     pendingLearningRecords: [],
     cloudLearningSync: [],
+    cloudLearningDeletionMarkers: [],
+    cloudLearningClearedAt: "",
   };
 }

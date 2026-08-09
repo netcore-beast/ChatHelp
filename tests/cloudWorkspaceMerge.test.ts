@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { clearDeletedCloudLearningSyncMetadata, clearDisabledCloudLearningState, syncPendingLearningRecords } from "../src/lib/cloudLearning";
 import { deleteContactEverywhere, mergeCloudWorkspaces } from "../src/lib/cloudWorkspaceMerge";
 import { createEmptyWorkspace, type Contact, type WorkspaceData } from "../src/lib/workspaceTypes";
 
@@ -15,6 +16,7 @@ function workspace(contacts: Contact[]): WorkspaceData {
 }
 
 describe("encrypted workspace merge", () => {
+  afterEach(() => vi.unstubAllGlobals());
   it("does not merge same-name contacts when their normalized profile URLs differ", async () => {
     const local = workspace([contact({ id: "local", name: "Alex Smith", profileUrl: "https://linkedin.com/in/alex-one" })]);
     const remote = workspace([contact({ id: "remote", name: "Alex Smith", profileUrl: "https://www.linkedin.com/in/alex-two/" })]);
@@ -104,6 +106,90 @@ describe("encrypted workspace merge", () => {
     expect(merged.pendingLearningRecords.map((row) => row.recordId)).toEqual(["local", "remote"]);
     expect(merged.pendingLearningRecords.map((row) => row.sourceLocalId)).toEqual(["local-source", "remote-source"]);
     expect(merged.cloudLearningSync).toEqual(remote.cloudLearningSync);
+  });
+
+  it("does not resurrect acknowledged learning sources or pending rows from a stale recovery conflict", async () => {
+    const remote = workspace([]);
+    remote.stageTrainingRecords = ["acknowledged", "pending"].map((suffix) => ({ id: `stage-${suffix}`, featureSchemaVersion: 1 as const, role: "Human Resource" as const, messageCountBucket: "low" as const, hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection" as const, humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" }));
+    remote.pendingLearningRecords = ["acknowledged", "pending"].map((suffix) => ({ recordId: `record-${suffix}`, recordKind: "classifier" as const, sanitizedPayload: classifierPayload("low"), sourceCollection: "stageTrainingRecords" as const, sourceLocalId: `stage-${suffix}`, createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }));
+    const local = structuredClone(remote);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ accepted: [{ recordId: "record-acknowledged", contentDigest: "a".repeat(64) }], duplicates: [] }), { status: 200, headers: { "Content-Type": "application/json" } })));
+
+    const acknowledged = await syncPendingLearningRecords(local, new Date("2026-08-09T01:00:00.000Z"));
+    const merged = await mergeCloudWorkspaces(acknowledged, remote);
+
+    expect(merged.pendingLearningRecords.map((row) => row.recordId)).toEqual(["record-pending"]);
+    expect(merged.stageTrainingRecords.map((row) => row.id)).toEqual(["stage-pending"]);
+    expect(merged.cloudLearningSync.map((row) => row.recordId)).toEqual(["record-acknowledged"]);
+  });
+
+  it("does not resurrect individually deleted sync metadata from a stale recovery conflict", async () => {
+    const remote = workspace([]);
+    remote.cloudLearningSync = [
+      { recordId: "record-deleted", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" },
+      { recordId: "record-retained", contentDigest: "b".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" },
+    ];
+    const local = clearDeletedCloudLearningSyncMetadata(structuredClone(remote), "record-deleted");
+
+    expect((await mergeCloudWorkspaces(local, remote)).cloudLearningSync.map((row) => row.recordId)).toEqual(["record-retained"]);
+  });
+
+  it("does not resurrect globally cleared eligible learning from a stale recovery conflict", async () => {
+    const remote = workspace([]);
+    remote.feedback = [
+      { id: "eligible", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "", preferredResponse: "Keep eligible feedback", outcome: "", reason: "", origin: "independently_user_authored", independentlyAuthoredAttested: true, eligibleForRetrieval: true, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
+      { id: "ordinary", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "Ordinary feedback", preferredResponse: "", outcome: "", reason: "", origin: "provider_assisted", independentlyAuthoredAttested: false, eligibleForRetrieval: false, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
+    ];
+    remote.stageTrainingRecords = [{ id: "stage-1", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" }];
+    remote.pendingLearningRecords = [{ recordId: "record-1", recordKind: "classifier", sanitizedPayload: classifierPayload("low"), sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-1", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
+    remote.cloudLearningSync = [{ recordId: "record-2", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" }];
+    const local = clearDisabledCloudLearningState(structuredClone(remote));
+
+    const merged = await mergeCloudWorkspaces(local, remote);
+    expect(merged.feedback.map((row) => row.id)).toEqual(["ordinary"]);
+    expect(merged.stageTrainingRecords).toEqual([]);
+    expect(merged.pendingLearningRecords).toEqual([]);
+    expect(merged.cloudLearningSync).toEqual([]);
+  });
+
+  it("retains the newest learning deletion markers when the encrypted marker bound is exceeded", async () => {
+    const local = workspace([]);
+    local.cloudLearningDeletionMarkers = [{ recordId: "record-newest", disposition: "deleted", sourceCollection: "", sourceLocalId: "", deletedAt: "2026-08-09T12:00:00.000Z" }];
+    const remote = workspace([]);
+    remote.cloudLearningDeletionMarkers = Array.from({ length: 1_000 }, (_, index) => ({
+      recordId: `record-${index}`,
+      disposition: "deleted" as const,
+      sourceCollection: "" as const,
+      sourceLocalId: "",
+      deletedAt: new Date(Date.UTC(2026, 7, 1, 0, 0, index)).toISOString(),
+    }));
+    remote.cloudLearningSync = [{ recordId: "record-newest", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T11:00:00.000Z" }];
+
+    const merged = await mergeCloudWorkspaces(local, remote);
+    const staleConflict = await mergeCloudWorkspaces(merged, remote);
+
+    expect(merged.cloudLearningDeletionMarkers).toHaveLength(1_000);
+    expect(merged.cloudLearningDeletionMarkers.some((marker) => marker.recordId === "record-newest")).toBe(true);
+    expect(staleConflict.cloudLearningSync).toEqual([]);
+  });
+
+  it("compares learning clear cutoffs by instant instead of timestamp spelling", async () => {
+    const local = workspace([]);
+    local.cloudLearningClearedAt = "2026-08-09T05:00:00+02:00";
+    const remote = workspace([]);
+    remote.cloudLearningClearedAt = "2026-08-09T04:00:00.000Z";
+    remote.feedback = [{ id: "stale-offset", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "", preferredResponse: "Stale", outcome: "", reason: "", origin: "independently_user_authored", independentlyAuthoredAttested: true, eligibleForRetrieval: true, enabled: true, createdAt: "2026-08-09T05:00:00+02:00", updatedAt: "2026-08-09T05:00:00+02:00" }];
+    remote.stageTrainingRecords = [{ id: "stale-stage-offset", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T05:00:00+02:00" }];
+    remote.pendingLearningRecords = [{ recordId: "stale-pending-offset", recordKind: "classifier", sanitizedPayload: classifierPayload("low"), sourceCollection: "stageTrainingRecords", sourceLocalId: "stale-stage-offset", createdAt: "2026-08-09T05:00:00+02:00", expiresAt: "2027-08-09T05:00:00+02:00" }];
+    remote.cloudLearningSync = [{ recordId: "stale-sync-offset", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T05:00:00+02:00" }];
+
+    const merged = await mergeCloudWorkspaces(local, remote);
+
+    expect(merged.cloudLearningClearedAt).toBe("2026-08-09T04:00:00.000Z");
+    expect(merged.feedback).toEqual([]);
+    expect(merged.stageTrainingRecords).toEqual([]);
+    expect(merged.pendingLearningRecords).toEqual([]);
+    expect(merged.cloudLearningSync).toEqual([]);
   });
 });
 

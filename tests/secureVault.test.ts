@@ -263,7 +263,7 @@ describe("encrypted device vault", () => {
     expect(serialized).not.toContain("provider_assisted");
   });
 
-  it("bounds persisted pending and sync metadata while retaining the newest valid records", () => {
+  it("bounds persisted pending, sync, and deletion metadata while retaining the newest valid records", () => {
     const entry = (index: number) => ({
       recordId: `record-${index}`,
       recordKind: "classifier" as const,
@@ -278,12 +278,16 @@ describe("encrypted device vault", () => {
     });
     const pending = Array.from({ length: 1_001 }, (_, index) => entry(index));
     const sync = pending.map((record) => ({ recordId: record.recordId, contentDigest: "a".repeat(63) + (record.recordId.endsWith("0") ? "0" : "1"), status: "pending" as const, updatedAt: record.createdAt }));
-    const migrated = normalizeWorkspace({ version: 14, pendingLearningRecords: pending, cloudLearningSync: sync });
+    const markers = pending.map((record) => ({ recordId: record.recordId, disposition: "acknowledged", sourceCollection: "stageTrainingRecords", sourceLocalId: record.sourceLocalId, deletedAt: record.createdAt }));
+    const migrated = normalizeWorkspace({ version: 14, pendingLearningRecords: pending, cloudLearningSync: sync, cloudLearningDeletionMarkers: markers, cloudLearningClearedAt: "2026-08-01T00:00:00.000Z" });
 
     expect(migrated.pendingLearningRecords).toHaveLength(1_000);
     expect(migrated.pendingLearningRecords[0].recordId).toBe("record-1");
     expect(migrated.cloudLearningSync).toHaveLength(1_000);
     expect(migrated.cloudLearningSync[0].recordId).toBe("record-1");
+    expect(migrated.cloudLearningDeletionMarkers).toHaveLength(1_000);
+    expect(migrated.cloudLearningDeletionMarkers[0].recordId).toBe("record-1");
+    expect(migrated.cloudLearningClearedAt).toBe("2026-08-01T00:00:00.000Z");
   });
 
   it("stores no readable workspace content and opens without a passphrase", async () => {

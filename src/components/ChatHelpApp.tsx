@@ -17,6 +17,7 @@ import { createRulesDocumentDownload, mergeRulesDocument } from "@/lib/rulesDocu
 import { createCloudSafeWorkspace, createRecoveryBundle, decryptCloudWorkspace, encryptCloudWorkspace, importRecoveryKey, parseRecoveryBundle, serializeRecoveryBundle, summarizeCloudBackup, type CloudEnvironment } from "@/lib/cloudRecovery";
 import { deleteCloudVault, readCloudVault } from "@/lib/cloudRecoveryClient";
 import { synchronizeCloudWorkspace, type CloudSyncState } from "@/lib/cloudRecoverySync";
+import { applyCloudLearningSyncDelta, clearDeletedCloudLearningSyncMetadata, clearDisabledCloudLearningState, deleteCloudLearningRecord, disableAndDeleteCloudLearning, syncPendingLearningRecords } from "@/lib/cloudLearning";
 import { deleteContactEverywhere, mergeCloudWorkspaces } from "@/lib/cloudWorkspaceMerge";
 import {
   LINKEDIN_EXTENSION_SOURCE,
@@ -338,6 +339,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [now, setNow] = useState(() => Date.now());
   const [saveStatus, setSaveStatus] = useState("Encrypted");
   const [cloudSyncState, setCloudSyncState] = useState<CloudSyncState>(() => baseCloudSyncState(initial.cloudRecovery.enabled ? "preparing" : "off", initial.cloudRecovery.revision));
+  const [cloudLearningSyncStatus, setCloudLearningSyncStatus] = useState("");
   const [localSaveSequence, setLocalSaveSequence] = useState(0);
   const [newContactName, setNewContactName] = useState("");
   const [newPlatform, setNewPlatform] = useState<ConversationPlatform>("linkedin");
@@ -543,6 +545,50 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setSaveStatus("Unsaved changes");
     if (workspace.cloudRecovery.enabled) setCloudSyncState(baseCloudSyncState("pending", workspace.cloudRecovery.revision));
     setWorkspace(updater);
+  }
+
+  async function retryPendingCloudLearningSync() {
+    const current = workspaceRef.current;
+    if (!current.pendingLearningRecords.length) {
+      setCloudLearningSyncStatus("");
+      return;
+    }
+    setCloudLearningSyncStatus("Syncing approved cloud learning records…");
+    const synced = await syncPendingLearningRecords(current);
+    const reconciled = applyCloudLearningSyncDelta(workspaceRef.current, current, synced);
+    if (reconciled !== workspaceRef.current) updateWorkspace((latest) => applyCloudLearningSyncDelta(latest, current, synced));
+    if (reconciled.pendingLearningRecords.length) {
+      setCloudLearningSyncStatus("Cloud learning sync pending");
+      return;
+    }
+    setCloudLearningSyncStatus("Cloud learning sync complete");
+  }
+
+  async function deleteSyncedCloudLearningRecord(recordId: string) {
+    setCloudLearningSyncStatus("Deleting cloud learning record…");
+    try {
+      const result = await deleteCloudLearningRecord(recordId);
+      if (!result.deleted) {
+        setCloudLearningSyncStatus("Cloud learning deletion pending");
+        return;
+      }
+      updateWorkspace((current) => clearDeletedCloudLearningSyncMetadata(current, recordId));
+      setCloudLearningSyncStatus("Cloud learning record deleted");
+    } catch {
+      setCloudLearningSyncStatus("Cloud learning deletion pending");
+    }
+  }
+
+  async function disableAndDeleteSyncedCloudLearning() {
+    if (!window.confirm("Disable cloud learning and permanently delete every approved cloud learning record? Ordinary messages and drafts will remain in this encrypted workspace.")) return;
+    setCloudLearningSyncStatus("Disabling and deleting cloud learning…");
+    try {
+      await disableAndDeleteCloudLearning();
+      updateWorkspace(clearDisabledCloudLearningState);
+      setCloudLearningSyncStatus("Cloud learning disabled and deleted");
+    } catch {
+      setCloudLearningSyncStatus("Cloud learning deletion pending");
+    }
   }
 
   const setActiveContactId = useCallback((contactId: string) => {
@@ -1442,6 +1488,10 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 <label className="consent-check"><input type="checkbox" aria-label="Enable encrypted personal learning" checked={workspace.personalLearning.enabled} onChange={(event) => updateWorkspace((current) => ({ ...current, personalLearning: { enabled: event.target.checked } }))} /><span>Enable encrypted personal learning for this workspace.</span></label>
                 <p className="section-explainer">Retrieval uses your approved examples as context and does not retrain any model. Feedback and examples stay in the encrypted workspace and its opaque encrypted recovery copy. Turning this off immediately excludes every example from generation.</p>
                 <div className="learning-summary"><strong>{workspace.feedback.filter((item) => item.eligibleForRetrieval && item.enabled).length} approved learning examples</strong><span>{workspace.feedback.length} feedback records stored locally</span></div>
+                {workspace.pendingLearningRecords.length > 0 && <div className="learning-summary" role="status" aria-live="polite"><strong>{cloudLearningSyncStatus || "Cloud learning sync pending"}</strong><button type="button" onClick={() => void retryPendingCloudLearningSync()}>Retry cloud learning sync</button></div>}
+                {workspace.pendingLearningRecords.length === 0 && cloudLearningSyncStatus && <p className="status" role="status" aria-live="polite">{cloudLearningSyncStatus}</p>}
+                {workspace.cloudLearningSync.length > 0 && <div className="learning-example-list" aria-label="Synced cloud learning records">{workspace.cloudLearningSync.map((entry) => <article className="learning-example" key={entry.recordId}><span>{entry.recordId}</span><button type="button" className="danger-link" aria-label={`Delete cloud learning record ${entry.recordId}`} onClick={() => void deleteSyncedCloudLearningRecord(entry.recordId)}>Delete cloud record</button></article>)}</div>}
+                <div className="learning-example-actions"><button type="button" className="danger-link" aria-label="Disable and delete cloud learning" onClick={() => void disableAndDeleteSyncedCloudLearning()}>Disable &amp; delete cloud learning</button></div>
                 {workspace.feedback.length === 0 ? <p className="section-explainer">No feedback has been saved. Enable learning, generate a reply, then accept, edit, or reject it from the draft card.</p> : <div className="learning-example-list">
                   {workspace.feedback.slice().reverse().map((item) => {
                     const independentlyAuthored = item.origin === "independently_user_authored" && item.independentlyAuthoredAttested;

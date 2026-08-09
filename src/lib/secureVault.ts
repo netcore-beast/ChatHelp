@@ -1,4 +1,4 @@
-import { CONVERSATION_GOAL_MAX_CHARS, MESSAGING_ROLES, PLAYBOOK_GOAL_MAX_CHARS, PLAYBOOK_RULES_MAX_CHARS, PLAYBOOK_VOICE_MAX_CHARS, createDefaultMessagingGuidance, createEmptyWorkspace, isMessagingRole, normalizeMessagingRole, normalizePersonalGuidelines, normalizeRelationshipStage, normalizeWorkspaceModelId, type CloudLearningSyncEntry, type Contact, type ConversationAttachment, type Message, type PendingLearningRecord, type PipelineStage, type RolePlaybooks, type WorkspaceData } from "./workspaceTypes";
+import { CONVERSATION_GOAL_MAX_CHARS, MESSAGING_ROLES, PLAYBOOK_GOAL_MAX_CHARS, PLAYBOOK_RULES_MAX_CHARS, PLAYBOOK_VOICE_MAX_CHARS, createDefaultMessagingGuidance, createEmptyWorkspace, isMessagingRole, normalizeMessagingRole, normalizePersonalGuidelines, normalizeRelationshipStage, normalizeWorkspaceModelId, type CloudLearningDeletionMarker, type CloudLearningSyncEntry, type Contact, type ConversationAttachment, type Message, type PendingLearningRecord, type PipelineStage, type RolePlaybooks, type WorkspaceData } from "./workspaceTypes";
 import { PIPELINE_STAGES } from "./linkedinExtension";
 import { repairLegacyLinkedInMessages } from "./messageDedup";
 import { buildRulebookDigest } from "./rulebookDigest";
@@ -17,6 +17,7 @@ const DEVICE_AAD = new TextEncoder().encode("ChatHelp device vault v2");
 export const KDF_ITERATIONS = 600_000;
 const MAX_PENDING_LEARNING_RECORDS = 1_000;
 const MAX_CLOUD_LEARNING_SYNC_ENTRIES = 1_000;
+const MAX_CLOUD_LEARNING_DELETION_MARKERS = 1_000;
 
 const GOAL_CATEGORY_BY_STAGE = {
   new_connection: "connect",
@@ -404,6 +405,36 @@ function normalizeCloudLearningSyncEntry(value: unknown, fallbackNow: string): C
   return { recordId, contentDigest, status: item.status, updatedAt: normalizedLearningTimestamp(item.updatedAt, fallbackNow) };
 }
 
+function normalizeCloudLearningDeletionMarker(value: unknown, fallbackNow: string): CloudLearningDeletionMarker | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as Record<string, unknown>;
+  const recordId = typeof item.recordId === "string" && /^[a-z0-9-]{1,64}$/u.test(item.recordId) ? item.recordId : "";
+  const sourceCollection = item.sourceCollection === "feedback" || item.sourceCollection === "stageTrainingRecords" ? item.sourceCollection : "";
+  const sourceLocalId = typeof item.sourceLocalId === "string" ? item.sourceLocalId.slice(0, 200) : "";
+  if (!recordId || item.disposition !== "acknowledged" && item.disposition !== "deleted") return null;
+  if (item.disposition === "acknowledged" && (!sourceCollection || !sourceLocalId)) return null;
+  const deletedAt = new Date(Date.parse(normalizedLearningTimestamp(item.deletedAt, fallbackNow))).toISOString();
+  return { recordId, disposition: item.disposition, sourceCollection, sourceLocalId, deletedAt };
+}
+
+function normalizeCloudLearningDeletionMarkers(value: unknown, fallbackNow: string): CloudLearningDeletionMarker[] {
+  if (!Array.isArray(value)) return [];
+  const merged = new Map<string, CloudLearningDeletionMarker>();
+  for (const marker of value) {
+    const normalized = normalizeCloudLearningDeletionMarker(marker, fallbackNow);
+    if (!normalized) continue;
+    const current = merged.get(normalized.recordId);
+    if (!current
+        || current.disposition === "deleted" && normalized.disposition === "deleted" && Date.parse(normalized.deletedAt) > Date.parse(current.deletedAt)
+        || current.disposition !== "deleted" && (normalized.disposition === "deleted" || Date.parse(normalized.deletedAt) > Date.parse(current.deletedAt))) merged.set(normalized.recordId, normalized);
+  }
+  return [...merged.values()].sort((left, right) => Date.parse(left.deletedAt) - Date.parse(right.deletedAt)
+    || left.recordId.localeCompare(right.recordId)
+    || left.disposition.localeCompare(right.disposition)
+    || left.sourceCollection.localeCompare(right.sourceCollection)
+    || left.sourceLocalId.localeCompare(right.sourceLocalId)).slice(-MAX_CLOUD_LEARNING_DELETION_MARKERS);
+}
+
 function appendUniquePendingRecords(workspace: WorkspaceData, records: PendingLearningRecord[]): WorkspaceData {
   const seen = new Set(workspace.pendingLearningRecords.map((record) => record.recordId));
   const pendingLearningRecords = [...workspace.pendingLearningRecords];
@@ -610,6 +641,10 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
         return normalized ? [normalized] : [];
       })
       : [],
+    cloudLearningDeletionMarkers: normalizeCloudLearningDeletionMarkers(source.cloudLearningDeletionMarkers, fallbackNow),
+    cloudLearningClearedAt: typeof source.cloudLearningClearedAt === "string" && Number.isFinite(Date.parse(source.cloudLearningClearedAt))
+      ? new Date(Date.parse(source.cloudLearningClearedAt)).toISOString()
+      : "",
   };
   return source.version === 14 ? normalized : migrateEligibleLegacyLearning(normalized);
 }
