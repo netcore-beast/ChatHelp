@@ -87,6 +87,7 @@ function anthropicResponse(value: unknown) {
 function workerEnv(options: { anthropicConfigured?: boolean } = {}) {
   const fallbackResponses = [ANALYSIS, CANDIDATE, REVIEW];
   return {
+    DEPLOYMENT_ENVIRONMENT: "testing",
     ...(options.anthropicConfigured === false ? {} : { ANTHROPIC_API_KEY: "[runtime-secret]" }),
     ACCESS_TEAM_DOMAIN: "https://dialogmint.cloudflareaccess.com",
     ACCESS_AUD_TESTING: "testing-audience",

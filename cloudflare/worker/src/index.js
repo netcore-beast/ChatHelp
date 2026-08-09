@@ -1,4 +1,5 @@
 import { authenticateAccessRequest } from "./accessAuth.js";
+import { cleanupExpiredLearningRecords, handleLearningRequest } from "./neonLearning.js";
 import { cleanupExpiredVaults, handleVaultRequest } from "./neonVault.js";
 import {
   ANTHROPIC_MODEL,
@@ -265,7 +266,8 @@ export async function handleRequest(request, env, options = {}) {
     });
   }
 
-  if (url.pathname !== "/api/drafts" && url.pathname !== "/api/vault") return env.ASSETS ? env.ASSETS.fetch(request) : json({ error: "Not found." }, 404);
+  const isLearningRoute = /^\/api\/learning(?:\/|$)/u.test(url.pathname);
+  if (url.pathname !== "/api/drafts" && url.pathname !== "/api/vault" && !isLearningRoute) return env.ASSETS ? env.ASSETS.fetch(request) : json({ error: "Not found." }, 404);
   const origin = request.headers.get("Origin");
   if (origin && origin !== url.origin) return json({ error: "Cross-origin requests are not allowed." }, 403);
 
@@ -277,6 +279,7 @@ export async function handleRequest(request, env, options = {}) {
   }
 
   if (url.pathname === "/api/vault") return handleVaultRequest(request, env, url, identity, options);
+  if (isLearningRoute) return await handleLearningRequest(request, env, url, identity, options) ?? json({ error: "Not found." }, 404);
   if (request.method !== "POST") return json({ error: "Method not allowed." }, 405, { Allow: "POST" });
 
   const rate = await env.DRAFT_RATE_LIMITER.limit({ key: identity.accountId });
@@ -327,10 +330,17 @@ export async function handleRequest(request, env, options = {}) {
   }
 }
 
+export function cleanupScheduledData(env, options = {}) {
+  return Promise.all([
+    cleanupExpiredVaults(env, options),
+    cleanupExpiredLearningRecords(env, options),
+  ]);
+}
+
 const worker = {
   fetch: handleRequest,
   scheduled(_controller, env, context) {
-    context.waitUntil(cleanupExpiredVaults(env));
+    context.waitUntil(cleanupScheduledData(env));
   },
 };
 
