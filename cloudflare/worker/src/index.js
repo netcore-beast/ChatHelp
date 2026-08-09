@@ -1,4 +1,5 @@
 import { authenticateAccessRequest } from "./accessAuth.js";
+import { cleanupExpiredUsageAttempts, handleUsageRequest } from "./aiUsage.js";
 import { cleanupExpiredLearningRecords, handleLearningRequest, retrieveLearningExamples } from "./neonLearning.js";
 import { cleanupExpiredVaults, handleVaultRequest } from "./neonVault.js";
 import {
@@ -285,7 +286,8 @@ export async function handleRequest(request, env, options = {}) {
   }
 
   const isLearningRoute = /^\/api\/learning(?:\/|$)/u.test(url.pathname);
-  if (url.pathname !== "/api/drafts" && url.pathname !== "/api/vault" && !isLearningRoute) return env.ASSETS ? env.ASSETS.fetch(request) : json({ error: "Not found." }, 404);
+  const isUsageRoute = url.pathname === "/api/usage";
+  if (url.pathname !== "/api/drafts" && url.pathname !== "/api/vault" && !isLearningRoute && !isUsageRoute) return env.ASSETS ? env.ASSETS.fetch(request) : json({ error: "Not found." }, 404);
   const origin = request.headers.get("Origin");
   if (origin && origin !== url.origin) return json({ error: "Cross-origin requests are not allowed." }, 403);
 
@@ -298,6 +300,7 @@ export async function handleRequest(request, env, options = {}) {
 
   if (url.pathname === "/api/vault") return handleVaultRequest(request, env, url, identity, options);
   if (isLearningRoute) return await handleLearningRequest(request, env, url, identity, options) ?? json({ error: "Not found." }, 404);
+  if (isUsageRoute) return await handleUsageRequest(request, env, url, identity, options) ?? json({ error: "Not found." }, 404);
   if (request.method !== "POST") return json({ error: "Method not allowed." }, 405, { Allow: "POST" });
 
   const rate = await env.DRAFT_RATE_LIMITER.limit({ key: identity.accountId });
@@ -352,7 +355,10 @@ export async function handleRequest(request, env, options = {}) {
 export function cleanupScheduledData(env, options = {}) {
   return Promise.all([
     cleanupExpiredVaults(env, options),
-    cleanupExpiredLearningRecords(env, options),
+    Promise.all([
+      cleanupExpiredLearningRecords(env, options),
+      cleanupExpiredUsageAttempts(env, options),
+    ]).then(([learningDeleted]) => learningDeleted),
   ]);
 }
 

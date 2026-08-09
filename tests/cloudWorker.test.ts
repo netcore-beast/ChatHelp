@@ -395,6 +395,25 @@ describe("Cloudflare private inference Worker", () => {
     expect(crossOriginEnv.DRAFT_RATE_LIMITER.limit).not.toHaveBeenCalled();
   });
 
+  it("authenticates usage reads before rate limiting and returns a no-store current-account summary", async () => {
+    const unauthenticatedEnv = workerEnv();
+    const unauthenticated = await handleRequest(new Request(`${TESTING_ORIGIN}/api/usage`), unauthenticatedEnv, { verifyAccess });
+    expect(unauthenticated.status).toBe(401);
+    expect(unauthenticatedEnv.DRAFT_RATE_LIMITER.limit).not.toHaveBeenCalled();
+
+    const authenticatedEnv = workerEnv();
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+    const authenticated = await handleRequest(new Request(`${TESTING_ORIGIN}/api/usage`, {
+      headers: { "Cf-Access-Jwt-Assertion": SYNTHETIC_ASSERTION },
+    }), authenticatedEnv, { verifyAccess, query, now: new Date("2026-08-09T12:00:00.000Z") });
+    expect(authenticated.status).toBe(200);
+    expect(authenticated.headers.get("Cache-Control")).toBe("no-store");
+    expect(authenticatedEnv.DRAFT_RATE_LIMITER.limit).toHaveBeenCalledWith({
+      key: expect.stringMatching(/^usage:[0-9a-f]{64}$/u),
+    });
+    expect(query.mock.calls[0][2][0]).toMatch(/^[0-9a-f]{64}$/u);
+  });
+
   it("keeps the authenticated encrypted-vault route available", async () => {
     const env = workerEnv();
     const response = await handleRequest(new Request(`${TESTING_ORIGIN}/api/vault`, {
