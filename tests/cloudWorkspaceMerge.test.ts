@@ -92,4 +92,28 @@ describe("encrypted workspace merge", () => {
     expect(JSON.stringify(deleted.deletionTombstones)).not.toContain("deleted-person");
     expect((await mergeCloudWorkspaces(deleted, otherDevice)).contacts).toEqual([]);
   });
+
+  it("merges bounded v14 learning metadata without losing encrypted local source references", async () => {
+    const local = workspace([]);
+    local.pendingLearningRecords = [{ recordId: "local", recordKind: "classifier", sanitizedPayload: classifierPayload("low"), sourceCollection: "stageTrainingRecords", sourceLocalId: "local-source", createdAt: "2026-08-01T00:00:00.000Z", expiresAt: "2027-08-01T00:00:00.000Z" }];
+    const remote = workspace([]);
+    remote.pendingLearningRecords = [{ recordId: "remote", recordKind: "classifier", sanitizedPayload: classifierPayload("medium"), sourceCollection: "stageTrainingRecords", sourceLocalId: "remote-source", createdAt: "2026-08-02T00:00:00.000Z", expiresAt: "2027-08-02T00:00:00.000Z" }];
+    remote.cloudLearningSync = [{ recordId: "remote", contentDigest: "a".repeat(64), status: "pending", updatedAt: "2026-08-02T00:00:00.000Z" }];
+
+    const merged = await mergeCloudWorkspaces(local, remote);
+    expect(merged.pendingLearningRecords.map((row) => row.recordId)).toEqual(["local", "remote"]);
+    expect(merged.pendingLearningRecords.map((row) => row.sourceLocalId)).toEqual(["local-source", "remote-source"]);
+    expect(merged.cloudLearningSync).toEqual(remote.cloudLearningSync);
+  });
 });
+
+function classifierPayload(messageCountBucket: "low" | "medium") {
+  return {
+    recordKind: "classifier",
+    roleId: "human_resource",
+    relationshipStage: "new_connection",
+    goalCategory: "connect",
+    provenance: "human_confirmed",
+    classifierFeatures: { messageCountBucket, hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false },
+  };
+}

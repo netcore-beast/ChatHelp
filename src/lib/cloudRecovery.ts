@@ -1,4 +1,4 @@
-import { applyRetention } from "./retention";
+import { applyLearningRetention } from "./retention";
 import { normalizeWorkspace } from "./secureVault";
 import { createEmptyWorkspace, type WorkspaceData } from "./workspaceTypes";
 
@@ -86,7 +86,7 @@ export async function importRecoveryKey(encodedKey: string): Promise<CryptoKey> 
 }
 
 export function createCloudSafeWorkspace(workspace: WorkspaceData, _environment: CloudEnvironment, now = Date.now()): WorkspaceData {
-  const retained = applyRetention(normalizeWorkspace(workspace), now);
+  const retained = applyLearningRetention(normalizeWorkspace(workspace), now);
   const empty = createEmptyWorkspace();
   return {
     ...retained,
@@ -100,14 +100,15 @@ export function createCloudSafeWorkspace(workspace: WorkspaceData, _environment:
       draftHistory: (contact.draftHistory ?? []).filter((draft) => retainedWithinCloudWindow(draft.createdAt, now)),
       lastSyncDiagnostic: undefined,
     })),
-    feedback: retained.feedback.filter((item) => retainedWithinCloudWindow(item.createdAt, now)),
+    feedback: retained.feedback,
     aiUsage: retained.aiUsage.filter((item) => retainedWithinCloudWindow(item.createdAt, now)),
   };
 }
 
 export async function encryptCloudWorkspace(workspace: WorkspaceData, key: CryptoKey, environment: CloudEnvironment, savedAt = new Date().toISOString()): Promise<CloudVaultEnvelopeV1> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const plaintext = new TextEncoder().encode(JSON.stringify(normalizeWorkspace(workspace)));
+  const now = Number.isFinite(Date.parse(savedAt)) ? Date.parse(savedAt) : Date.now();
+  const plaintext = new TextEncoder().encode(JSON.stringify(applyLearningRetention(normalizeWorkspace(workspace), now)));
   const ciphertext = new Uint8Array(await crypto.subtle.encrypt(
     { name: "AES-GCM", iv: iv as BufferSource, additionalData: recoveryAad(environment) as BufferSource },
     key,

@@ -166,6 +166,23 @@ export interface PersonalLearningSettings {
   enabled: boolean;
 }
 
+export interface CloudLearningSyncEntry {
+  recordId: string;
+  contentDigest: string;
+  status: "pending" | "synced" | "failed";
+  updatedAt: string;
+}
+
+export interface PendingLearningRecord {
+  recordId: string;
+  recordKind: "classifier" | "evaluation" | "generative";
+  sanitizedPayload: Record<string, unknown>;
+  sourceCollection: "feedback" | "stageTrainingRecords";
+  sourceLocalId: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
 export type StageMessageCountBucket = "unknown" | "low" | "medium" | "high";
 
 export interface RelationshipStageFeatureRecord {
@@ -215,7 +232,7 @@ export interface AiUsageEntry {
 }
 
 export interface WorkspaceData {
-  version: 13;
+  version: 14;
   modelId: string;
   cloudInference: CloudInferenceSettings;
   cloudRecovery: CloudRecoverySettings;
@@ -228,6 +245,8 @@ export interface WorkspaceData {
   personalGuidelines: string;
   personalLearning: PersonalLearningSettings;
   stageTrainingRecords: RelationshipStageFeatureRecord[];
+  pendingLearningRecords: PendingLearningRecord[];
+  cloudLearningSync: CloudLearningSyncEntry[];
 }
 
 export const CLOUDFLARE_MODEL_ID = "cloud:cloudflare:auto-llama-3.1-8b-gpt-oss-120b";
@@ -321,7 +340,7 @@ export function updateRolePlaybookRules(playbook: RolePlaybook, boundaries: stri
 export function createEmptyWorkspace(): WorkspaceData {
   const guidance = createDefaultMessagingGuidance();
   return {
-    version: 13,
+    version: 14,
     modelId: DEFAULT_MODEL_ID,
     cloudInference: {
       consentedAt: "",
@@ -342,7 +361,9 @@ export function createEmptyWorkspace(): WorkspaceData {
     feedback: [],
     aiUsage: [],
     personalGuidelines: "",
-    personalLearning: { enabled: false },
+    personalLearning: { enabled: true },
     stageTrainingRecords: [],
+    pendingLearningRecords: [],
+    cloudLearningSync: [],
   };
 }

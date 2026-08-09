@@ -1,6 +1,6 @@
 import { normalizeLinkedInConversationUrl, normalizeLinkedInProfileUrl } from "./linkedinExtension";
 import { normalizeWorkspace } from "./secureVault";
-import { createDefaultMessagingGuidance, type Contact, type Message, type WorkspaceData } from "./workspaceTypes";
+import { createDefaultMessagingGuidance, type CloudLearningSyncEntry, type Contact, type Message, type PendingLearningRecord, type WorkspaceData } from "./workspaceTypes";
 
 function normalizedText(value: string): string {
   return value.trim().replace(/\s+/g, " ").normalize("NFKC").toLocaleLowerCase();
@@ -54,6 +54,27 @@ function mergeById<T extends { id: string }>(local: T[] = [], remote: T[] = []):
     }
   }
   return result;
+}
+
+function mergePendingLearningRecords(local: PendingLearningRecord[], remote: PendingLearningRecord[]): PendingLearningRecord[] {
+  const result = [...local];
+  const ids = new Set(local.map((item) => item.recordId));
+  for (const item of remote) {
+    if (!ids.has(item.recordId)) {
+      result.push(item);
+      ids.add(item.recordId);
+    }
+  }
+  return result;
+}
+
+function mergeCloudLearningSync(local: CloudLearningSyncEntry[], remote: CloudLearningSyncEntry[]): CloudLearningSyncEntry[] {
+  const merged = new Map<string, CloudLearningSyncEntry>();
+  for (const entry of [...local, ...remote]) {
+    const current = merged.get(entry.recordId);
+    if (!current || entry.updatedAt > current.updatedAt) merged.set(entry.recordId, entry);
+  }
+  return [...merged.values()];
 }
 
 function laterRemote(local: Contact, remote: Contact): boolean {
@@ -186,6 +207,9 @@ export async function mergeCloudWorkspaces(localValue: WorkspaceData, remoteValu
     guidance: mergeGuidance(local.guidance, remote.guidance),
     feedback: mergeById(local.feedback, remappedFeedback),
     aiUsage: mergeById(local.aiUsage, remappedUsage),
+    stageTrainingRecords: mergeById(local.stageTrainingRecords, remote.stageTrainingRecords),
+    pendingLearningRecords: mergePendingLearningRecords(local.pendingLearningRecords, remote.pendingLearningRecords),
+    cloudLearningSync: mergeCloudLearningSync(local.cloudLearningSync, remote.cloudLearningSync),
     deletionTombstones: tombstones,
   });
 }

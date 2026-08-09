@@ -39,7 +39,7 @@ describe("encrypted device vault", () => {
       },
     });
 
-    expect(workspace.version).toBe(13);
+    expect(workspace.version).toBe(14);
     expect(workspace.guidance.selectedRole).toBe("Human Resource");
     expect(workspace.inboxRole).toBe("Human Resource");
     expect(workspace.guidance.playbooks["Human Resource"]).toEqual({
@@ -177,7 +177,7 @@ describe("encrypted device vault", () => {
       }],
     });
 
-    expect(migrated.version).toBe(13);
+    expect(migrated.version).toBe(14);
     expect(migrated.personalGuidelines).toBe("Prefer one thoughtful question.");
     expect(migrated.contacts[0]).toMatchObject({
       relationshipStage: "new_connection",
@@ -209,7 +209,7 @@ describe("encrypted device vault", () => {
         createdAt: "2026-08-01T00:00:00.000Z",
       }],
     });
-    expect(legacy.personalLearning).toEqual({ enabled: false });
+    expect(legacy.personalLearning).toEqual({ enabled: true });
     expect(legacy.feedback[0]).toMatchObject({ action: "accepted", origin: "provider_assisted", eligibleForRetrieval: false });
 
     legacy.personalLearning.enabled = true;
@@ -227,6 +227,63 @@ describe("encrypted device vault", () => {
     const reopened = (await openDeviceVault()).workspace;
     expect(reopened.personalLearning.enabled).toBe(true);
     expect(reopened.feedback[0]).toMatchObject({ eligibleForRetrieval: true, preferredResponse: "What would make this opportunity useful to you?" });
+  });
+
+  it("migrates version 13 learning to bounded default-on version 14 metadata without copying feedback", () => {
+    const migrated = normalizeWorkspace({
+      version: 13,
+      feedback: [{
+        id: "legacy-feedback", contactId: "alex", draft: "Provider draft", preferredResponse: "A private reply",
+        action: "accepted", origin: "independently_user_authored", independentlyAuthoredAttested: true,
+        eligibleForRetrieval: true, createdAt: "2026-08-01T00:00:00.000Z",
+      }],
+      stageTrainingRecords: [{
+        id: "eligible-stage", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "medium",
+        hasIncomingQuestion: true, hasNeedSignal: false, hasPermissionSignal: true, hasValueDiscussionSignal: false,
+        hasNextStepSignal: false, semanticTokens: ["confidential-token"], confirmedStage: "ask_permission",
+        humanConfirmed: true, createdAt: "2026-08-01T00:00:00.000Z",
+      }, {
+        id: "provider-assisted-stage", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low",
+        hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false,
+        hasNextStepSignal: false, semanticTokens: ["must-not-copy"], confirmedStage: "new_connection",
+        humanConfirmed: false, createdAt: "2026-08-01T00:00:00.000Z",
+      }],
+    });
+
+    expect(migrated.version).toBe(14);
+    expect(migrated.personalLearning.enabled).toBe(true);
+    expect(migrated.cloudLearningSync).toEqual([]);
+    expect(migrated.feedback).toHaveLength(1);
+    expect(migrated.stageTrainingRecords.map((record) => record.id)).toEqual(["eligible-stage", "provider-assisted-stage"]);
+    expect(migrated.pendingLearningRecords.map((row) => row.recordKind)).toEqual(["classifier"]);
+    const serialized = JSON.stringify(migrated.pendingLearningRecords);
+    expect(serialized).not.toContain("semanticTokens");
+    expect(serialized).not.toContain("confidential-token");
+    expect(serialized).not.toContain("conversationGoal");
+    expect(serialized).not.toContain("provider_assisted");
+  });
+
+  it("bounds persisted pending and sync metadata while retaining the newest valid records", () => {
+    const entry = (index: number) => ({
+      recordId: `record-${index}`,
+      recordKind: "classifier" as const,
+      sanitizedPayload: {
+        recordKind: "classifier", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", provenance: "human_confirmed",
+        classifierFeatures: { messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false },
+      },
+      sourceCollection: "stageTrainingRecords" as const,
+      sourceLocalId: `source-${index}`,
+      createdAt: "2026-08-01T00:00:00.000Z",
+      expiresAt: "2027-08-01T00:00:00.000Z",
+    });
+    const pending = Array.from({ length: 1_001 }, (_, index) => entry(index));
+    const sync = pending.map((record) => ({ recordId: record.recordId, contentDigest: "a".repeat(63) + (record.recordId.endsWith("0") ? "0" : "1"), status: "pending" as const, updatedAt: record.createdAt }));
+    const migrated = normalizeWorkspace({ version: 14, pendingLearningRecords: pending, cloudLearningSync: sync });
+
+    expect(migrated.pendingLearningRecords).toHaveLength(1_000);
+    expect(migrated.pendingLearningRecords[0].recordId).toBe("record-1");
+    expect(migrated.cloudLearningSync).toHaveLength(1_000);
+    expect(migrated.cloudLearningSync[0].recordId).toBe("record-1");
   });
 
   it("stores no readable workspace content and opens without a passphrase", async () => {

@@ -31,8 +31,8 @@ function learningRecord(overrides: Record<string, unknown> = {}) {
 }
 
 describe("encrypted personal learning", () => {
-  it("defaults learning off and migrates legacy ratings without retrieval eligibility", () => {
-    expect(createEmptyWorkspace().personalLearning.enabled).toBe(false);
+  it("defaults learning on and migrates legacy ratings without retrieval eligibility", () => {
+    expect(createEmptyWorkspace().personalLearning.enabled).toBe(true);
 
     const accepted = normalizeFeedback({
       id: "legacy-useful",
