@@ -257,6 +257,8 @@ Workers AI usage uses exact response fields when present. Because usage is optio
 
 The Worker writes usage synchronously when practical. If a post-provider ledger write fails, it returns the already safe draft with `usage accounting pending`, schedules one bounded retry, and never exposes prompt data in retry state. Usage failure cannot discard a paid, validated draft.
 
+Before any provider call, the allowance read and insertion of that attempt's `started` row must succeed. If the Anthropic attempt cannot be recorded, Claude is skipped and Workers AI may run only after its own started row succeeds. If no provider attempt can be recorded, generation fails closed with an accounting-unavailable response and makes no provider call.
+
 ## Allowance behavior
 
 Calendar periods begin at 00:00 UTC on the first day of each month. The usage summary calculates:
@@ -275,7 +277,7 @@ Add `GET /api/usage` for the current account and current or explicitly bounded p
 
 Usage attempts are retained for 365 days and then removed by the same environment-scoped scheduled-cleanup design used for learning expiry. Allowance override rows remain until replaced or deleted because they are configuration, not behavioral history.
 
-Local eligible-feedback and stage-training records use the same 365-day learning retention before encryption and cloud-recovery serialization. The release closes the existing gap in which stage-training records bypass contact/workspace retention. Contact deletion removes locally associated eligible feedback; de-identified stage records without contact identity expire through the fixed learning-retention rule.
+Legacy and pending-unsynced local eligible-feedback and stage-training records use the same 365-day learning retention before encryption and cloud-recovery serialization. After successful cloud sync, local learning content is removed and only opaque sync metadata remains. The release closes the existing gap in which stage-training records bypass contact/workspace retention. Contact deletion removes locally associated eligible feedback; de-identified stage records without contact identity expire through the fixed learning-retention rule.
 
 ## Compact drafting interface
 
@@ -341,7 +343,7 @@ The layout must remain keyboard accessible, screen-reader labelled, responsive, 
 - Allowance exhausted: skip paid calls and explain which app allowance resets when.
 - Provider timeout or safe fallback: preserve existing bounded retry/fallback rules and show the final provider used.
 - Schema or provenance failure: reject the learning upload without rejecting the already generated draft.
-- Database responses, errors, and logs never contain record text, prompts, replies, identities, or credentials.
+- Database error bodies and logs never contain record text, prompts, replies, identities, or credentials. The authenticated management response may return only the current user's already sanitized generative targets as specified above.
 
 ## Training-readiness boundary
 
@@ -399,7 +401,8 @@ Implementation follows test-driven development. New failing tests precede produc
 11. failed, timed-out, and cancelled attempts are represented without text;
 12. accounting-degraded behavior returns a safe draft and never fabricates exact totals;
 13. legacy Llama pricing uses the versioned, explicitly estimated FP8-Fast proxy rate;
-14. usage attempts expire after 365 days while allowance configuration remains.
+14. usage attempts expire after 365 days while allowance configuration remains;
+15. failure to read allowance or insert a started row makes no untracked provider call.
 
 ### Interface tests
 
