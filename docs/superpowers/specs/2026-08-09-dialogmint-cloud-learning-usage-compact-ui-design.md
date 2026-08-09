@@ -15,6 +15,12 @@ The release preserves Claude Opus 4.6 Thinking as the primary precision pipeline
 
 Approved examples improve current output immediately through bounded retrieval. The release prepares a provenance-controlled training dataset but does not claim that saving a Neon row trains a model. Cloudflare's current catalog does not mark either deployed fallback model as a supported LoRA target, so model-weight training remains a later, separately evaluated activity.
 
+## Relationship to the prior approved design
+
+This specification extends and, where they conflict, supersedes the Phase 2 local-only learning, usage-metadata, training-readiness UI, and testing-only deployment boundaries in `2026-08-08-dialogmint-single-draft-personal-learning-design.md`. The earlier single-draft pipeline, relationship stages, rubric, consented inference, manual-send boundary, Claude-primary routing, and permanent two-model Workers AI fallback remain authoritative.
+
+The current release is one coordinated product change with four workstreams: server learning storage and retrieval, server-authoritative usage accounting, compact UI, and staged testing-to-production rollout. The implementation plan may divide those workstreams into independently testable phases, but production promotion occurs only after the integrated release passes.
+
 ## Approved decisions
 
 - Use the approved-learning cloud pipeline rather than storing every conversation or retaining local-only learning.
@@ -111,7 +117,7 @@ Add a new idempotent migration after `0001_dialogmint_vault.sql`. Do not modify 
 - `retention_days`, fixed to 365 for this release;
 - `auto_enabled_at`, `disabled_at`, and `updated_at` timestamps.
 
-Absence of a row is interpreted as enabled for an authenticated account. The first learning status call creates the default row idempotently. A user can disable learning or atomically disable it and delete all learning records.
+Absence of a row is interpreted as enabled for an authenticated account. The read-only status route does not create data; the first preference change or learning write creates the row idempotently. A user can disable learning or atomically disable it and delete all learning records.
 
 ### Learning records
 
@@ -120,7 +126,7 @@ Absence of a row is interpreted as enabled for an authenticated account. The fir
 - `account_id` and client-generated `record_id` as the composite primary key;
 - `record_kind`: `classifier`, `evaluation`, or `generative`;
 - versioned schema, role ID, relationship-stage enum, and bounded goal category;
-- classifier features as a strict JSON object containing only message-count bucket and approved booleans;
+- classifier features as a strict JSON object containing only message-count bucket plus `hasIncomingQuestion`, `hasNeedSignal`, `hasPermissionSignal`, `hasValueDiscussionSignal`, and `hasNextStepSignal` booleans;
 - an optional independently user-authored target for `generative` records;
 - bounded action/rating metadata for `evaluation` records, without provider text;
 - provenance: `human_confirmed` or `independently_user_authored`;
@@ -130,27 +136,42 @@ Absence of a row is interpreted as enabled for an authenticated account. The fir
 
 Database checks enforce kind-specific required and forbidden fields, supported enum values, size limits, provenance, and expiry. Add indexes for account retrieval and expiry cleanup. A uniqueness constraint on account plus content digest prevents duplicate uploads.
 
-The table must not contain:
+The validated-record contract prohibits knowingly stored direct identifiers. In particular, records must not contain:
 
 - contact IDs, names, companies, profile URLs, or email addresses;
 - raw messages, raw conversation goals, notes, outcomes, screenshots, or full conversation context;
 - original provider drafts, Claude rewrites, provider reasoning, model prompts, or provider error bodies;
 - API keys, Access tokens, recovery material, cookies, or browser-storage data.
 
+The goal-category enum is fixed for this schema version and is derived only from the confirmed relationship stage; free-form `conversationGoal` is never uploaded:
+
+| Relationship stage | Goal category |
+|---|---|
+| `new_connection` | `connect` |
+| `genuine_rapport` | `build_rapport` |
+| `learn_interests` | `discover_interests` |
+| `identify_need` | `identify_need` |
+| `ask_permission` | `request_permission` |
+| `introduce_value` | `present_value` |
+| `answer_without_pressure` | `answer_questions` |
+| `voluntary_next_step` | `agree_next_step` |
+
+The server recomputes this mapping and rejects a mismatched client value.
+
 ### Usage events
 
-`dialogmint_ai_usage_events` is an append-only per-provider-attempt ledger:
+`dialogmint_ai_usage_attempts` is a mutable-lifecycle, server-authoritative per-provider-attempt ledger:
 
-- `account_id`, `request_id`, and `attempt_id` form the idempotency boundary;
+- `account_id`, `request_id`, and `attempt_id` form the primary key and idempotency boundary;
 - `provider`, `model_id`, and pipeline stage;
 - `status`: started, succeeded, failed-safe, timed-out, rate-limited, or cancelled;
 - usage quality: exact, estimated, or unavailable;
 - uncached input, cache-write, cache-read, output, and thinking token fields;
 - Workers AI prompt, completion, total-token, and neuron estimates when applicable;
 - estimated cost in integer micro-USD rather than floating point;
-- timestamp and environment.
+- `started_at`, `completed_at`, and environment.
 
-Thinking tokens are a breakdown of Anthropic output usage and are not added a second time to billed output. Prompt and reply text are prohibited from this table.
+The Worker inserts one `started` row before a provider call and updates that same row exactly once to a terminal status with usage fields. Immutable identity, provider, model, pipeline-stage, and start-time fields cannot change. No second transition row is inserted. Thinking tokens are a breakdown of Anthropic output usage and are not added a second time to billed output. Prompt and reply text are prohibited from this table.
 
 ### Allowances
 
@@ -173,28 +194,45 @@ A user-confirmed relationship stage may create a classifier record after client 
 
 ### Generative records
 
-A generative target requires a separately identified independently user-authored response, a positive rights attestation, a non-empty bounded target, and successful prohibited-content validation. Accepting a provider draft or lightly editing a provider draft is not sufficient.
+A generative target requires a separately identified independently user-authored response, positive rights and privacy attestations, a non-empty bounded target, and successful identifier validation. Accepting a provider draft or lightly editing a provider draft is not sufficient.
 
-`Save improvement` remains the visible entry point. It may save an evaluation signal immediately and may offer a clearly separated `Add my own version` editor for an eligible generative example. The UI must not describe provider-assisted text as independently authored.
+`Save improvement` is the required visible entry point and always opens a compact learning sheet with two explicit paths:
+
+1. `Rate this draft` saves a text-free evaluation signal.
+2. `Add my own version` opens an initially blank editor. It requires both `I wrote this response independently or have the rights to use it` and `I reviewed the sanitized preview and it contains no personal or confidential information` before upload.
+
+The provider draft is never prefilled into the independently authored editor. The UI must not describe provider-assisted text as independently authored.
+
+### Identifier scrubbing and residual-risk control
+
+Direct-identifier protection is a layered, enforceable contract rather than a claim that arbitrary personal names can be detected perfectly:
+
+1. Before upload, the client normalizes Unicode and replaces exact normalized occurrences of the current contact name, known company, profile URL, and profile handle with `[contact]`, `[company]`, and `[profile]` placeholders.
+2. Both client and server reject email addresses, URLs, social handles, phone-like sequences, postal-address patterns, long numeric identifiers, control characters, and text over the approved limit.
+3. The UI shows the exact sanitized target that will be stored and requires the privacy attestation above.
+4. The server stores only the sanitized target and a digest of that sanitized target. It never stores the redaction dictionary or original text.
+5. The disclosure states that automatic detection cannot recognize every possible personal name or confidential phrase, so the user remains responsible for reviewing the preview.
+
+The privacy invariant is therefore: known contact identifiers and machine-detectable direct identifiers are removed or rejected, and every residual generative target is user-reviewed and attested. The product does not claim infallible detection of arbitrary names.
 
 ## Learning API
 
 Add authenticated, same-origin routes:
 
 - `GET /api/learning/status` returns enabled state, disclosure version, counts, sync status, retention, and no record text;
+- `GET /api/learning/records` returns a bounded, cursor-paginated current-account management list; classifier and evaluation rows contain metadata only, while generative rows may include only their already sanitized user-authored target;
 - `PUT /api/learning/preference` accepts only `enabled: boolean`;
 - `PUT /api/learning/records` accepts a bounded idempotent batch of sanitized records;
 - `DELETE /api/learning/records/:recordId` deletes one current-account record;
 - `DELETE /api/learning` atomically disables learning and deletes all current-account learning records;
-- `GET /api/learning/examples` accepts bounded role, stage, and goal-category filters and returns at most three eligible current-account generative examples.
 
 All routes authenticate before parsing, reject unknown keys, apply exact content types and body limits, use parameterized SQL, rate-limit by server-derived identity, return `no-store`, and expose no internal database or provider errors.
 
-Disabling learning immediately excludes all server examples from generation. The delete-all operation is idempotent. Scheduled cleanup deletes expired rows only from the active deployment environment.
+Disabling learning immediately excludes all server examples from generation. After server confirmation, delete-all also clears local eligible-feedback records, local stage-training records, and cloud-learning sync metadata from the encrypted workspace; ordinary messages and draft history remain. The delete-all operation is idempotent. Scheduled cleanup deletes expired rows only from the active deployment environment.
 
 ## Retrieval and prompt integration
 
-Before generation, the client or Worker requests up to three current-account examples matching role, relationship stage, and bounded goal category. Ranking is deterministic and prioritizes exact stage and role matches, then recency.
+After authenticating the generation request, the Worker internally retrieves up to three current-account examples matching role, relationship stage, and the server-derived goal category. Example text is not round-tripped through the browser for generation. Ranking is deterministic and prioritizes exact stage and role matches, then recency.
 
 Retrieved examples are serialized inside a clearly delimited untrusted-data block. They may influence tone and structure but cannot override:
 
@@ -215,7 +253,7 @@ Each generation receives a request ID. The Worker records every actual provider 
 
 Anthropic usage uses response-provided input, cache creation, cache read, output, and thinking breakdowns. Current published Opus 4.6 pricing is applied server-side through versioned non-secret pricing constants. Pricing metadata includes an effective date so future changes do not rewrite historical estimates.
 
-Workers AI usage uses exact response fields when present. Because usage is optional for some model responses, the ledger supports a clearly labelled estimate derived from bounded request/output characteristics. Missing usage never becomes a fabricated exact value.
+Workers AI usage uses exact response fields when present. Because usage is optional for some model responses, the ledger supports a clearly labelled estimate derived from normalized input/output text lengths with one versioned estimator. The published GPT-OSS 120B token prices are used directly. The exact legacy Llama 3.1 8B Fast model ID has no matching published price row, so its app-allowance estimate uses the published Llama 3.1 8B FP8 Fast input/output rates as an explicitly labelled internal proxy until Cloudflare publishes an exact rate or the configured model changes. Missing usage never becomes a fabricated exact value.
 
 The Worker writes usage synchronously when practical. If a post-provider ledger write fails, it returns the already safe draft with `usage accounting pending`, schedules one bounded retry, and never exposes prompt data in retry state. Usage failure cannot discard a paid, validated draft.
 
@@ -235,6 +273,10 @@ Allowances are app routing controls, not claims about provider prepaid credits. 
 
 Add `GET /api/usage` for the current account and current or explicitly bounded prior month. No route exposes another user's totals. The client refreshes the summary after generation and when Settings opens.
 
+Usage attempts are retained for 365 days and then removed by the same environment-scoped scheduled-cleanup design used for learning expiry. Allowance override rows remain until replaced or deleted because they are configuration, not behavioral history.
+
+Local eligible-feedback and stage-training records use the same 365-day learning retention before encryption and cloud-recovery serialization. The release closes the existing gap in which stage-training records bypass contact/workspace retention. Contact deletion removes locally associated eligible feedback; de-identified stage records without contact identity expire through the fixed learning-retention rule.
+
 ## Compact drafting interface
 
 ### Default composer
@@ -243,7 +285,7 @@ The default drafting card contains:
 
 - `Reply to [contact]`;
 - `Review and send manually`;
-- a compact summary row such as `Network Marketing · Learn interests · Claude primary`;
+- a compact summary row such as `Network Marketing / Learn interests / Claude primary`;
 - one 42-56 px optional instruction field;
 - `Generate Precise Draft`;
 - concise validation, consent, allowance, or provider-status messages only when needed.
@@ -283,6 +325,8 @@ Replace the large local-training layout with a compact card containing:
 - sync/error state.
 
 Dataset preview, manifest, and downloads move under Advanced. Copy changes from `stored locally` to an accurate disclosure that approved, de-identified records are stored server-readably in Neon for retrieval and future training preparation.
+
+Advanced also contains `Manage learning records`, which loads the paginated current-account list. Every row exposes its kind, role, stage, creation/expiry dates, enabled state, and Delete action. Only independently authored generative rows show their sanitized stored text. Individual deletion requires confirmation, calls the scoped delete route, and removes matching local sync metadata after server success.
 
 Below the learning summary, show separate Anthropic and Workers AI cards with consumed usage, estimated cost, allowance, estimated remaining app allowance, data quality, and reset date. Each user sees only their own summary.
 
@@ -329,16 +373,20 @@ Implementation follows test-driven development. New failing tests precede produc
 7. classifier records require human confirmation;
 8. generative records require independent authorship and rights attestation;
 9. provider-assisted text cannot become a generative target;
-10. idempotency and content-digest deduplication are per account;
-11. retrieval returns at most three deterministic examples;
-12. expired records are removed only from the active environment;
-13. migration uploads only already eligible local records;
-14. learning-off requests send neither examples nor stored feedback summaries;
-15. encrypted recovery routes and ciphertext behavior remain unchanged.
+10. known contact fields are replaced and server-detectable email, URL, handle, phone, address, and identifier patterns are rejected;
+11. the server recomputes and validates the stage-to-goal-category mapping;
+12. idempotency and content-digest deduplication are per account;
+13. retrieval occurs inside the Worker and returns at most three deterministic examples;
+14. the management list is current-account-only, paginated, and exposes text only for sanitized generative records;
+15. individual deletion and disable-and-delete clear matching local sync/learning data only after server success;
+16. expired records are removed only from the active environment;
+17. migration uploads only already eligible local records;
+18. learning-off requests send neither examples nor stored feedback summaries;
+19. encrypted recovery routes and ciphertext behavior remain unchanged.
 
 ### Usage and allowance tests
 
-1. each provider attempt creates one idempotent event;
+1. each provider attempt creates one idempotent row whose allowed lifecycle is `started` to exactly one terminal state;
 2. all Claude stages are aggregated;
 3. thinking tokens are not double-counted;
 4. Workers AI missing usage is labelled estimated or unavailable;
@@ -349,7 +397,9 @@ Implementation follows test-driven development. New failing tests precede produc
 9. exhausted Anthropic allowance routes directly to Workers AI;
 10. exhausted Workers AI allowance blocks the provider call safely;
 11. failed, timed-out, and cancelled attempts are represented without text;
-12. accounting-degraded behavior returns a safe draft and never fabricates exact totals.
+12. accounting-degraded behavior returns a safe draft and never fabricates exact totals;
+13. legacy Llama pricing uses the versioned, explicitly estimated FP8-Fast proxy rate;
+14. usage attempts expire after 365 days while allowance configuration remains.
 
 ### Interface tests
 
@@ -360,8 +410,10 @@ Implementation follows test-driven development. New failing tests precede produc
 5. More contains rare/destructive actions;
 6. actual provider and fallback state are visible;
 7. learning settings show cloud state and correct counts;
-8. usage cards show correct labels, reset, consumed, and remaining values;
-9. keyboard, accessible-name, focus, narrow-screen, light, and dark behavior remain correct.
+8. Save improvement always exposes text-free rating and blank independently authored paths;
+9. the management list supports current-account individual deletion;
+10. usage cards show correct labels, reset, consumed, and remaining values;
+11. keyboard, accessible-name, focus, narrow-screen, light, and dark behavior remain correct.
 
 ### Regression and release tests
 
@@ -382,7 +434,7 @@ Implementation follows test-driven development. New failing tests precede produc
 
 The repository will contain reviewed SQL migration files and automated schema validation. No database password, connection string, API key, or token is requested, printed, copied, placed in a command, or stored in source.
 
-If the existing Cloudflare-to-Neon binding has sufficient migration authority through its already configured runtime binding, the migration may be applied through a purpose-built, idempotent, authenticated migration workflow that never reveals connection details. Otherwise the user must run the reviewed SQL in Neon's trusted SQL interface and confirm completion before deployment proceeds.
+Use an existing reviewed repository migration mechanism if one is available without revealing connection details. Do not add a public or ordinary-user runtime migration endpoint. Because the current repository has no database migration runner, the default release procedure is for the user to run the reviewed SQL in Neon's trusted SQL interface and confirm completion before each environment deploy proceeds.
 
 Testing and production migrations are applied and verified independently. Destructive rollback SQL is not run automatically; application rollback must tolerate the additive tables remaining present.
 
@@ -410,13 +462,13 @@ The release succeeds when:
 
 1. cloud learning is enabled automatically for every signed-in user and truthfully disclosed;
 2. only approved, de-identified, provenance-valid records enter server-readable Neon learning storage;
-3. raw conversations, Claude drafts, provider reasoning, identities, and credentials never enter the training dataset or usage ledger;
+3. raw conversations, Claude drafts, provider reasoning, credentials, known contact identifiers, and machine-detectable direct identifiers never enter the training dataset or usage ledger, with residual privacy risk disclosed and user-attested;
 4. retrieval uses at most three current-user examples and improves prompts without overriding current context or policy;
 5. every signed-in user can see their own Anthropic and Workers AI usage, monthly allowance, and estimated remaining app allowance;
 6. Claude is skipped after its app allowance is exhausted and both earlier Workers AI fallback models remain permanently available;
 7. the default drafting UI is compact, while Advanced preserves all existing controls;
 8. Copy, Mark sent, and Save improvement are visible by default on the single draft;
-9. learning data can be disabled, individually deleted, or atomically disabled and fully deleted;
+9. learning data can be disabled, individually deleted, or atomically disabled and fully deleted from server learning storage and local eligible-learning state while ordinary encrypted message/draft history remains;
 10. testing and production migrations, CI, builds, security checks, and authenticated smoke tests pass;
 11. the verified release is committed and pushed to GitHub, deployed to testing first, and then deployed to the requested private production Worker with rollback preserved;
 12. the product makes no false claim that Neon storage has trained Llama 3.1 8B Fast or GPT-OSS 120B.
