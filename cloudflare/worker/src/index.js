@@ -1,5 +1,5 @@
 import { authenticateAccessRequest } from "./accessAuth.js";
-import { cleanupExpiredLearningRecords, handleLearningRequest } from "./neonLearning.js";
+import { cleanupExpiredLearningRecords, handleLearningRequest, retrieveLearningExamples } from "./neonLearning.js";
 import { cleanupExpiredVaults, handleVaultRequest } from "./neonVault.js";
 import {
   ANTHROPIC_MODEL,
@@ -8,6 +8,8 @@ import {
   runAnthropicDraftPipeline,
 } from "./anthropicDraftPipeline.js";
 import { RELATIONSHIP_STAGES } from "./draftPolicy.js";
+import { goalCategoryForStage, roleIdForMessagingRole } from "./learningPolicy.js";
+import { resolveNeonContext } from "./neonDb.js";
 import {
   GPT_REVIEW_MODEL,
   LLAMA_CANDIDATE_MODEL,
@@ -29,6 +31,18 @@ const MAX_REPLY_OBJECTIVE_CHARS = 5_000;
 const MAX_PERSONAL_GUIDELINES_CHARS = 2_000;
 const MAX_CONVERSATION_GOAL_CHARS = 5_000;
 const SAFE_GENERATION_ERROR = "Cloud AI could not produce a safe draft. Please try again.";
+const DRAFT_PAYLOAD_KEYS = new Set([
+  "conversationContext",
+  "latestActualMessage",
+  "latestMeaningfulIncoming",
+  "playbook",
+  "personalGuidelines",
+  "conversationGoal",
+  "relationshipStage",
+  "knownFacts",
+  "unansweredQuestions",
+  "replyObjective",
+]);
 
 class DraftPipelineFailure extends Error {
   constructor(primaryError, fallbackError) {
@@ -122,23 +136,9 @@ function parseConversationMessage(value, requiredSender) {
   return parsed;
 }
 
-function parseLearningExamples(value) {
-  if (!Array.isArray(value) || value.length > 3) throw new Error("invalid");
-  return value.map((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item) || !RELATIONSHIP_STAGES.includes(item.relationshipStage)) throw new Error("invalid");
-    const parsed = {
-      role: limitedText(item.role, MAX_ROLE_CHARS),
-      relationshipStage: item.relationshipStage,
-      conversationGoal: limitedText(item.conversationGoal, MAX_CONVERSATION_GOAL_CHARS),
-      preferredResponse: limitedText(item.preferredResponse, 1_000),
-    };
-    if (!parsed.preferredResponse) throw new Error("invalid");
-    return parsed;
-  });
-}
-
 function parseDraftPayload(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("invalid");
+  if (Object.keys(payload).some((key) => !DRAFT_PAYLOAD_KEYS.has(key))) throw new Error("invalid");
   const conversationContext = normalizeConversationBlock(payload.conversationContext);
   if (!conversationContext) throw new Error("invalid");
   if (conversationContext.length > MAX_PROMPT_CHARS) throw new Error("oversized");
@@ -166,9 +166,27 @@ function parseDraftPayload(payload) {
     relationshipStage: payload.relationshipStage,
     knownFacts: parseBoundedList(payload.knownFacts, 12, 500),
     unansweredQuestions: parseBoundedList(payload.unansweredQuestions, 12, 500),
-    learningExamples: parseLearningExamples(payload.learningExamples),
     replyObjective: limitedText(payload.replyObjective, MAX_REPLY_OBJECTIVE_CHARS),
   };
+}
+
+async function addRetrievedLearningExamples(context, env, url, identity, options) {
+  const withoutExamples = { ...context, retrievedLearningExamples: [] };
+  try {
+    const neonContext = resolveNeonContext(env, url.hostname);
+    if (neonContext.environment !== identity.environment) return withoutExamples;
+    const roleId = roleIdForMessagingRole(context.playbook.role);
+    const goalCategory = goalCategoryForStage(context.relationshipStage);
+    if (!roleId || !goalCategory) return withoutExamples;
+    const examples = await retrieveLearningExamples(neonContext.binding, identity.accountId, {
+      roleId,
+      relationshipStage: context.relationshipStage,
+      goalCategory,
+    }, options);
+    return { ...context, retrievedLearningExamples: examples.slice(0, 3) };
+  } catch {
+    return withoutExamples;
+  }
 }
 
 function createOrderedStageEmitter(emit) {
@@ -300,6 +318,7 @@ export async function handleRequest(request, env, options = {}) {
   } catch (error) {
     return json({ error: error instanceof Error && error.message === "oversized" ? "Draft context is too large." : "Draft context is invalid." }, error instanceof Error && error.message === "oversized" ? 413 : 400);
   }
+  context = await addRetrievedLearningExamples(context, env, url, identity, options);
 
   const wantsStream = request.headers.get("Accept")?.toLowerCase().includes("text/event-stream");
   if (wantsStream) {

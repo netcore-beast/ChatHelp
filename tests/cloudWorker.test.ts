@@ -65,7 +65,6 @@ function structuredPayload(overrides: Record<string, unknown> = {}) {
     relationshipStage: "learn_interests",
     knownFacts: ["The contact asked for role details."],
     unansweredQuestions: ["Which detail matters most?"],
-    learningExamples: [],
     replyObjective: "Answer directly, then clarify their priority.",
     ...overrides,
   };
@@ -163,6 +162,70 @@ describe("Cloudflare private inference Worker", () => {
       mode: "stage-aware-single-draft-v1",
     });
     expect(anthropicFetch).toHaveBeenCalledTimes(3);
+    expect(env.AI.run).not.toHaveBeenCalled();
+  });
+
+  it("retrieves at most three current-account examples inside the authenticated worker", async () => {
+    const rows = [
+      { role_id: "human_resource", relationship_stage: "learn_interests", goal_category: "discover_interests", target_text: "Approved first example" },
+      { role_id: "human_resource", relationship_stage: "identify_need", goal_category: "identify_need", target_text: "Approved second example" },
+      { role_id: "network_marketing", relationship_stage: "genuine_rapport", goal_category: "build_rapport", target_text: "Approved third example" },
+      { role_id: "job_seeker", relationship_stage: "new_connection", goal_category: "connect", target_text: "FOURTH EXAMPLE MUST NOT REACH A PROVIDER" },
+    ];
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [{ enabled: true }] })
+      .mockResolvedValueOnce({ rows });
+    const responses = [ANALYSIS, CANDIDATE, REVIEW];
+    const anthropicFetch = vi.fn(async () => anthropicResponse(responses.shift()));
+
+    const response = await handleRequest(draftRequest(structuredPayload()), workerEnv(), { verifyAccess, anthropicFetch, query });
+
+    expect(response.status).toBe(200);
+    const accountId = query.mock.calls[0][2][0];
+    expect(accountId).toMatch(/^[0-9a-f]{64}$/);
+    expect(query.mock.calls[1][2]).toEqual([
+      accountId,
+      expect.any(String),
+      "learn_interests",
+      "human_resource",
+      "discover_interests",
+    ]);
+    const providerBodies = anthropicFetch.mock.calls.map(([, init]) => String(init?.body));
+    for (const body of providerBodies) {
+      expect(body).toContain("Approved first example");
+      expect(body).toContain("Approved second example");
+      expect(body).toContain("Approved third example");
+      expect(body).not.toContain("FOURTH EXAMPLE MUST NOT REACH A PROVIDER");
+    }
+  });
+
+  it("fails open to zero examples when learning retrieval is unavailable", async () => {
+    const query = vi.fn().mockRejectedValue(new Error("synthetic database outage"));
+    const responses = [ANALYSIS, CANDIDATE, REVIEW];
+    const anthropicFetch = vi.fn(async () => anthropicResponse(responses.shift()));
+
+    const response = await handleRequest(draftRequest(structuredPayload()), workerEnv(), { verifyAccess, anthropicFetch, query });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ provider: "anthropic", model: ANTHROPIC_MODEL });
+    expect(query).toHaveBeenCalledTimes(1);
+    for (const [, init] of anthropicFetch.mock.calls) {
+      expect(String(init?.body)).toContain("No approved personal examples are available.");
+    }
+  });
+
+  it("rejects browser-supplied learning material before retrieval or inference", async () => {
+    const env = workerEnv();
+    const query = vi.fn();
+    const anthropicFetch = vi.fn();
+    const response = await handleRequest(draftRequest(structuredPayload({
+      feedbackSummary: "Browser-stored feedback",
+      learningExamples: [{ preferredResponse: "Browser-stored example" }],
+    })), env, { verifyAccess, anthropicFetch, query });
+
+    expect(response.status).toBe(400);
+    expect(query).not.toHaveBeenCalled();
+    expect(anthropicFetch).not.toHaveBeenCalled();
     expect(env.AI.run).not.toHaveBeenCalled();
   });
 

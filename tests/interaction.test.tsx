@@ -353,7 +353,7 @@ describe("secure conversation workspace interaction", () => {
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
     await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
     const generated = await screen.findByLabelText("Edit draft 1") as HTMLTextAreaElement;
-    expect(JSON.parse(request.mock.calls[0][1]?.body as string).learningExamples).toEqual([]);
+    expect(JSON.parse(request.mock.calls[0][1]?.body as string)).not.toHaveProperty("learningExamples");
 
     await user.clear(generated);
     await user.type(generated, "What part of the role would help you decide whether it is relevant?");
@@ -406,7 +406,7 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.getByRole("button", { name: "Generate Precise Draft" })).toBeTruthy();
   });
 
-  it("sends no more than three locally selected learning examples", async () => {
+  it("sends neither stored feedback summaries nor learning examples from the browser", async () => {
     const workspace = createEmptyWorkspace();
     workspace.cloudInference.consentedAt = "2026-08-01T00:00:00.000Z";
     workspace.personalLearning.enabled = true;
@@ -437,7 +437,7 @@ describe("secure conversation workspace interaction", () => {
       draft: "",
       preferredResponse: `Approved response ${index}`,
       outcome: "",
-      reason: "",
+      reason: "LOCAL FEEDBACK SUMMARY MUST STAY IN THE BROWSER",
       origin: "independently_user_authored" as const,
       independentlyAuthoredAttested: true,
       eligibleForRetrieval: true,
@@ -460,13 +460,11 @@ describe("secure conversation workspace interaction", () => {
 
     await screen.findByLabelText("Edit draft 1");
     const body = JSON.parse(request.mock.calls[0][1]?.body as string);
-    expect(body.learningExamples).toHaveLength(3);
-    expect(body.learningExamples.map((item: { preferredResponse: string }) => item.preferredResponse)).toEqual([
-      "Approved response 4",
-      "Approved response 3",
-      "Approved response 2",
-    ]);
-    expect(JSON.stringify(body.learningExamples)).not.toContain("other-contact");
+    expect(body).not.toHaveProperty("feedbackSummary");
+    expect(body).not.toHaveProperty("learningExamples");
+    expect(JSON.stringify(body)).not.toContain("LOCAL FEEDBACK SUMMARY MUST STAY IN THE BROWSER");
+    expect(JSON.stringify(body)).not.toContain("Approved response");
+    expect(JSON.stringify(body)).not.toContain("other-contact");
   }, 20_000);
 
   it("keeps a local stage suggestion non-authoritative until the user applies it", async () => {

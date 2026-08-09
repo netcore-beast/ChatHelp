@@ -56,12 +56,6 @@ export interface CloudDraftRequest {
   relationshipStage: RelationshipStage;
   knownFacts: string[];
   unansweredQuestions: string[];
-  learningExamples: Array<{
-    role: string;
-    relationshipStage: RelationshipStage;
-    conversationGoal: string;
-    preferredResponse: string;
-  }>;
   replyObjective: string;
 }
 
@@ -242,7 +236,6 @@ export function buildConversationContext(input: PrivateAiInput): string {
     })),
     rejectedRecentDraftSuggestions: previousDrafts,
     outcomeNotes: clipForPrompt(input.outcomeSummary, 600),
-    draftFeedback: clipForPrompt(input.feedbackSummary, 600),
   };
   return `<conversation_context>\n${safeJsonForPrompt(context)}\n</conversation_context>`;
 }
@@ -272,16 +265,6 @@ export function buildCloudDraftRequest(input: PrivateAiInput): CloudDraftRequest
     relationshipStage: normalizeRelationshipStage(input.relationshipStage ?? input.contact.relationshipStage),
     knownFacts: (input.knownFacts ?? []).filter((item): item is string => typeof item === "string").map((item) => clipForPrompt(item, 500)).filter(Boolean).slice(0, 12),
     unansweredQuestions: (input.unansweredQuestions ?? []).filter((item): item is string => typeof item === "string").map((item) => clipForPrompt(item, 500)).filter(Boolean).slice(0, 12),
-    learningExamples: (input.learningExamples ?? []).slice(0, 3).flatMap((example) => {
-      const preferredResponse = clipForPrompt(example.preferredResponse, 1_000);
-      if (!preferredResponse) return [];
-      return [{
-        role: clipForPrompt(example.role, 400),
-        relationshipStage: normalizeRelationshipStage(example.relationshipStage),
-        conversationGoal: clipForPrompt(example.conversationGoal, CONVERSATION_GOAL_MAX_CHARS),
-        preferredResponse,
-      }];
-    }),
     replyObjective: input.latestQuestion.trim().slice(0, REPLY_OBJECTIVE_MAX_CHARS),
   };
 }
