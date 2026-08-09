@@ -1,4 +1,4 @@
-import { Client } from "pg";
+import { queryNeon, resolveNeonContext } from "./neonDb.js";
 
 const TESTING_HOST = "testing-chathelp-private-cloud.project-mission-ai.workers.dev";
 const PRODUCTION_HOST = "chathelp-private-cloud.project-mission-ai.workers.dev";
@@ -25,21 +25,9 @@ export function resolveVaultBinding(hostname, env) {
   return null;
 }
 
-function expectedEnvironment(hostname) {
-  if (hostname === TESTING_HOST) return "testing";
-  if (hostname === PRODUCTION_HOST) return "production";
-  return "";
-}
-
 async function queryDatabase(binding, text, values, options) {
   if (typeof options?.query === "function") return options.query(binding, text, values);
-  const client = new Client({ connectionString: binding.connectionString });
-  try {
-    await client.connect();
-    return await client.query(text, values);
-  } finally {
-    await client.end().catch(() => undefined);
-  }
+  return queryNeon(binding, text, values);
 }
 
 function base64UrlBytes(value) {
@@ -157,8 +145,14 @@ export async function handleVaultRequest(request, env, url, identity, options = 
   if (url.pathname !== "/api/vault") return null;
   const origin = request.headers.get("Origin");
   if (origin && origin !== url.origin) return json({ error: "Cross-origin requests are not allowed." }, 403);
-  const binding = resolveVaultBinding(url.hostname, env);
-  if (!binding || identity?.environment !== expectedEnvironment(url.hostname) || !HEX_DIGEST.test(identity?.accountId ?? "")) {
+  let neonContext;
+  try {
+    neonContext = resolveNeonContext(env, url.hostname);
+  } catch {
+    return json({ error: "Encrypted backup is unavailable." }, 503);
+  }
+  const binding = neonContext.binding;
+  if (identity?.environment !== neonContext.environment || !HEX_DIGEST.test(identity?.accountId ?? "")) {
     return json({ error: "Encrypted backup is unavailable." }, 503);
   }
 

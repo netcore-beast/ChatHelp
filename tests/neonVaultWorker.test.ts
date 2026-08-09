@@ -19,6 +19,7 @@ const ciphertextDigest = createHash("sha256").update(JSON.stringify(envelope)).d
 
 function env() {
   return {
+    DEPLOYMENT_ENVIRONMENT: "testing",
     NEON_TESTING: { connectionString: "synthetic-testing-binding" },
     NEON_PRODUCTION: { connectionString: "synthetic-production-binding" },
   };
@@ -188,8 +189,9 @@ describe("DialogMint Neon vault Worker boundary", () => {
 
   it("fails closed when the scheduled cleanup environment is absent or invalid", async () => {
     const query = vi.fn().mockResolvedValue({ rows: [], rowCount: 3 });
+    const { DEPLOYMENT_ENVIRONMENT: ignoredEnvironment, ...bindings } = env();
 
-    await expect(cleanupExpiredVaults(env(), { query })).resolves.toEqual({ testing: 0, production: 0 });
+    await expect(cleanupExpiredVaults(bindings, { query })).resolves.toEqual({ testing: 0, production: 0 });
     await expect(cleanupExpiredVaults({ ...env(), DEPLOYMENT_ENVIRONMENT: "preview" }, { query })).resolves.toEqual({ testing: 0, production: 0 });
     expect(query).not.toHaveBeenCalled();
   });
