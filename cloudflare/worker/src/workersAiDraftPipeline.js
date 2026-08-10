@@ -9,6 +9,7 @@ import {
   parseFinalReview,
   validateFinalReview,
 } from "./draftPolicy.js";
+import { normalizeWorkersAiUsage } from "./aiPricing.js";
 import { SINGLE_DRAFT_MODE, serializeRetrievedExamples } from "./anthropicDraftPipeline.js";
 
 export const LLAMA_CANDIDATE_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
@@ -23,11 +24,21 @@ const SYSTEM_CONTEXT_RULES = [
 ];
 
 export class WorkersAiPipelineError extends Error {
-  constructor(kind, code = kind) {
+  constructor(kind, code = kind, usageAccounting = "recorded") {
     super("Precise draft generation failed safely.");
     this.name = "WorkersAiPipelineError";
     this.kind = kind;
     this.code = code;
+    this.usageAccounting = usageAccounting;
+  }
+}
+
+export class WorkersAttemptUnavailable extends WorkersAiPipelineError {
+  constructor(attempt) {
+    super("accounting_unavailable");
+    this.name = "WorkersAttemptUnavailable";
+    this.accountingKind = attempt?.kind === "allowance-exhausted" ? "allowance-exhausted" : "unavailable";
+    this.nextResetAt = typeof attempt?.nextResetAt === "string" ? attempt.nextResetAt : null;
   }
 }
 
@@ -53,17 +64,94 @@ function parseModelJson(result) {
   }
 }
 
-async function runPlainJsonStage(ai, model, input, parser, stage) {
+function aggregateAccounting(...values) {
+  return values.includes("pending") ? "pending" : "recorded";
+}
+
+function diagnosticStage(pipelineStage) {
+  return pipelineStage === "analyzing" ? "analysis" : pipelineStage === "drafting" ? "draft" : "review";
+}
+
+function extractResponseText(result) {
+  const candidate = result?.response
+    ?? result?.choices?.[0]?.message?.content
+    ?? result?.choices?.[0]?.text
+    ?? result;
+  if (typeof candidate === "string") return candidate;
+  try {
+    return JSON.stringify(candidate ?? "");
+  } catch {
+    return "";
+  }
+}
+
+function unavailableWorkersUsage(modelId) {
+  return Object.freeze({
+    ...normalizeWorkersAiUsage({}, { modelId, normalizedInputText: "", normalizedOutputText: "" }),
+    quality: "unavailable",
+    estimatorVersion: null,
+  });
+}
+
+function terminalFromWorkersError(error) {
+  if (error?.status === 429 || error?.code === 429) return "rate-limited";
+  if (error?.name === "AbortError") return "cancelled";
+  return "failed-safe";
+}
+
+async function beginWorkersAttempt(options, modelId, pipelineStage) {
+  if (typeof options.usageRecorder?.begin !== "function" || typeof options.usageRecorder?.finish !== "function") {
+    throw new WorkersAttemptUnavailable({ kind: "unavailable" });
+  }
+  let attempt;
+  try {
+    attempt = await options.usageRecorder.begin({ provider: "workers_ai", modelId, pipelineStage });
+  } catch {
+    throw new WorkersAttemptUnavailable({ kind: "unavailable" });
+  }
+  if (attempt?.kind !== "started" || !attempt.handle) throw new WorkersAttemptUnavailable(attempt);
+  return attempt.handle;
+}
+
+async function runTrackedWorkersCall(modelId, pipelineStage, input, options) {
+  const handle = await beginWorkersAttempt(options, modelId, pipelineStage);
+  const finish = async (status, usage) => {
+    try {
+      return await options.usageRecorder.finish(handle, { status, usage });
+    } catch {
+      throw new WorkersAttemptUnavailable({ kind: "unavailable" });
+    }
+  };
+
   let result;
   try {
-    result = await ai.run(model, input);
-  } catch {
-    throw new WorkersAiPipelineError("provider_unavailable", `${stage}_provider`);
+    result = await options.ai.run(modelId, input);
+  } catch (error) {
+    const accounting = await finish(terminalFromWorkersError(error), unavailableWorkersUsage(modelId));
+    throw new WorkersAiPipelineError("provider_unavailable", `${diagnosticStage(pipelineStage)}_provider`, accounting);
   }
+
+  let usage;
   try {
-    return parser(parseModelJson(result));
+    usage = normalizeWorkersAiUsage(result, {
+      modelId,
+      normalizedInputText: JSON.stringify(input),
+      normalizedOutputText: extractResponseText(result),
+    });
   } catch {
-    throw new WorkersAiPipelineError("quality", `${stage}_schema`);
+    const accounting = await finish("failed-safe", unavailableWorkersUsage(modelId));
+    throw new WorkersAiPipelineError("quality", `${diagnosticStage(pipelineStage)}_usage`, accounting);
+  }
+  const accounting = await finish("succeeded", usage);
+  return { result, accounting };
+}
+
+async function runPlainJsonStage(options, model, input, parser, stage) {
+  const { result, accounting } = await runTrackedWorkersCall(model, stage, input, options);
+  try {
+    return { parsed: parser(parseModelJson(result)), accounting };
+  } catch {
+    throw new WorkersAiPipelineError("quality", `${diagnosticStage(stage)}_schema`, accounting);
   }
 }
 
@@ -95,18 +183,26 @@ function withPlainJsonContract(input, schema) {
   return { ...input, messages };
 }
 
-async function runStructuredStage(ai, model, input, schema, parser, stage, useJsonMode = true) {
-  if (!useJsonMode) return runPlainJsonStage(ai, model, input, parser, stage);
-  let first;
+async function runStructuredStage(options, model, input, schema, parser, stage, useJsonMode = true) {
+  if (!useJsonMode) return runPlainJsonStage(options, model, input, parser, stage);
+  let firstCall;
   try {
-    first = await ai.run(model, { ...input, response_format: { type: "json_schema", json_schema: schema } });
-  } catch {
-    return runPlainJsonStage(ai, model, withPlainJsonContract(input, schema), parser, stage);
+    firstCall = await runTrackedWorkersCall(
+      model,
+      stage,
+      { ...input, response_format: { type: "json_schema", json_schema: schema } },
+      options,
+    );
+  } catch (error) {
+    if (error instanceof WorkersAttemptUnavailable) throw error;
+    const fallback = await runPlainJsonStage(options, model, withPlainJsonContract(input, schema), parser, stage);
+    return { ...fallback, accounting: aggregateAccounting(error?.usageAccounting, fallback.accounting) };
   }
   try {
-    return parser(parseModelJson(first));
+    return { parsed: parser(parseModelJson(firstCall.result)), accounting: firstCall.accounting };
   } catch {
-    return runPlainJsonStage(ai, model, withPlainJsonContract(input, schema), parser, stage);
+    const fallback = await runPlainJsonStage(options, model, withPlainJsonContract(input, schema), parser, stage);
+    return { ...fallback, accounting: aggregateAccounting(firstCall.accounting, fallback.accounting) };
   }
 }
 
@@ -138,7 +234,7 @@ export async function runWorkersAiDraftPipeline(context, options) {
   if (!options?.ai?.run) throw new WorkersAiPipelineError("provider_unavailable");
   const requestContext = promptContext(context);
   emitStage(options.emit, "analyzing", "in-progress");
-  const analysis = await runStructuredStage(options.ai, LLAMA_CANDIDATE_MODEL, {
+  const analysisResult = await runStructuredStage(options, LLAMA_CANDIDATE_MODEL, {
     messages: [
       {
         role: "system",
@@ -154,11 +250,13 @@ export async function runWorkersAiDraftPipeline(context, options) {
     temperature: 0.2,
     top_p: 0.85,
     max_tokens: 1_600,
-  }, ANALYSIS_SCHEMA, (value) => parseDraftAnalysis(value, context.relationshipStage), "analysis");
+  }, ANALYSIS_SCHEMA, (value) => parseDraftAnalysis(value, context.relationshipStage), "analyzing");
+  const analysis = analysisResult.parsed;
+  let usageAccounting = analysisResult.accounting;
   emitStage(options.emit, "analyzing", "done");
 
   emitStage(options.emit, "drafting", "in-progress");
-  const writerDraft = await runStructuredStage(options.ai, GPT_REVIEW_MODEL, {
+  const writerResult = await runStructuredStage(options, GPT_REVIEW_MODEL, {
     messages: [
       {
         role: "system",
@@ -174,7 +272,9 @@ export async function runWorkersAiDraftPipeline(context, options) {
     temperature: 0.55,
     top_p: 0.9,
     max_tokens: 1_000,
-  }, DRAFT_SCHEMA, parseDraftCandidate, "draft", false);
+  }, DRAFT_SCHEMA, parseDraftCandidate, "drafting", false);
+  const writerDraft = writerResult.parsed;
+  usageAccounting = aggregateAccounting(usageAccounting, writerResult.accounting);
   const candidate = {
     ...writerDraft,
     stage: analysis.effectiveStage,
@@ -183,7 +283,7 @@ export async function runWorkersAiDraftPipeline(context, options) {
   emitStage(options.emit, "drafting", "done");
 
   emitStage(options.emit, "reviewing", "in-progress");
-  const review = await runStructuredStage(options.ai, GPT_REVIEW_MODEL, {
+  const reviewResult = await runStructuredStage(options, GPT_REVIEW_MODEL, {
     messages: [
       {
         role: "system",
@@ -199,14 +299,16 @@ export async function runWorkersAiDraftPipeline(context, options) {
     temperature: 0.15,
     top_p: 0.8,
     max_tokens: 1_300,
-  }, REVIEW_SCHEMA, parseFinalReview, "review", false);
+  }, REVIEW_SCHEMA, parseFinalReview, "reviewing", false);
+  const review = reviewResult.parsed;
+  usageAccounting = aggregateAccounting(usageAccounting, reviewResult.accounting);
   const validation = validateFinalReview(review, {
     canIntroduceValue: canIntroduceValue(analysis.effectiveStage, analysis, context.latestActualMessage),
     conversationText: context.conversationContext,
   });
   if (!validation.ok) {
     const kind = validation.reason === "critical" || validation.reason === "unsupported_history" || validation.reason === "premature_pitch" ? "policy" : "quality";
-    throw new WorkersAiPipelineError(kind, `review_${validation.reason}`);
+    throw new WorkersAiPipelineError(kind, `review_${validation.reason}`, usageAccounting);
   }
   emitStage(options.emit, "reviewing", "done");
   return {
@@ -214,5 +316,6 @@ export async function runWorkersAiDraftPipeline(context, options) {
     provider: "cloudflare",
     model: WORKERS_AI_MODEL,
     mode: SINGLE_DRAFT_MODE,
+    usageAccounting,
   };
 }

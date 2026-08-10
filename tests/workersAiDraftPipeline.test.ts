@@ -88,20 +88,31 @@ const USER_LATEST_REVIEW = {
   finalDraft: USER_LATEST_CANDIDATE.draft.text,
 };
 
+function createUsageRecorder(accounting: Array<"recorded" | "pending"> = []) {
+  let attempt = 0;
+  return {
+    begin: vi.fn<(input: unknown) => Promise<unknown>>().mockImplementation(async () => ({ kind: "started", handle: { attemptId: `attempt-${++attempt}` } })),
+    finish: vi.fn<(handle: unknown, terminal: unknown) => Promise<"recorded" | "pending">>().mockImplementation(async () => accounting.shift() ?? "recorded"),
+  };
+}
+
 describe("permanent Workers AI fallback", () => {
   it("uses Llama for analysis and GPT-OSS for one draft plus independent review", async () => {
     const responses = [ANALYSIS, CANDIDATE, REVIEW];
     const ai = { run: vi.fn(async () => ({ response: responses.shift() })) };
+    const usageRecorder = createUsageRecorder();
     const stages: Array<[string, string]> = [];
 
     await expect(runWorkersAiDraftPipeline(CONTEXT, {
       ai,
+      usageRecorder,
       emit: (_event: string, data: { stage: string; status: string }) => stages.push([data.stage, data.status]),
     })).resolves.toEqual({
       draft: REVIEW.finalDraft,
       provider: "cloudflare",
       model: WORKERS_AI_MODEL,
       mode: "stage-aware-single-draft-v1",
+      usageAccounting: "recorded",
     });
 
     expect(ai.run.mock.calls.map(([model]) => model)).toEqual([
@@ -156,7 +167,7 @@ describe("permanent Workers AI fallback", () => {
       ],
     };
 
-    await expect(runWorkersAiDraftPipeline(context, { ai })).resolves.toMatchObject({ provider: "cloudflare" });
+    await expect(runWorkersAiDraftPipeline(context, { ai, usageRecorder: createUsageRecorder() })).resolves.toMatchObject({ provider: "cloudflare" });
 
     for (const [, providerRequest] of ai.run.mock.calls) {
       const system = providerRequest.messages[0].content;
@@ -183,7 +194,7 @@ describe("permanent Workers AI fallback", () => {
       .mockResolvedValueOnce({ response: CANDIDATE })
       .mockResolvedValueOnce({ response: REVIEW }) };
 
-    await expect(runWorkersAiDraftPipeline(CONTEXT, { ai })).resolves.toMatchObject({ draft: REVIEW.finalDraft });
+    await expect(runWorkersAiDraftPipeline(CONTEXT, { ai, usageRecorder: createUsageRecorder() })).resolves.toMatchObject({ draft: REVIEW.finalDraft });
     expect(ai.run).toHaveBeenCalledTimes(4);
     expect(ai.run.mock.calls[0][1].response_format.type).toBe("json_schema");
     const retry = ai.run.mock.calls[1][1];
@@ -202,7 +213,7 @@ describe("permanent Workers AI fallback", () => {
       .mockResolvedValueOnce({ response: CANDIDATE })
       .mockResolvedValueOnce({ response: REVIEW }) };
 
-    await expect(runWorkersAiDraftPipeline(CONTEXT, { ai })).resolves.toMatchObject({ draft: REVIEW.finalDraft });
+    await expect(runWorkersAiDraftPipeline(CONTEXT, { ai, usageRecorder: createUsageRecorder() })).resolves.toMatchObject({ draft: REVIEW.finalDraft });
     expect(ai.run).toHaveBeenCalledTimes(4);
     expect(ai.run.mock.calls[0][1].response_format.type).toBe("json_schema");
     const retry = ai.run.mock.calls[1][1];
@@ -215,7 +226,7 @@ describe("permanent Workers AI fallback", () => {
     const responses = [USER_LATEST_ANALYSIS, USER_LATEST_CANDIDATE, USER_LATEST_REVIEW];
     const ai = { run: vi.fn(async () => ({ response: responses.shift() })) };
 
-    await expect(runWorkersAiDraftPipeline(USER_LATEST_CONTEXT, { ai })).resolves.toMatchObject({
+    await expect(runWorkersAiDraftPipeline(USER_LATEST_CONTEXT, { ai, usageRecorder: createUsageRecorder() })).resolves.toMatchObject({
       draft: "What kind of work have you found most rewarding lately?",
     });
 
@@ -237,9 +248,70 @@ describe("permanent Workers AI fallback", () => {
     const responses = [ANALYSIS, CANDIDATE, policyFailure];
     const ai = { run: vi.fn(async () => ({ response: responses.shift() })) };
 
-    const error = await runWorkersAiDraftPipeline(CONTEXT, { ai }).catch((caught) => caught);
+    const error = await runWorkersAiDraftPipeline(CONTEXT, { ai, usageRecorder: createUsageRecorder() }).catch((caught) => caught);
     expect(error).toBeInstanceOf(WorkersAiPipelineError);
     expect(error.kind).toBe("policy");
     expect(error.message).not.toContain("business opportunity");
+  });
+
+  it("records every Workers ai.run including the structured-output fallback", async () => {
+    const ai = { run: vi.fn()
+      .mockRejectedValueOnce(new Error("SYNTHETIC_JSON_MODE_DETAIL"))
+      .mockResolvedValueOnce({ response: ANALYSIS })
+      .mockResolvedValueOnce({ response: CANDIDATE })
+      .mockResolvedValueOnce({ response: REVIEW }) };
+    const usageRecorder = createUsageRecorder();
+
+    await expect(runWorkersAiDraftPipeline(CONTEXT, { ai, usageRecorder })).resolves.toMatchObject({
+      draft: REVIEW.finalDraft,
+      usageAccounting: "recorded",
+    });
+
+    expect(ai.run).toHaveBeenCalledTimes(4);
+    expect(usageRecorder.begin).toHaveBeenCalledTimes(4);
+    expect(usageRecorder.finish).toHaveBeenCalledTimes(4);
+    expect(usageRecorder.begin.mock.calls.map(([input]) => input)).toEqual([
+      { provider: "workers_ai", modelId: LLAMA_CANDIDATE_MODEL, pipelineStage: "analyzing" },
+      { provider: "workers_ai", modelId: LLAMA_CANDIDATE_MODEL, pipelineStage: "analyzing" },
+      { provider: "workers_ai", modelId: GPT_REVIEW_MODEL, pipelineStage: "drafting" },
+      { provider: "workers_ai", modelId: GPT_REVIEW_MODEL, pipelineStage: "reviewing" },
+    ]);
+    for (let index = 0; index < 4; index += 1) {
+      expect(usageRecorder.begin.mock.invocationCallOrder[index]).toBeLessThan(ai.run.mock.invocationCallOrder[index]);
+      expect(ai.run.mock.invocationCallOrder[index]).toBeLessThan(usageRecorder.finish.mock.invocationCallOrder[index]);
+    }
+    expect(usageRecorder.finish.mock.calls[0][1]).toMatchObject({ status: "failed-safe", usage: { quality: "unavailable" } });
+    expect(JSON.stringify({ begin: usageRecorder.begin.mock.calls, finish: usageRecorder.finish.mock.calls })).not.toMatch(
+      /SYNTHETIC_JSON_MODE_DETAIL|What kind of work do you do|relationship-based business/u,
+    );
+  });
+
+  it("makes no Workers call when its started row is unavailable", async () => {
+    const ai = { run: vi.fn() };
+    const usageRecorder = createUsageRecorder();
+    usageRecorder.begin.mockRejectedValueOnce(new Error("SYNTHETIC_LEDGER_DETAIL"));
+
+    const error = await runWorkersAiDraftPipeline(CONTEXT, { ai, usageRecorder }).catch((caught) => caught);
+
+    expect(error).toMatchObject({
+      name: "WorkersAttemptUnavailable",
+      kind: "accounting_unavailable",
+      accountingKind: "unavailable",
+    });
+    expect(error.message).not.toContain("SYNTHETIC_LEDGER_DETAIL");
+    expect(ai.run).not.toHaveBeenCalled();
+    expect(usageRecorder.finish).not.toHaveBeenCalled();
+  });
+
+  it("returns a valid Workers draft when any terminal write is pending", async () => {
+    const responses = [ANALYSIS, CANDIDATE, REVIEW];
+    const ai = { run: vi.fn(async () => ({ response: responses.shift() })) };
+    const usageRecorder = createUsageRecorder(["recorded", "pending", "recorded"]);
+
+    await expect(runWorkersAiDraftPipeline(CONTEXT, { ai, usageRecorder })).resolves.toMatchObject({
+      draft: REVIEW.finalDraft,
+      usageAccounting: "pending",
+    });
+    expect(usageRecorder.finish).toHaveBeenCalledTimes(3);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MAX_CLOUD_PROMPT_CHARS, buildCloudDraftRequest, buildConversationContext, buildDraftContextSummary, buildPrompt, generateWithCloud, parseDrafts, type PrivateAiInput } from "../src/lib/privateAi";
+import { MAX_CLOUD_PROMPT_CHARS, buildCloudDraftRequest, buildConversationContext, buildDraftContextSummary, buildPrompt, generateWithCloud, parseCloudDraftResult, parseDrafts, type PrivateAiInput } from "../src/lib/privateAi";
 import { selectRelevantContext } from "../src/lib/retrieval";
 
 function input(): PrivateAiInput {
@@ -42,6 +42,16 @@ function sseResponse(chunks: string[]): Response {
   }), { status: 200, headers: { "Content-Type": "text/event-stream; charset=utf-8" } });
 }
 
+const CLOUD_RESULT = {
+  draft: "Reviewed reply",
+  provider: "anthropic" as const,
+  model: "claude-opus-4-6",
+  mode: "stage-aware-single-draft-v1" as const,
+  requestId: "123e4567-e89b-42d3-a456-426614174000",
+  usageAccounting: "recorded" as const,
+  fallbackReason: null,
+};
+
 describe("cloud AI client boundary", () => {
   it("requires explicit consent before making a network request", async () => {
     const request = vi.fn();
@@ -52,12 +62,10 @@ describe("cloud AI client boundary", () => {
   });
 
   it("sends the grounded prompt and structured playbook to the same-origin Worker", async () => {
-    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      draft: "Reviewed reply",
-      provider: "anthropic",
-      model: "claude-opus-4-6",
-      mode: "stage-aware-single-draft-v1",
-    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify(CLOUD_RESULT), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
     const preciseInput = Object.assign(input(), {
       personalGuidelines: "Prefer plain language and one useful question.",
       conversationGoal: "Learn which challenge matters most to Alex.",
@@ -74,12 +82,7 @@ describe("cloud AI client boundary", () => {
     });
     await expect(generateWithCloud(preciseInput, {
       consentedAt: "2026-08-01T00:00:00.000Z",
-    }, undefined, request as unknown as typeof fetch)).resolves.toEqual({
-      draft: "Reviewed reply",
-      provider: "anthropic",
-      model: "claude-opus-4-6",
-      mode: "stage-aware-single-draft-v1",
-    });
+    }, undefined, request as unknown as typeof fetch)).resolves.toEqual(CLOUD_RESULT);
 
     expect(request).toHaveBeenCalledTimes(1);
     const [url, init] = request.mock.calls[0];
@@ -174,7 +177,7 @@ describe("cloud AI client boundary", () => {
     const request = vi.fn().mockResolvedValue(sseResponse([
       'event: stage\r\ndata: {"stage":"analyzing","status":"in-progress"}\r\n\r\n',
       'event: stage\ndata: {"stage":"analyzing","status":"done"}\n\nevent: stage\ndata: {"stage":"drafting",',
-      '"status":"in-progress"}\n\nevent: result\ndata: {"draft":"Reviewed reply","provider":"cloudflare","model":"auto:llama-3.1-8b+gpt-oss-120b","mode":"stage-aware-single-draft-v1"}\n\n',
+      '"status":"in-progress"}\n\nevent: result\ndata: {"draft":"Reviewed reply","provider":"cloudflare","model":"auto:llama-3.1-8b+gpt-oss-120b","mode":"stage-aware-single-draft-v1","usageAccounting":"recorded","requestId":"123e4567-e89b-42d3-a456-426614174000","fallbackReason":"anthropic-pipeline-failed"}\n\n',
     ]));
 
     await expect(generateWithCloud(input(), {
@@ -184,6 +187,9 @@ describe("cloud AI client boundary", () => {
       provider: "cloudflare",
       model: "auto:llama-3.1-8b+gpt-oss-120b",
       mode: "stage-aware-single-draft-v1",
+      usageAccounting: "recorded",
+      requestId: "123e4567-e89b-42d3-a456-426614174000",
+      fallbackReason: "anthropic-pipeline-failed",
     });
 
     expect(progress.mock.calls.map(([update]) => update)).toEqual([
@@ -199,7 +205,7 @@ describe("cloud AI client boundary", () => {
       '\ndata: {"stage":"analyzing","status":"done"}\r',
       '\n\r',
       '\nevent: result\r',
-      '\ndata: {"draft":"Reviewed reply","provider":"anthropic","model":"claude-opus-4-6","mode":"stage-aware-single-draft-v1"}\r',
+      '\ndata: {"draft":"Reviewed reply","provider":"anthropic","model":"claude-opus-4-6","mode":"stage-aware-single-draft-v1","usageAccounting":"pending","requestId":"123e4567-e89b-42d3-a456-426614174000","fallbackReason":null}\r',
       '\n\r',
       '\n',
     ]));
@@ -209,6 +215,9 @@ describe("cloud AI client boundary", () => {
     }, undefined, request as unknown as typeof fetch)).resolves.toMatchObject({
       draft: "Reviewed reply",
       provider: "anthropic",
+      usageAccounting: "pending",
+      requestId: "123e4567-e89b-42d3-a456-426614174000",
+      fallbackReason: null,
     });
   });
 
@@ -216,9 +225,9 @@ describe("cloud AI client boundary", () => {
     const consent = { consentedAt: "2026-08-01T00:00:00.000Z" };
     const safeError = vi.fn().mockResolvedValue(sseResponse([
       'event: stage\ndata: {"stage":"analyzing","status":"in-progress"}\n\n',
-      'event: error\ndata: {"error":"Cloud AI could not produce a safe draft. Please try again. Diagnostic: anthropic_quality__cloudflare_quality","diagnosticCode":"anthropic_quality__cloudflare_quality"}\n\n',
+      'event: error\ndata: {"error":"Cloud AI could not produce a safe draft. Please try again.","code":"pipeline_failed"}\n\n',
     ]));
-    await expect(generateWithCloud(input(), consent, undefined, safeError as unknown as typeof fetch)).rejects.toThrow(/^Cloud AI could not produce a safe draft\. Please try again\. Diagnostic: anthropic_quality__cloudflare_quality$/);
+    await expect(generateWithCloud(input(), consent, undefined, safeError as unknown as typeof fetch)).rejects.toThrow(/^Cloud AI could not produce a safe draft\. Please try again\.$/);
 
     const truncated = vi.fn().mockResolvedValue(sseResponse([
       'event: stage\ndata: {"stage":"analyzing","status":"done"}\n\n',
@@ -229,10 +238,7 @@ describe("cloud AI client boundary", () => {
   it("rejects extra hidden fields and multi-draft responses at the cloud boundary", async () => {
     const consent = { consentedAt: "2026-08-01T00:00:00.000Z" };
     const hidden = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      draft: "Reviewed reply",
-      provider: "anthropic",
-      model: "claude-opus-4-6",
-      mode: "stage-aware-single-draft-v1",
+      ...CLOUD_RESULT,
       scores: { total: 100 },
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
     await expect(generateWithCloud(input(), consent, undefined, hidden as unknown as typeof fetch)).rejects.toThrow(/invalid response/i);
@@ -244,6 +250,30 @@ describe("cloud AI client boundary", () => {
       mode: "stage-aware-single-draft-v1",
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
     await expect(generateWithCloud(input(), consent, undefined, multiple as unknown as typeof fetch)).rejects.toThrow(/invalid response/i);
+  });
+
+  it("accepts only the exact extended result contract", () => {
+    const parsed = parseCloudDraftResult(CLOUD_RESULT);
+    expect(parsed).toEqual(CLOUD_RESULT);
+    expect(Object.keys(parsed)).toEqual([
+      "draft", "provider", "model", "mode", "requestId", "usageAccounting", "fallbackReason",
+    ]);
+
+    for (const invalid of [
+      { ...CLOUD_RESULT, requestId: "not-a-uuid" },
+      { ...CLOUD_RESULT, usageAccounting: "complete" },
+      { ...CLOUD_RESULT, fallbackReason: "provider body detail" },
+      { ...CLOUD_RESULT, requestId: undefined },
+      { ...CLOUD_RESULT, reasoning: "hidden" },
+    ]) {
+      expect(() => parseCloudDraftResult(invalid)).toThrow(/invalid response/i);
+    }
+    expect(() => parseCloudDraftResult({
+      draft: CLOUD_RESULT.draft,
+      provider: CLOUD_RESULT.provider,
+      model: CLOUD_RESULT.model,
+      mode: CLOUD_RESULT.mode,
+    })).toThrow(/invalid response/i);
   });
 
   it("surfaces the Worker's safe error message", async () => {

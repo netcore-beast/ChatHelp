@@ -1,10 +1,11 @@
 import { authenticateAccessRequest } from "./accessAuth.js";
-import { cleanupExpiredUsageAttempts, handleUsageRequest } from "./aiUsage.js";
+import { beginUsageAttempt, cleanupExpiredUsageAttempts, finishUsageAttempt, handleUsageRequest } from "./aiUsage.js";
 import { cleanupExpiredLearningRecords, handleLearningRequest, retrieveLearningExamples } from "./neonLearning.js";
 import { cleanupExpiredVaults, handleVaultRequest } from "./neonVault.js";
 import {
   ANTHROPIC_MODEL,
   SINGLE_DRAFT_MODE,
+  AnthropicAccountingUnavailable,
   AnthropicPipelineError,
   runAnthropicDraftPipeline,
 } from "./anthropicDraftPipeline.js";
@@ -15,6 +16,7 @@ import {
   GPT_REVIEW_MODEL,
   LLAMA_CANDIDATE_MODEL,
   WORKERS_AI_MODEL,
+  WorkersAttemptUnavailable,
   WorkersAiPipelineError,
   runWorkersAiDraftPipeline,
 } from "./workersAiDraftPipeline.js";
@@ -32,6 +34,9 @@ const MAX_REPLY_OBJECTIVE_CHARS = 5_000;
 const MAX_PERSONAL_GUIDELINES_CHARS = 2_000;
 const MAX_CONVERSATION_GOAL_CHARS = 5_000;
 const SAFE_GENERATION_ERROR = "Cloud AI could not produce a safe draft. Please try again.";
+const SAFE_ACCOUNTING_ERROR = "Cloud AI accounting is temporarily unavailable. Please try again.";
+const SAFE_ALLOWANCE_ERROR = "The estimated monthly app allowance is exhausted. Please try again after the reset.";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const DRAFT_PAYLOAD_KEYS = new Set([
   "conversationContext",
   "latestActualMessage",
@@ -45,24 +50,56 @@ const DRAFT_PAYLOAD_KEYS = new Set([
   "replyObjective",
 ]);
 
-class DraftPipelineFailure extends Error {
-  constructor(primaryError, fallbackError) {
-    super(SAFE_GENERATION_ERROR);
-    this.name = "DraftPipelineFailure";
-    this.diagnosticCode = `anthropic_${primaryError.kind}_${primaryError.code ?? primaryError.kind}__cloudflare_${fallbackError.kind}_${fallbackError.code ?? fallbackError.kind}`;
+class DraftRoutingFailure extends Error {
+  constructor(code, nextResetAt = null) {
+    super(code === "accounting_unavailable" ? SAFE_ACCOUNTING_ERROR : code === "allowance_exhausted" ? SAFE_ALLOWANCE_ERROR : SAFE_GENERATION_ERROR);
+    this.name = "DraftRoutingFailure";
+    this.code = code;
+    this.nextResetAt = typeof nextResetAt === "string" ? nextResetAt : null;
+    this.status = code === "pipeline_failed" ? 502 : 503;
   }
 }
 
-function safeDiagnosticCode(error) {
-  return error instanceof DraftPipelineFailure ? error.diagnosticCode : "pipeline_unclassified";
+function safeGenerationErrorPayload(error) {
+  const failure = error instanceof DraftRoutingFailure ? error : new DraftRoutingFailure("pipeline_failed");
+  return {
+    error: failure.message,
+    code: failure.code,
+    ...(failure.code === "allowance_exhausted" && failure.nextResetAt ? { nextResetAt: failure.nextResetAt } : {}),
+  };
 }
 
-function safeGenerationErrorPayload(error) {
-  const diagnosticCode = safeDiagnosticCode(error);
-  return {
-    error: `${SAFE_GENERATION_ERROR} Diagnostic: ${diagnosticCode}`,
-    diagnosticCode,
-  };
+function isAllowanceUnavailable(error) {
+  return (error instanceof AnthropicAccountingUnavailable || error instanceof WorkersAttemptUnavailable)
+    && error.accountingKind === "allowance-exhausted";
+}
+
+function isAccountingUnavailable(error) {
+  return error instanceof AnthropicAccountingUnavailable || error instanceof WorkersAttemptUnavailable;
+}
+
+function laterReset(...errors) {
+  const resets = errors.map((error) => error?.nextResetAt).filter((value) => typeof value === "string").sort();
+  return resets.at(-1) ?? null;
+}
+
+function routingFailure(primaryError, fallbackError) {
+  if (primaryError && isAllowanceUnavailable(primaryError) && isAllowanceUnavailable(fallbackError)) {
+    return new DraftRoutingFailure("allowance_exhausted", laterReset(primaryError, fallbackError));
+  }
+  if (!primaryError && isAllowanceUnavailable(fallbackError)) {
+    return new DraftRoutingFailure("allowance_exhausted", fallbackError.nextResetAt);
+  }
+  if (isAccountingUnavailable(primaryError) || isAccountingUnavailable(fallbackError)) {
+    return new DraftRoutingFailure("accounting_unavailable");
+  }
+  return new DraftRoutingFailure("pipeline_failed");
+}
+
+function fallbackReason(primaryError) {
+  if (isAllowanceUnavailable(primaryError)) return "anthropic-allowance-exhausted";
+  if (isAccountingUnavailable(primaryError)) return "anthropic-accounting-unavailable";
+  return "anthropic-pipeline-failed";
 }
 
 function reportPipelineFailure(options, primaryError, fallbackError) {
@@ -208,22 +245,112 @@ function createOrderedStageEmitter(emit) {
   };
 }
 
-async function runWorkersAiWithQualityRetry(context, env, emit) {
+function requestId(options) {
+  const value = typeof options.randomUUID === "function" ? options.randomUUID() : crypto.randomUUID();
+  if (typeof value !== "string" || !UUID.test(value)) throw new DraftRoutingFailure("accounting_unavailable");
+  return value;
+}
+
+function trackRequestAccounting(recorder) {
+  let usageAccounting = "recorded";
+  let terminalUnavailable = false;
+  return Object.freeze({
+    begin(input) {
+      return recorder.begin(input);
+    },
+    async finish(handle, terminal) {
+      try {
+        const accounting = await recorder.finish(handle, terminal);
+        if (accounting === "pending") usageAccounting = "pending";
+        return accounting;
+      } catch (error) {
+        terminalUnavailable = true;
+        throw error;
+      }
+    },
+    accountingState() {
+      return usageAccounting;
+    },
+    terminalUnavailable() {
+      return terminalUnavailable;
+    },
+  });
+}
+
+function createUsageRecorder(env, url, identity, options, currentRequestId) {
+  if (options.usageRecorder) {
+    if (typeof options.usageRecorder.begin !== "function" || typeof options.usageRecorder.finish !== "function") {
+      throw new DraftRoutingFailure("accounting_unavailable");
+    }
+    return trackRequestAccounting(options.usageRecorder);
+  }
+  let neonContext;
   try {
-    return await runWorkersAiDraftPipeline(context, { ai: env.AI, emit });
+    neonContext = resolveNeonContext(env, url.hostname);
+  } catch {
+    throw new DraftRoutingFailure("accounting_unavailable");
+  }
+  if (neonContext.environment !== identity.environment) throw new DraftRoutingFailure("accounting_unavailable");
+  const shared = {
+    binding: neonContext.binding,
+    query: options.query,
+    now: options.now,
+  };
+  return trackRequestAccounting(Object.freeze({
+    begin(input) {
+      return beginUsageAttempt({
+        ...input,
+        binding: neonContext.binding,
+        accountId: identity.accountId,
+        requestId: currentRequestId,
+        attemptId: crypto.randomUUID(),
+        environment: neonContext.environment,
+      }, { ...shared, env });
+    },
+    finish(handle, terminal) {
+      return finishUsageAttempt(handle, terminal, {
+        ...shared,
+        executionContext: options.executionContext ?? (typeof options.waitUntil === "function" ? options : undefined),
+      });
+    },
+  }));
+}
+
+function resultContract(result, currentRequestId, reason, usageRecorder) {
+  return {
+    draft: result.draft,
+    provider: result.provider,
+    model: result.model,
+    mode: result.mode,
+    requestId: currentRequestId,
+    usageAccounting: usageRecorder.accountingState() === "pending" ? "pending" : result.usageAccounting,
+    fallbackReason: reason,
+  };
+}
+
+async function runWorkersAiWithQualityRetry(context, env, usageRecorder, emit) {
+  try {
+    return await runWorkersAiDraftPipeline(context, { ai: env.AI, usageRecorder, emit });
   } catch (error) {
     if (!(error instanceof WorkersAiPipelineError) || error.kind !== "quality") throw error;
-    return runWorkersAiDraftPipeline(context, { ai: env.AI, emit });
+    const result = await runWorkersAiDraftPipeline(context, { ai: env.AI, usageRecorder, emit });
+    if (error.usageAccounting === "pending") result.usageAccounting = "pending";
+    return result;
   }
 }
 
-async function runProviderPipeline(context, env, options, emit) {
+async function runProviderPipeline(context, env, options, emit, currentRequestId, usageRecorder) {
   const orderedEmit = createOrderedStageEmitter(emit);
   if (options.providerOverride === "cloudflare") {
-    const result = await runWorkersAiWithQualityRetry(context, env, orderedEmit);
+    let result;
+    try {
+      result = await runWorkersAiWithQualityRetry(context, env, usageRecorder, orderedEmit);
+    } catch (error) {
+      throw routingFailure(null, error);
+    }
     orderedEmit("stage", { stage: "finalizing", status: "in-progress" });
     orderedEmit("stage", { stage: "finalizing", status: "done" });
-    return result;
+    return resultContract(result, currentRequestId, "provider-override", usageRecorder);
   }
   try {
     const result = await runAnthropicDraftPipeline(context, {
@@ -232,25 +359,27 @@ async function runProviderPipeline(context, env, options, emit) {
       signal: options.signal,
       timeoutMs: options.anthropicTimeoutMs,
       emit: orderedEmit,
+      usageRecorder,
     });
     orderedEmit("stage", { stage: "finalizing", status: "in-progress" });
     orderedEmit("stage", { stage: "finalizing", status: "done" });
-    return result;
+    return resultContract(result, currentRequestId, null, usageRecorder);
   } catch (error) {
     if (!(error instanceof AnthropicPipelineError) || error.kind === "cancelled") throw error;
+    if (usageRecorder.terminalUnavailable()) throw new DraftRoutingFailure("accounting_unavailable");
     let result;
     try {
-      result = await runWorkersAiWithQualityRetry(context, env, orderedEmit);
+      result = await runWorkersAiWithQualityRetry(context, env, usageRecorder, orderedEmit);
     } catch (fallbackError) {
       if (fallbackError instanceof WorkersAiPipelineError) {
         reportPipelineFailure(options, error, fallbackError);
-        throw new DraftPipelineFailure(error, fallbackError);
+        throw routingFailure(error, fallbackError);
       }
       throw fallbackError;
     }
     orderedEmit("stage", { stage: "finalizing", status: "in-progress" });
     orderedEmit("stage", { stage: "finalizing", status: "done" });
-    return result;
+    return resultContract(result, currentRequestId, fallbackReason(error), usageRecorder);
   }
 }
 
@@ -324,13 +453,33 @@ export async function handleRequest(request, env, options = {}) {
   context = await addRetrievedLearningExamples(context, env, url, identity, options);
 
   const wantsStream = request.headers.get("Accept")?.toLowerCase().includes("text/event-stream");
+  let currentRequestId;
+  let usageRecorder;
+  try {
+    currentRequestId = requestId(options);
+    usageRecorder = createUsageRecorder(env, url, identity, options, currentRequestId);
+  } catch (error) {
+    const failure = error instanceof DraftRoutingFailure ? error : new DraftRoutingFailure("accounting_unavailable");
+    if (!wantsStream) return json(safeGenerationErrorPayload(failure), failure.status);
+    return new Response(sseEvent("error", safeGenerationErrorPayload(failure)), {
+      status: 200,
+      headers: { ...RESPONSE_HEADERS, "Content-Type": "text/event-stream; charset=utf-8", "X-Accel-Buffering": "no" },
+    });
+  }
   if (wantsStream) {
     const encoder = new TextEncoder();
     const body = new ReadableStream({
       async start(controller) {
         const emit = (event, data) => controller.enqueue(encoder.encode(sseEvent(event, data)));
         try {
-          const result = await runProviderPipeline(context, env, { ...options, signal: request.signal }, emit);
+          const result = await runProviderPipeline(
+            context,
+            env,
+            { ...options, signal: request.signal },
+            emit,
+            currentRequestId,
+            usageRecorder,
+          );
           emit("result", result);
         } catch (error) {
           emit("error", safeGenerationErrorPayload(error));
@@ -346,9 +495,17 @@ export async function handleRequest(request, env, options = {}) {
   }
 
   try {
-    return json(await runProviderPipeline(context, env, { ...options, signal: request.signal }, () => {}));
+    return json(await runProviderPipeline(
+      context,
+      env,
+      { ...options, signal: request.signal },
+      () => {},
+      currentRequestId,
+      usageRecorder,
+    ));
   } catch (error) {
-    return json(safeGenerationErrorPayload(error), 502);
+    const failure = error instanceof DraftRoutingFailure ? error : new DraftRoutingFailure("pipeline_failed");
+    return json(safeGenerationErrorPayload(failure), failure.status);
   }
 }
 

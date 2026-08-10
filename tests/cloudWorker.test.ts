@@ -11,6 +11,8 @@ import {
 const TESTING_HOST = "testing-chathelp-private-cloud.project-mission-ai.workers.dev";
 const TESTING_ORIGIN = `https://${TESTING_HOST}`;
 const SYNTHETIC_ASSERTION = "synthetic.assertion.value";
+const REQUEST_ID = "123e4567-e89b-42d3-a456-426614174000";
+const NEXT_RESET_AT = "2026-09-01T00:00:00.000Z";
 
 const ANALYSIS = {
   observedStage: "identify_need",
@@ -98,6 +100,36 @@ function workerEnv(options: { anthropicConfigured?: boolean } = {}) {
   };
 }
 
+function createUsageRecorder(accounting: Array<"recorded" | "pending"> = []) {
+  let attempt = 0;
+  return {
+    begin: vi.fn<(input: unknown) => Promise<unknown>>().mockImplementation(async () => ({ kind: "started", handle: { attemptId: `attempt-${++attempt}` } })),
+    finish: vi.fn<(handle: unknown, terminal: unknown) => Promise<"recorded" | "pending">>().mockImplementation(async () => accounting.shift() ?? "recorded"),
+  };
+}
+
+function draftOptions(overrides: Record<string, unknown> = {}) {
+  return {
+    verifyAccess,
+    usageRecorder: createUsageRecorder(),
+    randomUUID: vi.fn(() => REQUEST_ID),
+    ...overrides,
+  };
+}
+
+function expectedDraftResult(provider: "anthropic" | "cloudflare", overrides: Record<string, unknown> = {}) {
+  return {
+    draft: REVIEW.finalDraft,
+    provider,
+    model: provider === "anthropic" ? ANTHROPIC_MODEL : WORKERS_AI_MODEL,
+    mode: "stage-aware-single-draft-v1",
+    requestId: REQUEST_ID,
+    usageAccounting: "recorded",
+    fallbackReason: provider === "anthropic" ? null : "anthropic-pipeline-failed",
+    ...overrides,
+  };
+}
+
 const verifyAccess = vi.fn(async (_assertion: string, options: { issuer: string; audience: string }) => ({
   payload: { iss: options.issuer, aud: [options.audience], sub: "synthetic-subject", exp: 2_000_000_000 },
 }));
@@ -152,15 +184,10 @@ describe("Cloudflare private inference Worker", () => {
     const responses = [ANALYSIS, CANDIDATE, REVIEW];
     const anthropicFetch = vi.fn(async () => anthropicResponse(responses.shift()));
     const env = workerEnv();
-    const response = await handleRequest(draftRequest(structuredPayload()), env, { verifyAccess, anthropicFetch });
+    const response = await handleRequest(draftRequest(structuredPayload()), env, draftOptions({ anthropicFetch }));
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      draft: REVIEW.finalDraft,
-      provider: "anthropic",
-      model: "claude-opus-4-6",
-      mode: "stage-aware-single-draft-v1",
-    });
+    await expect(response.json()).resolves.toEqual(expectedDraftResult("anthropic"));
     expect(anthropicFetch).toHaveBeenCalledTimes(3);
     expect(env.AI.run).not.toHaveBeenCalled();
   });
@@ -178,7 +205,7 @@ describe("Cloudflare private inference Worker", () => {
     const responses = [ANALYSIS, CANDIDATE, REVIEW];
     const anthropicFetch = vi.fn(async () => anthropicResponse(responses.shift()));
 
-    const response = await handleRequest(draftRequest(structuredPayload()), workerEnv(), { verifyAccess, anthropicFetch, query });
+    const response = await handleRequest(draftRequest(structuredPayload()), workerEnv(), draftOptions({ anthropicFetch, query }));
 
     expect(response.status).toBe(200);
     const accountId = query.mock.calls[0][2][0];
@@ -204,7 +231,7 @@ describe("Cloudflare private inference Worker", () => {
     const responses = [ANALYSIS, CANDIDATE, REVIEW];
     const anthropicFetch = vi.fn(async () => anthropicResponse(responses.shift()));
 
-    const response = await handleRequest(draftRequest(structuredPayload()), workerEnv(), { verifyAccess, anthropicFetch, query });
+    const response = await handleRequest(draftRequest(structuredPayload()), workerEnv(), draftOptions({ anthropicFetch, query }));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ provider: "anthropic", model: ANTHROPIC_MODEL });
@@ -247,33 +274,23 @@ describe("Cloudflare private inference Worker", () => {
           ? vi.fn(async () => new Response("synthetic provider detail", { status: failure }))
           : vi.fn();
     const response = await handleRequest(draftRequest(structuredPayload()), env, {
-      verifyAccess,
+      ...draftOptions(),
       anthropicFetch,
       anthropicTimeoutMs: 1,
     });
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      draft: REVIEW.finalDraft,
-      provider: "cloudflare",
-      model: WORKERS_AI_MODEL,
-      mode: "stage-aware-single-draft-v1",
-    });
+    await expect(response.json()).resolves.toEqual(expectedDraftResult("cloudflare"));
     expect(env.AI.run).toHaveBeenCalledTimes(3);
   });
 
   it.each([401, 403, 400])("uses the permanent fallback for Anthropic HTTP %s", async (status) => {
     const env = workerEnv();
     const anthropicFetch = vi.fn(async () => new Response("synthetic provider detail", { status }));
-    const response = await handleRequest(draftRequest(structuredPayload()), env, { verifyAccess, anthropicFetch });
+    const response = await handleRequest(draftRequest(structuredPayload()), env, draftOptions({ anthropicFetch }));
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      draft: REVIEW.finalDraft,
-      provider: "cloudflare",
-      model: WORKERS_AI_MODEL,
-      mode: "stage-aware-single-draft-v1",
-    });
+    await expect(response.json()).resolves.toEqual(expectedDraftResult("cloudflare"));
     expect(env.AI.run).toHaveBeenCalledTimes(3);
   });
 
@@ -285,16 +302,43 @@ describe("Cloudflare private inference Worker", () => {
     const fallbackResponses = [ANALYSIS, CANDIDATE, lowReview, ANALYSIS, CANDIDATE, REVIEW];
     const env = workerEnv({ anthropicConfigured: false });
     env.AI.run = vi.fn(async () => ({ response: fallbackResponses.shift() }));
+    const usageRecorder = createUsageRecorder(["recorded", "recorded", "pending", "recorded", "recorded", "recorded"]);
 
-    const response = await handleRequest(draftRequest(structuredPayload()), env, { verifyAccess });
+    const response = await handleRequest(draftRequest(structuredPayload()), env, draftOptions({ usageRecorder }));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       draft: REVIEW.finalDraft,
       provider: "cloudflare",
       model: WORKERS_AI_MODEL,
+      requestId: REQUEST_ID,
+      usageAccounting: "pending",
+      fallbackReason: "anthropic-pipeline-failed",
     });
     expect(env.AI.run).toHaveBeenCalledTimes(6);
+    expect(usageRecorder.begin).toHaveBeenCalledTimes(6);
+    expect(usageRecorder.finish).toHaveBeenCalledTimes(6);
+  });
+
+  it("preserves a pending structured Workers call across failed plain JSON and full retry", async () => {
+    const env = workerEnv({ anthropicConfigured: false });
+    env.AI.run = vi.fn()
+      .mockRejectedValueOnce(new Error("SYNTHETIC_JSON_MODE_DETAIL"))
+      .mockResolvedValueOnce({ response: "not-json" })
+      .mockResolvedValueOnce({ response: ANALYSIS })
+      .mockResolvedValueOnce({ response: CANDIDATE })
+      .mockResolvedValueOnce({ response: REVIEW });
+    const usageRecorder = createUsageRecorder(["pending", "recorded", "recorded", "recorded", "recorded"]);
+
+    const response = await handleRequest(draftRequest(structuredPayload()), env, draftOptions({ usageRecorder }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(expectedDraftResult("cloudflare", {
+      usageAccounting: "pending",
+    }));
+    expect(env.AI.run).toHaveBeenCalledTimes(5);
+    expect(usageRecorder.begin).toHaveBeenCalledTimes(5);
+    expect(usageRecorder.finish).toHaveBeenCalledTimes(5);
   });
 
   it("uses the permanent fallback when Claude returns invalid quality or a critical policy failure", async () => {
@@ -304,22 +348,244 @@ describe("Cloudflare private inference Worker", () => {
     ]) {
       const anthropicFetch = vi.fn(async () => anthropicResponse(responses.shift()));
       const env = workerEnv();
-      const response = await handleRequest(draftRequest(structuredPayload()), env, { verifyAccess, anthropicFetch });
+      const response = await handleRequest(draftRequest(structuredPayload()), env, draftOptions({ anthropicFetch }));
       expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toEqual({
-        draft: REVIEW.finalDraft,
-        provider: "cloudflare",
-        model: WORKERS_AI_MODEL,
-        mode: "stage-aware-single-draft-v1",
-      });
+      await expect(response.json()).resolves.toEqual(expectedDraftResult("cloudflare"));
       expect(env.AI.run).toHaveBeenCalledTimes(3);
     }
+  });
+
+  it("skips Claude when its allowance is exhausted and reports the fallback reason", async () => {
+    const env = workerEnv();
+    const anthropicFetch = vi.fn();
+    const usageRecorder = createUsageRecorder();
+    usageRecorder.begin
+      .mockResolvedValueOnce({ kind: "allowance-exhausted", nextResetAt: NEXT_RESET_AT })
+      .mockImplementation(async () => ({ kind: "started", handle: { attemptId: crypto.randomUUID() } }));
+    const randomUUID = vi.fn(() => REQUEST_ID);
+
+    const response = await handleRequest(draftRequest(structuredPayload()), env, draftOptions({
+      anthropicFetch,
+      usageRecorder,
+      randomUUID,
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(expectedDraftResult("cloudflare", {
+      fallbackReason: "anthropic-allowance-exhausted",
+    }));
+    expect(randomUUID).toHaveBeenCalledTimes(1);
+    expect(anthropicFetch).not.toHaveBeenCalled();
+    expect(env.AI.run).toHaveBeenCalledTimes(3);
+    expect(usageRecorder.begin.mock.calls[0][0]).toEqual({
+      provider: "anthropic",
+      modelId: ANTHROPIC_MODEL,
+      pipelineStage: "analyzing",
+    });
+  });
+
+  it("calls no provider when neither provider can insert a started row", async () => {
+    const env = workerEnv();
+    const anthropicFetch = vi.fn();
+    const usageRecorder = createUsageRecorder();
+    usageRecorder.begin.mockRejectedValue(new Error("SYNTHETIC_LEDGER_DETAIL"));
+
+    const response = await handleRequest(draftRequest(structuredPayload()), env, draftOptions({
+      anthropicFetch,
+      usageRecorder,
+    }));
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "Cloud AI accounting is temporarily unavailable. Please try again.",
+      code: "accounting_unavailable",
+    });
+    expect(anthropicFetch).not.toHaveBeenCalled();
+    expect(env.AI.run).not.toHaveBeenCalled();
+  });
+
+  it("reports the shared next reset when both provider allowances are exhausted", async () => {
+    const env = workerEnv();
+    const anthropicFetch = vi.fn();
+    const usageRecorder = createUsageRecorder();
+    usageRecorder.begin.mockResolvedValue({ kind: "allowance-exhausted", nextResetAt: NEXT_RESET_AT });
+
+    const response = await handleRequest(draftRequest(structuredPayload()), env, draftOptions({
+      anthropicFetch,
+      usageRecorder,
+    }));
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "The estimated monthly app allowance is exhausted. Please try again after the reset.",
+      code: "allowance_exhausted",
+      nextResetAt: NEXT_RESET_AT,
+    });
+    expect(anthropicFetch).not.toHaveBeenCalled();
+    expect(env.AI.run).not.toHaveBeenCalled();
+  });
+
+  it("returns a valid paid draft when terminal accounting is pending", async () => {
+    const responses = [ANALYSIS, CANDIDATE, REVIEW];
+    const anthropicFetch = vi.fn(async () => anthropicResponse(responses.shift()));
+    const usageRecorder = createUsageRecorder(["recorded", "pending", "recorded"]);
+
+    const response = await handleRequest(draftRequest(structuredPayload()), workerEnv(), draftOptions({
+      anthropicFetch,
+      usageRecorder,
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(expectedDraftResult("anthropic", {
+      usageAccounting: "pending",
+    }));
+    expect(usageRecorder.finish).toHaveBeenCalledTimes(3);
+  });
+
+  it("preserves pending accounting from a failed primary attempt when fallback succeeds", async () => {
+    const env = workerEnv();
+    const anthropicFetch = vi.fn(async () => new Response("SYNTHETIC_PROVIDER_BODY", { status: 500 }));
+    const usageRecorder = createUsageRecorder(["pending", "recorded", "recorded", "recorded"]);
+
+    const response = await handleRequest(draftRequest(structuredPayload()), env, draftOptions({
+      anthropicFetch,
+      usageRecorder,
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(expectedDraftResult("cloudflare", {
+      usageAccounting: "pending",
+    }));
+    expect(usageRecorder.finish).toHaveBeenCalledTimes(4);
+    expect(JSON.stringify(usageRecorder.finish.mock.calls)).not.toContain("SYNTHETIC_PROVIDER_BODY");
+  });
+
+  it("fails closed when a successful Anthropic call cannot write its terminal accounting", async () => {
+    const responses = [ANALYSIS, CANDIDATE, REVIEW];
+    const anthropicFetch = vi.fn(async () => anthropicResponse(responses.shift()));
+    const usageRecorder = createUsageRecorder();
+    usageRecorder.finish.mockRejectedValueOnce(new Error("SYNTHETIC_TERMINAL_LEDGER_DETAIL"));
+    const env = workerEnv();
+
+    const response = await handleRequest(draftRequest(structuredPayload()), env, draftOptions({
+      anthropicFetch,
+      usageRecorder,
+    }));
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "Cloud AI accounting is temporarily unavailable. Please try again.",
+      code: "accounting_unavailable",
+    });
+    expect(anthropicFetch).toHaveBeenCalledTimes(1);
+    expect(usageRecorder.finish).toHaveBeenCalledTimes(1);
+    expect(env.AI.run).not.toHaveBeenCalled();
+  });
+
+  it("wires one authenticated request ID through the production recorder and pending retry", async () => {
+    const responses = [ANALYSIS, CANDIDATE, REVIEW];
+    const anthropicFetch = vi.fn(async () => anthropicResponse(responses.shift()));
+    const env = workerEnv();
+    const pendingRetries: Promise<unknown>[] = [];
+    const executionContext = { waitUntil: vi.fn((promise: Promise<unknown>) => pendingRetries.push(promise)) };
+    let terminalUpdates = 0;
+    const query = vi.fn(async (_binding: unknown, sql: string, values: unknown[] = []) => {
+      if (sql.includes("dialogmint_learning_preferences")) return { rows: [{ enabled: false }] };
+      if (sql.includes("monthly_allowance_micro_usd")) {
+        return { rows: [{ monthly_allowance_micro_usd: 10_000_000, consumed_micro_usd: 0 }] };
+      }
+      if (sql.includes("INSERT INTO dialogmint_ai_usage_attempts")) return { rows: [{ inserted: true }], rowCount: 1 };
+      if (sql.includes("WITH updated AS")) {
+        terminalUpdates += 1;
+        if (terminalUpdates === 1) throw new Error("SYNTHETIC_TRANSIENT_TERMINAL_OUTAGE");
+        return {
+          rows: [{
+            account_id: values[0],
+            request_id: values[1],
+            attempt_id: values[2],
+            status: values[3],
+            usage_quality: values[4],
+            uncached_input_tokens: values[5],
+            cache_write_tokens: values[6],
+            cache_write_5m_tokens: values[7],
+            cache_write_1h_tokens: values[8],
+            cache_read_tokens: values[9],
+            output_tokens: values[10],
+            thinking_tokens: values[11],
+            prompt_tokens: values[12],
+            completion_tokens: values[13],
+            total_tokens: values[14],
+            estimated_neurons: values[15],
+            estimated_cost_micro_usd: values[16],
+            pricing_version: values[17],
+            estimator_version: values[18],
+            pricing_source: values[19],
+            completed_at: values[20],
+          }],
+        };
+      }
+      throw new Error("Unexpected synthetic query");
+    });
+
+    const response = await handleRequest(draftRequest(structuredPayload()), env, {
+      verifyAccess,
+      anthropicFetch,
+      query,
+      executionContext,
+      randomUUID: vi.fn(() => REQUEST_ID),
+      now: new Date("2026-08-09T12:00:00.000Z"),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(expectedDraftResult("anthropic", { usageAccounting: "pending" }));
+    expect(executionContext.waitUntil).toHaveBeenCalledTimes(1);
+    await Promise.all(pendingRetries);
+    const insertCalls = query.mock.calls.filter(([, sql]) => String(sql).includes("INSERT INTO dialogmint_ai_usage_attempts"));
+    expect(insertCalls).toHaveLength(3);
+    const insertValues = insertCalls.map((call) => call[2] as unknown[]);
+    expect(new Set(insertValues.map((values) => values[1]))).toEqual(new Set([REQUEST_ID]));
+    expect(new Set(insertValues.map((values) => values[2])).size).toBe(3);
+    for (const values of insertValues) {
+      expect(values[0]).toMatch(/^[0-9a-f]{64}$/u);
+      expect(values[2]).toMatch(/^[0-9a-f-]{36}$/u);
+      expect(values[3]).toBe("anthropic");
+      expect(values[8]).toBe("testing");
+    }
+    expect(query.mock.calls.every(([binding]) => binding === env.NEON_TESTING)).toBe(true);
+  });
+
+  it("returns exact JSON and SSE result parity for one request ID per request", async () => {
+    const makeFetch = () => {
+      const responses = [ANALYSIS, CANDIDATE, REVIEW];
+      return vi.fn(async () => anthropicResponse(responses.shift()));
+    };
+    const jsonRandomUUID = vi.fn(() => REQUEST_ID);
+    const streamRandomUUID = vi.fn(() => REQUEST_ID);
+    const jsonResponse = await handleRequest(draftRequest(structuredPayload()), workerEnv(), draftOptions({
+      anthropicFetch: makeFetch(),
+      randomUUID: jsonRandomUUID,
+    }));
+    const streamResponse = await handleRequest(
+      draftRequest(structuredPayload(), TESTING_ORIGIN, true),
+      workerEnv(),
+      draftOptions({ anthropicFetch: makeFetch(), randomUUID: streamRandomUUID }),
+    );
+
+    const jsonResult = await jsonResponse.json();
+    const streamResult = parseSseEvents(await streamResponse.text()).at(-1)?.data;
+    expect(jsonResult).toEqual(expectedDraftResult("anthropic"));
+    expect(streamResult).toEqual(jsonResult);
+    expect(Object.keys(jsonResult)).toEqual([
+      "draft", "provider", "model", "mode", "requestId", "usageAccounting", "fallbackReason",
+    ]);
+    expect(jsonRandomUUID).toHaveBeenCalledTimes(1);
+    expect(streamRandomUUID).toHaveBeenCalledTimes(1);
   });
 
   it("streams only ordered stage metadata and one final safe result", async () => {
     const responses = [ANALYSIS, CANDIDATE, REVIEW];
     const anthropicFetch = vi.fn(async () => anthropicResponse(responses.shift()));
-    const response = await handleRequest(draftRequest(structuredPayload(), TESTING_ORIGIN, true), workerEnv(), { verifyAccess, anthropicFetch });
+    const response = await handleRequest(draftRequest(structuredPayload(), TESTING_ORIGIN, true), workerEnv(), draftOptions({ anthropicFetch }));
     const body = await response.text();
     const events = parseSseEvents(body);
 
@@ -334,7 +600,7 @@ describe("Cloudflare private inference Worker", () => {
       ["stage", "finalizing", "done"],
       ["result", undefined, undefined],
     ]);
-    expect(events.at(-1)?.data).toEqual({ draft: REVIEW.finalDraft, provider: "anthropic", model: "claude-opus-4-6", mode: "stage-aware-single-draft-v1" });
+    expect(events.at(-1)?.data).toEqual(expectedDraftResult("anthropic"));
     expect(body).not.toContain("scores");
     expect(body).not.toContain("replyPlan");
     expect(body).not.toContain("runtime-secret");
@@ -345,15 +611,15 @@ describe("Cloudflare private inference Worker", () => {
     env.AI.run = vi.fn(async () => ({ response: "not-json" }));
     const anthropicFetch = vi.fn(async () => anthropicResponse({ invalid: "analysis" }));
     const logError = vi.fn();
-    const response = await handleRequest(draftRequest(structuredPayload(), TESTING_ORIGIN, true), env, { verifyAccess, anthropicFetch, logError });
+    const response = await handleRequest(draftRequest(structuredPayload(), TESTING_ORIGIN, true), env, draftOptions({ anthropicFetch, logError }));
     const body = await response.text();
     const events = parseSseEvents(body);
 
     expect(events.at(-1)).toEqual({
       event: "error",
       data: {
-        error: "Cloud AI could not produce a safe draft. Please try again. Diagnostic: anthropic_quality_analysis_schema__cloudflare_quality_analysis_schema",
-        diagnosticCode: "anthropic_quality_analysis_schema__cloudflare_quality_analysis_schema",
+        error: "Cloud AI could not produce a safe draft. Please try again.",
+        code: "pipeline_failed",
       },
     });
     expect(body).not.toContain("runtime-secret");
@@ -365,6 +631,7 @@ describe("Cloudflare private inference Worker", () => {
       fallback: { provider: "cloudflare", kind: "quality", code: "analysis_schema" },
     });
     expect(JSON.stringify(logError.mock.calls)).not.toContain("Could you share the role details?");
+    expect(JSON.stringify(logError.mock.calls)).not.toContain("not-json");
   });
 
   it("rejects invalid stage and oversized guidelines before inference", async () => {

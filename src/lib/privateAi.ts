@@ -64,6 +64,13 @@ export interface CloudDraftResult {
   provider: "anthropic" | "cloudflare";
   model: string;
   mode: "stage-aware-single-draft-v1";
+  requestId: string;
+  usageAccounting: "recorded" | "pending";
+  fallbackReason: null
+    | "anthropic-allowance-exhausted"
+    | "anthropic-accounting-unavailable"
+    | "anthropic-pipeline-failed"
+    | "provider-override";
 }
 
 export interface DraftContextSummary {
@@ -321,12 +328,30 @@ export function parseCloudDraftResult(value: unknown): CloudDraftResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Cloudflare AI returned an invalid response.");
   const candidate = value as Record<string, unknown>;
   const keys = Object.keys(candidate).sort();
-  if (keys.join("|") !== ["draft", "mode", "model", "provider"].sort().join("|")) throw new Error("Cloudflare AI returned an invalid response.");
+  if (keys.join("|") !== ["draft", "fallbackReason", "mode", "model", "provider", "requestId", "usageAccounting"].sort().join("|")) throw new Error("Cloudflare AI returned an invalid response.");
   const draft = typeof candidate.draft === "string" ? sanitizeDraft(candidate.draft).slice(0, 5_000) : "";
   const provider = candidate.provider === "anthropic" || candidate.provider === "cloudflare" ? candidate.provider : null;
   const model = typeof candidate.model === "string" ? candidate.model.trim().slice(0, 300) : "";
-  if (!draft || !provider || !model || candidate.mode !== "stage-aware-single-draft-v1") throw new Error("Cloudflare AI returned an invalid response.");
-  return { draft, provider, model, mode: "stage-aware-single-draft-v1" };
+  const requestId = typeof candidate.requestId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(candidate.requestId)
+    ? candidate.requestId
+    : "";
+  const usageAccounting = candidate.usageAccounting === "recorded" || candidate.usageAccounting === "pending" ? candidate.usageAccounting : null;
+  const fallbackReasons = new Set([
+    "anthropic-allowance-exhausted",
+    "anthropic-accounting-unavailable",
+    "anthropic-pipeline-failed",
+    "provider-override",
+  ]);
+  const fallbackReason = candidate.fallbackReason === null || (typeof candidate.fallbackReason === "string" && fallbackReasons.has(candidate.fallbackReason))
+    ? candidate.fallbackReason as CloudDraftResult["fallbackReason"]
+    : undefined;
+  if (!draft || !provider || !model || !requestId || !usageAccounting || fallbackReason === undefined
+      || candidate.mode !== "stage-aware-single-draft-v1"
+      || (provider === "anthropic" && fallbackReason !== null)
+      || (provider === "cloudflare" && fallbackReason === null)) {
+    throw new Error("Cloudflare AI returned an invalid response.");
+  }
+  return { draft, provider, model, mode: "stage-aware-single-draft-v1", requestId, usageAccounting, fallbackReason };
 }
 
 function cloudDraftEndpoint(): string {
@@ -499,7 +524,15 @@ export async function generatePrivateDraft(
   if (modelId === CLOUDFLARE_MODEL_ID) return generateWithCloud(input, cloudConfig, onProgress, fetch, signal);
   const [draft] = await generatePrivateDrafts(modelId, input, onProgress, cloudConfig, signal);
   if (!draft) throw new Error("The local model did not return a usable draft. Please try again.");
-  return { draft, provider: "cloudflare", model: modelId, mode: "stage-aware-single-draft-v1" };
+  return {
+    draft,
+    provider: "cloudflare",
+    model: modelId,
+    mode: "stage-aware-single-draft-v1",
+    requestId: crypto.randomUUID(),
+    usageAccounting: "recorded",
+    fallbackReason: "provider-override",
+  };
 }
 
 export async function unloadPrivateModel(): Promise<void> {
