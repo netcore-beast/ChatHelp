@@ -426,9 +426,9 @@ describe("secure conversation workspace interaction", () => {
     expect(await screen.findByDisplayValue("A server-accounted reply.")).toBeTruthy();
     await waitFor(async () => expect((await openDeviceVault()).workspace.contacts[0].draftHistory?.[0]?.drafts).toEqual(["A server-accounted reply."]));
     expect((await openDeviceVault()).workspace.aiUsage).toEqual([]);
-    await waitFor(() => expect(request.mock.calls.filter(([path]) => path === "/api/usage")).toHaveLength(1));
-    await user.click(screen.getByRole("button", { name: "Settings" }));
     await waitFor(() => expect(request.mock.calls.filter(([path]) => path === "/api/usage")).toHaveLength(2));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => path === "/api/usage")).toHaveLength(3));
   }, 20_000);
 
   it("shows automatic approved cloud learning while keeping provider-assisted drafts out of retrieval", async () => {

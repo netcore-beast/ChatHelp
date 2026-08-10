@@ -5,6 +5,7 @@ const app = readFileSync("src/components/ChatHelpApp.tsx", "utf8");
 const composer = readFileSync("src/components/DraftComposer.tsx", "utf8");
 const completedDraft = readFileSync("src/components/CompletedDraftCard.tsx", "utf8");
 const progress = readFileSync("src/components/DraftProgressPanel.tsx", "utf8");
+const usageSettings = readFileSync("src/components/UsageSettingsCard.tsx", "utf8");
 const styles = readFileSync("src/app/globals.css", "utf8");
 const draftingUi = [app, composer, completedDraft, progress].join("\n");
 
@@ -70,5 +71,21 @@ describe("desktop conversation workspace layout", () => {
     expect(app).toContain("synchronizeActiveDraftContact(preview.contactId);");
     expect(app).toMatch(/const setActiveContactId[\s\S]*?synchronizeActiveDraftContact\(contactId\);[\s\S]*?setSelectedId\(contactId\);/);
     expect(app).toContain('synchronizeActiveDraftContact(next.contacts[0]?.id ?? "");');
+  });
+
+  it("keeps per-provider allowance cards compact, responsive, theme-safe, and unclipped", () => {
+    expect(app).toMatch(/<LearningSettingsCard[\s\S]*?\/>\s*<UsageSettingsCard summary=\{cloudUsage\}/);
+    expect(usageSettings).toContain('<details className="usage-advanced">');
+    expect(usageSettings).toMatch(/<summary[^>]*aria-label=\{`\$\{providerName\} Advanced`\}[^>]*>Advanced<\/summary>/);
+    expect(styles).toMatch(/\.usage-settings-card\s*\{[^}]*grid-column:\s*1 \/ -1;/);
+    expect(styles).toMatch(/\.usage-provider-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
+    expect(styles).toMatch(/\.usage-model-heading strong\s*\{[^}]*overflow-wrap:\s*anywhere;/);
+    expect(styles).toMatch(/\.usage-advanced > summary:focus-visible\s*\{[^}]*outline:/);
+    expect(styles).toMatch(/@media \(max-width:\s*1180px\)[\s\S]*?\.usage-provider-grid\s*\{[^}]*grid-template-columns:\s*1fr;/);
+    expect(styles).toMatch(/@media \(max-width:\s*1180px\)[\s\S]*?\.usage-token-totals\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
+    expect(styles).toMatch(/@media \(max-width:\s*360px\)[\s\S]*?\.usage-token-totals\s*\{[^}]*grid-template-columns:\s*1fr;/);
+    expect(styles).toContain(':root:not([data-theme="light"]) .usage-provider-card');
+    expect(styles).toContain(':root:not([data-theme="light"]) .usage-advanced');
+    expect(styles).toContain(':root:not([data-theme="light"]) .usage-model-row');
   });
 });

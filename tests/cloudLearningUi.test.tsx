@@ -6,6 +6,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ChatHelpApp from "../src/components/ChatHelpApp";
 import { SaveImprovementDialog } from "../src/components/SaveImprovementDialog";
+import { UsageSettingsCard } from "../src/components/UsageSettingsCard";
+import type { CloudUsageSummary } from "../src/lib/cloudUsage";
 import { createDeviceVault, openDeviceVault, resetVaultForTests } from "../src/lib/secureVault";
 import { createEmptyWorkspace } from "../src/lib/workspaceTypes";
 
@@ -398,6 +400,60 @@ const enabledLearningStatus = {
   counts: { classifier: 4, evaluation: 3, generative: 2 },
 };
 
+const usageTotals = {
+  uncachedInputTokens: 0,
+  cacheWriteTokens: 0,
+  cacheWrite5mTokens: 0,
+  cacheWrite1hTokens: 0,
+  cacheReadTokens: 0,
+  outputTokens: 0,
+  thinkingTokens: 0,
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+  estimatedNeurons: 0,
+};
+
+const separatedUsageSummary: CloudUsageSummary = {
+  periodStart: "2026-08-01T00:00:00.000Z",
+  nextResetAt: "2026-09-01T00:00:00.000Z",
+  providers: {
+    anthropic: {
+      provider: "anthropic",
+      consumedMicroUsd: 2_500_000,
+      allowanceMicroUsd: 12_000_000,
+      remainingMicroUsd: 9_500_000,
+      quality: "exact",
+      totals: { ...usageTotals, uncachedInputTokens: 100, cacheWriteTokens: 30, cacheWrite5mTokens: 10, cacheWrite1hTokens: 20, cacheReadTokens: 40, outputTokens: 50, thinkingTokens: 5 },
+      models: [{
+        modelId: "claude-opus-4-6",
+        consumedMicroUsd: 2_500_000,
+        quality: "exact",
+        totals: { ...usageTotals, uncachedInputTokens: 100, cacheWriteTokens: 30, cacheWrite5mTokens: 10, cacheWrite1hTokens: 20, cacheReadTokens: 40, outputTokens: 50, thinkingTokens: 5 },
+      }],
+    },
+    workersAi: {
+      provider: "workers_ai",
+      consumedMicroUsd: 300_000,
+      allowanceMicroUsd: 2_000_000,
+      remainingMicroUsd: 1_700_000,
+      quality: "estimated",
+      totals: { ...usageTotals, uncachedInputTokens: 20, outputTokens: 20, promptTokens: 20, completionTokens: 20, totalTokens: 40 },
+      models: [{
+        modelId: "@cf/meta/llama-3.1-8b-instruct-fast",
+        consumedMicroUsd: 100_000,
+        quality: "estimated",
+        totals: { ...usageTotals, uncachedInputTokens: 9, outputTokens: 7, promptTokens: 9, completionTokens: 7, totalTokens: 16 },
+      }, {
+        modelId: "@cf/openai/gpt-oss-120b",
+        consumedMicroUsd: 200_000,
+        quality: "exact",
+        totals: { ...usageTotals, uncachedInputTokens: 11, outputTokens: 13, promptTokens: 11, completionTokens: 13, totalTokens: 24 },
+      }],
+    },
+  },
+};
+
 const firstLearningCursor = Buffer.from(JSON.stringify({
   updatedAt: "2026-08-08T00:00:00.000Z",
   recordId: "evaluation-1",
@@ -427,8 +483,13 @@ function learningRecord(recordKind: "classifier" | "evaluation" | "generative", 
   } };
 }
 
-async function renderLearningSettings(fetchImplementation: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>) {
-  await createDeviceVault(createEmptyWorkspace());
+async function renderLearningSettings(
+  fetchImplementation: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+  options: { inferenceConsented?: boolean } = {},
+) {
+  const workspace = createEmptyWorkspace();
+  if (options.inferenceConsented) workspace.cloudInference.consentedAt = "2026-08-09T12:00:00.000Z";
+  await createDeviceVault(workspace);
   const request = vi.fn(fetchImplementation);
   vi.stubGlobal("fetch", request);
   const user = userEvent.setup();
@@ -437,6 +498,183 @@ async function renderLearningSettings(fetchImplementation: (input: RequestInfo |
   await user.click(screen.getByRole("button", { name: "Settings" }));
   return { request, user };
 }
+
+describe("per-provider usage settings", () => {
+  it("loads signed-in-account usage whenever Settings opens", async () => {
+    const { request } = await renderLearningSettings(async (input) => {
+      if (String(input) === "/api/learning/status") return learningJson(enabledLearningStatus);
+      if (String(input) === "/api/usage") return learningJson(separatedUsageSummary);
+      throw new Error(`Unexpected request: ${String(input)}`);
+    });
+
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => String(path) === "/api/usage")).toHaveLength(1));
+  });
+
+  it("shows separate app allowances without claiming provider credits", async () => {
+    await renderLearningSettings(async (input) => {
+      if (String(input) === "/api/learning/status") return learningJson(enabledLearningStatus);
+      if (String(input) === "/api/usage") return learningJson(separatedUsageSummary);
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }, { inferenceConsented: true });
+
+    const accountUsage = await screen.findByRole("region", { name: "This signed-in account" });
+    expect(within(accountUsage).getByRole("heading", { name: "Anthropic" })).toBeTruthy();
+    expect(within(accountUsage).getByRole("heading", { name: "Workers AI" })).toBeTruthy();
+    expect(within(accountUsage).getByRole("article", { name: "Anthropic" })).toBeTruthy();
+    expect(within(accountUsage).getByRole("article", { name: "Workers AI" })).toBeTruthy();
+    expect(within(accountUsage).getByText("Configured monthly app allowances with consumed and estimated remaining amounts from DialogMint's recorded usage for this account.")).toBeTruthy();
+    expect(within(accountUsage).getAllByText("Estimated remaining app allowance")).toHaveLength(2);
+    expect(within(accountUsage).getByText("Resets Sep 1, 2026 at 12:00 AM UTC")).toBeTruthy();
+    expect(within(accountUsage).queryByText(/credit balance|provider balance|prepaid credits|token balance|billing balance/i)).toBeNull();
+  });
+
+  it("marks mixed Workers accounting honestly and keeps model detail in a closed native disclosure", () => {
+    render(<UsageSettingsCard summary={separatedUsageSummary} />);
+    expect(within(screen.getByRole("region", { name: "This signed-in account" })).queryAllByRole("banner")).toHaveLength(0);
+    const workersCard = screen.getByRole("heading", { name: "Workers AI" }).closest("article");
+    expect(workersCard).not.toBeNull();
+    const workers = within(workersCard as HTMLElement);
+
+    expect(workers.getByText("Includes estimated usage")).toBeTruthy();
+    expect(workers.getByText("Llama price uses published FP8-Fast proxy")).toBeTruthy();
+    const totals = workers.getByLabelText("Workers AI token totals");
+    expect(within(totals).getByText("Input tokens").parentElement?.textContent).toBe("Input tokens20");
+    expect(within(totals).getByText("Output tokens").parentElement?.textContent).toBe("Output tokens20");
+    expect(within(totals).getByText("Thinking tokens (included in output)")).toBeTruthy();
+
+    const advancedSummary = workers.getByText("Advanced").closest("summary") as HTMLElement;
+    const advanced = advancedSummary.closest("details") as HTMLDetailsElement;
+    expect(advancedSummary.tagName).toBe("SUMMARY");
+    expect(advancedSummary.getAttribute("aria-label")).toBe("Workers AI Advanced");
+    expect(advanced.open).toBe(false);
+    expect(within(advanced).getByText("@cf/meta/llama-3.1-8b-instruct-fast")).toBeTruthy();
+    expect(within(advanced).getByText("@cf/openai/gpt-oss-120b")).toBeTruthy();
+    advancedSummary.focus();
+    expect(document.activeElement).toBe(advancedSummary);
+    // JSDOM omits the native summary keyboard default; click models the UA activation after each uncanceled key sequence.
+    expect(fireEvent.keyDown(advancedSummary, { key: "Enter", code: "Enter" })).toBe(true);
+    fireEvent.click(advancedSummary);
+    expect(advanced.open).toBe(true);
+    expect(fireEvent.keyDown(advancedSummary, { key: " ", code: "Space" })).toBe(true);
+    expect(fireEvent.keyUp(advancedSummary, { key: " ", code: "Space" })).toBe(true);
+    fireEvent.click(advancedSummary);
+    expect(advanced.open).toBe(false);
+  });
+
+  it("keys the FP8-Fast proxy disclosure to the Llama model instead of token quality", () => {
+    const exactLlama = structuredClone(separatedUsageSummary);
+    exactLlama.providers.workersAi.quality = "exact";
+    exactLlama.providers.workersAi.models[0].quality = "exact";
+    const { rerender } = render(<UsageSettingsCard summary={exactLlama} />);
+    expect(screen.getByText("Llama price uses published FP8-Fast proxy")).toBeTruthy();
+
+    const estimatedGpt = structuredClone(separatedUsageSummary);
+    estimatedGpt.providers.workersAi.consumedMicroUsd = 200_000;
+    estimatedGpt.providers.workersAi.remainingMicroUsd = 1_800_000;
+    estimatedGpt.providers.workersAi.totals = { ...usageTotals, uncachedInputTokens: 11, outputTokens: 13, promptTokens: 11, completionTokens: 13, totalTokens: 24 };
+    estimatedGpt.providers.workersAi.models = [{
+      ...estimatedGpt.providers.workersAi.models[1],
+      quality: "estimated",
+    }];
+    rerender(<UsageSettingsCard summary={estimatedGpt} />);
+    expect(screen.queryByText("Llama price uses published FP8-Fast proxy")).toBeNull();
+    expect(screen.getByText("Includes estimated usage")).toBeTruthy();
+  });
+
+  it("distinguishes loading, unavailable, and recorded-zero usage", () => {
+    const { rerender } = render(<UsageSettingsCard summary={null} />);
+    expect(screen.getByRole("status").textContent).toContain("Loading current app allowances");
+
+    rerender(<UsageSettingsCard summary={null} statusMessage="App allowances are temporarily unavailable." />);
+    expect(screen.getByRole("status").textContent).toBe("App allowances are temporarily unavailable.");
+    expect(screen.queryByText(/Loading current app allowances/)).toBeNull();
+
+    const unavailable = structuredClone(separatedUsageSummary);
+    for (const provider of [unavailable.providers.anthropic, unavailable.providers.workersAi]) {
+      provider.consumedMicroUsd = 0;
+      provider.remainingMicroUsd = provider.allowanceMicroUsd;
+      provider.quality = "unavailable";
+      provider.totals = { ...usageTotals };
+      provider.models = [];
+    }
+    rerender(<UsageSettingsCard summary={unavailable} />);
+    expect(screen.getAllByText("Recorded usage quality unavailable")).toHaveLength(2);
+    expect(screen.getAllByText("$0.00", { selector: "dd" })).toHaveLength(2);
+    expect(screen.queryByText(/Loading current app allowances/)).toBeNull();
+  });
+
+  it("clamps over-allowance and zero-allowance progress without hiding consumed usage", () => {
+    const overAllowance = structuredClone(separatedUsageSummary);
+    overAllowance.providers.anthropic.consumedMicroUsd = 13_000_000;
+    overAllowance.providers.anthropic.remainingMicroUsd = 0;
+    overAllowance.providers.anthropic.models[0].consumedMicroUsd = 13_000_000;
+    overAllowance.providers.workersAi.consumedMicroUsd = 100_000;
+    overAllowance.providers.workersAi.allowanceMicroUsd = 0;
+    overAllowance.providers.workersAi.remainingMicroUsd = 0;
+    overAllowance.providers.workersAi.models = [{
+      ...overAllowance.providers.workersAi.models[0],
+      consumedMicroUsd: 100_000,
+    }];
+    render(<UsageSettingsCard summary={overAllowance} />);
+
+    expect(screen.getAllByText("$0.00", { selector: "dd" })).toHaveLength(3);
+    const anthropic = screen.getByRole("heading", { name: "Anthropic" }).closest("article") as HTMLElement;
+    expect(within(anthropic).getByText("Consumed", { selector: "dt" }).parentElement?.textContent).toContain("$13.00");
+    const zeroAllowanceProgress = screen.getByRole("progressbar", { name: "Workers AI monthly app allowance consumed" });
+    expect(zeroAllowanceProgress.getAttribute("max")).toBe("1");
+    expect(zeroAllowanceProgress.getAttribute("value")).toBe("1");
+    expect(zeroAllowanceProgress.getAttribute("aria-valuetext")).toBe("$0.10 consumed of $0.00 monthly app allowance");
+    expect(screen.queryByText(/-\$|NaN|Infinity/)).toBeNull();
+  });
+
+  it("keeps the newest usage refresh when an older request finishes later", async () => {
+    let resolveFirstUsage!: (response: Response) => void;
+    let usageRequestCount = 0;
+    const firstUsage = new Promise<Response>((resolve) => { resolveFirstUsage = resolve; });
+    const newestUsage = structuredClone(separatedUsageSummary);
+    newestUsage.providers.anthropic.consumedMicroUsd = 3_000_000;
+    newestUsage.providers.anthropic.remainingMicroUsd = 9_000_000;
+    newestUsage.providers.anthropic.models[0].consumedMicroUsd = 3_000_000;
+    const { request, user } = await renderLearningSettings(async (input) => {
+      if (String(input) === "/api/learning/status") return learningJson(enabledLearningStatus);
+      if (String(input) === "/api/usage") {
+        usageRequestCount += 1;
+        return usageRequestCount === 1 ? firstUsage : learningJson(newestUsage);
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    });
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => String(path) === "/api/usage")).toHaveLength(1));
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => String(path) === "/api/usage")).toHaveLength(2));
+    const anthropic = (await screen.findByRole("heading", { name: "Anthropic" })).closest("article") as HTMLElement;
+    await waitFor(() => expect(within(anthropic).getByText("Consumed").parentElement?.textContent).toBe("Consumed$3.00"));
+
+    await act(async () => resolveFirstUsage(learningJson(separatedUsageSummary)));
+    await waitFor(() => expect(within(anthropic).getByText("Consumed").parentElement?.textContent).toBe("Consumed$3.00"));
+  });
+
+  it("retains the last server summary when a later refresh is unavailable", async () => {
+    let usageRequestCount = 0;
+    const { user } = await renderLearningSettings(async (input) => {
+      if (String(input) === "/api/learning/status") return learningJson(enabledLearningStatus);
+      if (String(input) === "/api/usage") {
+        usageRequestCount += 1;
+        if (usageRequestCount === 1) return learningJson(separatedUsageSummary);
+        throw new Error("offline");
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    });
+    const accountUsage = await screen.findByRole("region", { name: "This signed-in account" });
+    expect(within(accountUsage).getByRole("heading", { name: "Workers AI" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    expect(await within(accountUsage).findByText("App allowances are temporarily unavailable. Showing the last recorded summary.")).toBeTruthy();
+    expect(within(accountUsage).getByText("Workers AI")).toBeTruthy();
+    expect(within(accountUsage).queryByText(/Loading current app allowances/)).toBeNull();
+  });
+});
 
 describe("approved cloud learning settings", () => {
   it("uses a neutral status while the signed-in account check is still loading", async () => {

@@ -12,6 +12,7 @@ import { DraftProgressPanel } from "@/components/DraftProgressPanel";
 import { DraftComposer } from "@/components/DraftComposer";
 import { CompletedDraftCard } from "@/components/CompletedDraftCard";
 import { LearningSettingsCard } from "@/components/LearningSettingsCard";
+import { UsageSettingsCard } from "@/components/UsageSettingsCard";
 import { SaveImprovementDialog } from "@/components/SaveImprovementDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { deriveConversationState, sortPinnedThenRecent } from "@/lib/conversationState";
@@ -22,7 +23,7 @@ import { deleteCloudVault, readCloudVault } from "@/lib/cloudRecoveryClient";
 import { synchronizeCloudWorkspace, type CloudSyncState } from "@/lib/cloudRecoverySync";
 import { applyCloudLearningSyncDelta, clearDeletedCloudLearningSyncMetadata, clearDisabledCloudLearningState, deleteCloudLearningRecord, disableAndDeleteCloudLearning, readCloudLearningStatus, syncPendingLearningRecords, updateCloudLearningPreference, uploadCloudLearningRecords, type CloudLearningKnownIdentifiers, type CloudLearningRecord, type CloudLearningStatus, type CloudLearningUploadResult } from "@/lib/cloudLearning";
 import { GOAL_CATEGORY_BY_STAGE } from "@/lib/learningSanitizer";
-import { formatMicroUsd, readCloudUsage, type CloudUsageSummary } from "@/lib/cloudUsage";
+import { readCloudUsage, type CloudUsageSummary } from "@/lib/cloudUsage";
 import { deleteContactEverywhere, mergeCloudWorkspaces } from "@/lib/cloudWorkspaceMerge";
 import {
   LINKEDIN_EXTENSION_SOURCE,
@@ -368,6 +369,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [cloudLearningStatusMessage, setCloudLearningStatusMessage] = useState("");
   const [cloudUsage, setCloudUsage] = useState<CloudUsageSummary | null>(null);
   const [cloudUsageStatus, setCloudUsageStatus] = useState("");
+  const cloudUsageRequestSequence = useRef(0);
   const [localSaveSequence, setLocalSaveSequence] = useState(0);
   const [newContactName, setNewContactName] = useState("");
   const [newPlatform, setNewPlatform] = useState<ConversationPlatform>("linkedin");
@@ -817,7 +819,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setMobileConversationOpen(false);
     if (view === "settings") {
       void refreshCloudLearningStatus();
-      if (workspaceRef.current.cloudInference.consentedAt) void refreshCloudUsage();
+      void refreshCloudUsage();
     }
     if (view === "archived") setInboxFilter("archived");
     else if (view === "reminders") setInboxFilter("follow-up-due");
@@ -825,13 +827,16 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   }
 
   async function refreshCloudUsage() {
+    const requestSequence = ++cloudUsageRequestSequence.current;
     try {
       const summary = await readCloudUsage();
+      if (requestSequence !== cloudUsageRequestSequence.current) return;
       setCloudUsage(summary);
       setCloudUsageStatus("");
     } catch {
+      if (requestSequence !== cloudUsageRequestSequence.current) return;
       // An unavailable allowance must not modify encrypted conversation state or discard a prior summary.
-      setCloudUsageStatus("ChatHelp app allowance is temporarily unavailable.");
+      setCloudUsageStatus("App allowances are temporarily unavailable.");
     }
   }
 
@@ -1688,16 +1693,6 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
           </section> : inboxView === "settings" ? <section className="conversation-column settings-column">
             <header className="conversation-header"><div><p className="eyebrow">SETTINGS</p><h2>Workspace and drafting</h2><p>Preferences and guidance stay in this encrypted browser vault.</p></div></header>
             <div className="settings-scroll">
-              <section className="panel-card" aria-label="ChatHelp app allowance">
-                <h3>ChatHelp app allowance</h3>
-                <p className="section-explainer">Estimated current account allowance from DialogMint&apos;s server records. It is not a prepaid amount.</p>
-                {cloudUsage ? <dl>
-                  <div><dt>Anthropic remaining</dt><dd>{formatMicroUsd(cloudUsage.providers.anthropic.remainingMicroUsd)} ({cloudUsage.providers.anthropic.quality})</dd></div>
-                  <div><dt>Workers AI remaining</dt><dd>{formatMicroUsd(cloudUsage.providers.workersAi.remainingMicroUsd)} ({cloudUsage.providers.workersAi.quality})</dd></div>
-                  <div><dt>Resets</dt><dd>{new Date(cloudUsage.nextResetAt).toLocaleString()}</dd></div>
-                </dl> : <p>{cloudUsageStatus || "Loading current ChatHelp app allowance…"}</p>}
-                {cloudUsageStatus && cloudUsage && <p role="status">{cloudUsageStatus}</p>}
-              </section>
               <section className="panel-card"><h3>Add a contact manually</h3><p className="section-explainer">Automatic sync creates new LinkedIn contacts for you. Manual creation remains available for other services and fallback imports.</p><label>Conversation platform<select aria-label="Conversation platform" value={newPlatform} onChange={(event) => setNewPlatform(event.target.value as ConversationPlatform)}>{PLATFORM_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><div className="inline-form"><input aria-label="New contact name" value={newContactName} onChange={(event) => setNewContactName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addContact()} placeholder="New contact name" /><button onClick={addContact}>Add</button></div></section>
               <section className="panel-card guidance-card">
                 <p className="eyebrow">ABOUT YOU</p>
@@ -1726,6 +1721,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 onDisableAndDelete={disableAndDeleteSyncedCloudLearning}
                 onEnable={enableSyncedCloudLearning}
               />
+              <UsageSettingsCard summary={cloudUsage} statusMessage={cloudUsageStatus} />
               <section className="panel-card cloud-backup-card">
                 <p className="eyebrow">ENCRYPTED RECOVERY</p>
                 <h3>Encrypted 90-day backup</h3>
