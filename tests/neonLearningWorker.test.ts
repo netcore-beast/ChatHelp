@@ -123,6 +123,67 @@ describe("current-account Neon learning boundary", () => {
     expect(bindings.DRAFT_RATE_LIMITER.limit).toHaveBeenCalledWith({ key: `learning:${ACCOUNT_A}` });
   });
 
+  it("handles strict decision routes only after rate limiting and account-header rejection, before reading their body", async () => {
+    const body = {
+      decision: {
+        action: "useful",
+        goalCategory: "discover_interests",
+        kind: "evaluation",
+        relationshipStage: "learn_interests",
+        roleId: "human_resource",
+      },
+    };
+    const deniedByRate = request("/api/learning/decisions/learning-decision-1", { method: "PUT", body });
+    const rateText = vi.spyOn(deniedByRate, "text");
+    const rateEnv = env();
+    rateEnv.DRAFT_RATE_LIMITER.limit.mockResolvedValue({ success: false });
+    const rateResponse = await handleLearningRequest(deniedByRate, rateEnv, new URL(deniedByRate.url), { accountId: ACCOUNT_A, environment: "testing" }, { now: NOW });
+    expect(rateResponse?.status).toBe(429);
+    expect(rateText).not.toHaveBeenCalled();
+
+    const deniedByHeader = request("/api/learning/decisions/learning-decision-1", {
+      method: "PUT", body, headers: { "X-Account-Id": ACCOUNT_B },
+    });
+    const headerText = vi.spyOn(deniedByHeader, "text");
+    const headerResponse = await handleLearningRequest(deniedByHeader, env(), new URL(deniedByHeader.url), { accountId: ACCOUNT_A, environment: "testing" }, { now: NOW });
+    expect(headerResponse?.status).toBe(400);
+    expect(headerText).not.toHaveBeenCalled();
+
+    const query = vi.fn();
+    const queried = await directCall("/api/learning/decisions/learning-decision-1?accountId=forbidden", { method: "PUT", body, query });
+    expect(queried.response.status).toBe(400);
+    expect(query).not.toHaveBeenCalled();
+    expect(queried.response.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("routes a valid decision through the authenticated account binding and returns only its acknowledgement", async () => {
+    const client = {
+      connect: vi.fn().mockResolvedValue(undefined),
+      query: vi.fn(async (sql: string, values: unknown[] = []) => {
+        if (sql === "BEGIN" || sql === "COMMIT") return { rows: [], rowCount: 0 };
+        if (/dialogmint_learning_preferences/iu.test(sql)) return { rows: [{ enabled: true }], rowCount: 1 };
+        if (/FROM dialogmint_learning_records[\s\S]+FOR UPDATE/iu.test(sql)) return { rows: [], rowCount: 0 };
+        if (/INSERT INTO dialogmint_learning_records/iu.test(sql)) {
+          return { rows: [{ record_id: values[1], record_kind: values[2], evaluation_action: values[7], content_digest: values[12], updated_at: values[13] }], rowCount: 1 };
+        }
+        throw new Error("Unexpected query");
+      }),
+      end: vi.fn().mockResolvedValue(undefined),
+    };
+    const { response } = await directCall("/api/learning/decisions/learning-decision-1", {
+      method: "PUT",
+      body: { decision: { action: "useful", goalCategory: "discover_interests", kind: "evaluation", relationshipStage: "learn_interests", roleId: "human_resource" } },
+      createClient: vi.fn(() => client),
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      recordId: "learning-decision-1", decision: "useful", recordKind: "evaluation", contentDigest: expect.stringMatching(/^[a-f0-9]{64}$/u), changed: true, updatedAt: NOW.toISOString(),
+    });
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(JSON.stringify(client.query.mock.calls)).not.toContain(ACCOUNT_B);
+    expect(client.end).toHaveBeenCalledTimes(1);
+  });
+
   it("updates the current account preference and propagates its enabled state", async () => {
     for (const enabled of [false, true]) {
       const client = {

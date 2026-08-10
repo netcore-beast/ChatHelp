@@ -680,6 +680,20 @@ describe("Cloudflare private inference Worker", () => {
     expect(crossOriginEnv.DRAFT_RATE_LIMITER.limit).not.toHaveBeenCalled();
   });
 
+  it("rejects an unauthenticated learning decision before reading its request body", async () => {
+    const env = workerEnv();
+    const request = new Request(`${TESTING_ORIGIN}/api/learning/decisions/learning-decision-1`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision: { action: "useful" } }),
+    });
+    const readBody = vi.spyOn(request, "text");
+    const response = await handleRequest(request, env, { verifyAccess });
+    expect(response.status).toBe(401);
+    expect(readBody).not.toHaveBeenCalled();
+    expect(env.DRAFT_RATE_LIMITER.limit).not.toHaveBeenCalled();
+  });
+
   it("authenticates usage reads before rate limiting and returns a no-store current-account summary", async () => {
     const unauthenticatedEnv = workerEnv();
     const unauthenticated = await handleRequest(new Request(`${TESTING_ORIGIN}/api/usage`), unauthenticatedEnv, { verifyAccess });

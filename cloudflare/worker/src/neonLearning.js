@@ -1,4 +1,5 @@
 import { Client } from "pg";
+import { DraftDecisionConflictError, DraftDecisionRequestError, putDraftLearningDecision } from "./draftLearningDecision.js";
 import { digestableLearningRecord, goalCategoryForStage, validateLearningRecord } from "./learningPolicy.js";
 import { queryNeon, resolveNeonContext } from "./neonDb.js";
 
@@ -413,7 +414,9 @@ async function disableAndDeleteLearning(binding, accountId, options) {
 }
 
 function learningErrorResponse(error) {
-  if (error instanceof LearningRequestError) return noStoreJson({ error: error.message }, error.status);
+  if (error instanceof LearningRequestError || error instanceof DraftDecisionRequestError || error instanceof DraftDecisionConflictError) {
+    return noStoreJson({ error: error.message }, error.status);
+  }
   return noStoreJson({ error: "Cloud learning is temporarily unavailable." }, 503);
 }
 
@@ -444,6 +447,17 @@ export async function handleLearningRequest(request, env, url, identity, options
   try {
     if (!(request.method === "GET" && url.pathname === "/api/learning/records")
         && [...url.searchParams.keys()].length) throw new LearningRequestError("Learning query is invalid.");
+    const decisionMatch = request.method === "PUT"
+      && url.pathname.match(/^\/api\/learning\/decisions\/([a-z0-9-]{1,64})$/u);
+    if (decisionMatch) {
+      return noStoreJson(await putDraftLearningDecision(
+        binding,
+        identity.accountId,
+        decisionMatch[1],
+        await readStrictJson(request),
+        options,
+      ));
+    }
     if (request.method === "GET" && url.pathname === "/api/learning/status") {
       return noStoreJson(await readLearningStatus(binding, identity.accountId, neonContext.environment, options));
     }
