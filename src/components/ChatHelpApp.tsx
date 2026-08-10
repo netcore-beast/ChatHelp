@@ -18,6 +18,7 @@ import { createCloudSafeWorkspace, createRecoveryBundle, decryptCloudWorkspace, 
 import { deleteCloudVault, readCloudVault } from "@/lib/cloudRecoveryClient";
 import { synchronizeCloudWorkspace, type CloudSyncState } from "@/lib/cloudRecoverySync";
 import { applyCloudLearningSyncDelta, clearDeletedCloudLearningSyncMetadata, clearDisabledCloudLearningState, deleteCloudLearningRecord, disableAndDeleteCloudLearning, syncPendingLearningRecords } from "@/lib/cloudLearning";
+import { formatMicroUsd, readCloudUsage, type CloudUsageSummary } from "@/lib/cloudUsage";
 import { deleteContactEverywhere, mergeCloudWorkspaces } from "@/lib/cloudWorkspaceMerge";
 import {
   LINKEDIN_EXTENSION_SOURCE,
@@ -340,6 +341,8 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [saveStatus, setSaveStatus] = useState("Encrypted");
   const [cloudSyncState, setCloudSyncState] = useState<CloudSyncState>(() => baseCloudSyncState(initial.cloudRecovery.enabled ? "preparing" : "off", initial.cloudRecovery.revision));
   const [cloudLearningSyncStatus, setCloudLearningSyncStatus] = useState("");
+  const [cloudUsage, setCloudUsage] = useState<CloudUsageSummary | null>(null);
+  const [cloudUsageStatus, setCloudUsageStatus] = useState("");
   const [localSaveSequence, setLocalSaveSequence] = useState(0);
   const [newContactName, setNewContactName] = useState("");
   const [newPlatform, setNewPlatform] = useState<ConversationPlatform>("linkedin");
@@ -607,9 +610,21 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   function changeInboxView(view: InboxView) {
     setInboxView(view);
     setMobileConversationOpen(false);
+    if (view === "settings" && workspaceRef.current.cloudInference.consentedAt) void refreshCloudUsage();
     if (view === "archived") setInboxFilter("archived");
     else if (view === "reminders") setInboxFilter("follow-up-due");
     else if (view === "inbox") setInboxFilter("main");
+  }
+
+  async function refreshCloudUsage() {
+    try {
+      const summary = await readCloudUsage();
+      setCloudUsage(summary);
+      setCloudUsageStatus("");
+    } catch {
+      // An unavailable allowance must not modify encrypted conversation state or discard a prior summary.
+      setCloudUsageStatus("ChatHelp app allowance is temporarily unavailable.");
+    }
   }
 
   function updateContactById(contactId: string, updater: (current: Contact) => Contact) {
@@ -1087,6 +1102,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     };
     try {
       const result = await generatePrivateDraft(CLOUDFLARE_MODEL_ID, createDraftInput(activeContact, draftingGuidance, requestAgenda, workspace), handleDraftProgress, workspace.cloudInference, abortController.signal);
+      void refreshCloudUsage();
       const nextDrafts = [result.draft];
       if (!receivedStageEvent) setDraftStageStatuses({ analyzing: "done", drafting: "done", reviewing: "done", finalizing: "done" });
       if (workspaceRef.current.inboxRole !== draftingRole) {
@@ -1101,15 +1117,6 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
           ...item,
           draftHistory: [...(item.draftHistory ?? []), { id: newId("draft-set"), agenda: requestAgenda.slice(0, 5_000), drafts: nextDrafts, createdAt: generatedAt, role: draftingRole, provider: result.provider, modelId: result.model }].slice(-20),
         } : item),
-        aiUsage: [...(current.aiUsage ?? []), {
-          id: newId("ai-usage"),
-          contactId: activeContact.id,
-          modelId: result.model,
-          promptCharacters: requestAgenda.length + activeContact.profileNotes.length + activeContact.chat.slice(-40).reduce((total, message) => total + message.body.length, 0),
-          variants: nextDrafts.length,
-          estimatedCostUsd: 0,
-          createdAt: generatedAt,
-        }].slice(-1000),
       }));
       const providerName = result.provider === "anthropic"
         ? "Claude Opus 4.6 Thinking"
@@ -1129,6 +1136,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         return activeStage ? { ...current, [activeStage]: "error" } : current;
       });
       setDraftError(formatError(error));
+      void refreshCloudUsage();
     } finally {
       setDraftAbortController((current) => current === abortController ? null : current);
       setIsGenerating(false);
@@ -1465,6 +1473,16 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
           </section> : inboxView === "settings" ? <section className="conversation-column settings-column">
             <header className="conversation-header"><div><p className="eyebrow">SETTINGS</p><h2>Workspace and drafting</h2><p>Preferences and guidance stay in this encrypted browser vault.</p></div></header>
             <div className="settings-scroll">
+              <section className="panel-card" aria-label="ChatHelp app allowance">
+                <h3>ChatHelp app allowance</h3>
+                <p className="section-explainer">Estimated current account allowance from DialogMint&apos;s server records. It is not a prepaid amount.</p>
+                {cloudUsage ? <dl>
+                  <div><dt>Anthropic remaining</dt><dd>{formatMicroUsd(cloudUsage.providers.anthropic.remainingMicroUsd)} ({cloudUsage.providers.anthropic.quality})</dd></div>
+                  <div><dt>Workers AI remaining</dt><dd>{formatMicroUsd(cloudUsage.providers.workersAi.remainingMicroUsd)} ({cloudUsage.providers.workersAi.quality})</dd></div>
+                  <div><dt>Resets</dt><dd>{new Date(cloudUsage.nextResetAt).toLocaleString()}</dd></div>
+                </dl> : <p>{cloudUsageStatus || "Loading current ChatHelp app allowance…"}</p>}
+                {cloudUsageStatus && cloudUsage && <p role="status">{cloudUsageStatus}</p>}
+              </section>
               <section className="panel-card"><h3>Add a contact manually</h3><p className="section-explainer">Automatic sync creates new LinkedIn contacts for you. Manual creation remains available for other services and fallback imports.</p><label>Conversation platform<select aria-label="Conversation platform" value={newPlatform} onChange={(event) => setNewPlatform(event.target.value as ConversationPlatform)}>{PLATFORM_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><div className="inline-form"><input aria-label="New contact name" value={newContactName} onChange={(event) => setNewContactName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addContact()} placeholder="New contact name" /><button onClick={addContact}>Add</button></div></section>
               <section className="panel-card guidance-card">
                 <p className="eyebrow">ABOUT YOU</p>

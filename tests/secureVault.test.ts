@@ -232,6 +232,10 @@ describe("encrypted device vault", () => {
   it("migrates version 13 learning to bounded default-on version 14 metadata without copying feedback", () => {
     const migrated = normalizeWorkspace({
       version: 13,
+      aiUsage: [{
+        id: "legacy-usage", contactId: "alex", modelId: "legacy-model", promptCharacters: 42,
+        variants: 3, estimatedCostUsd: 9.99, createdAt: "2026-08-01T00:00:00.000Z",
+      }],
       feedback: [{
         id: "legacy-feedback", contactId: "alex", draft: "Provider draft", preferredResponse: "A private reply",
         action: "accepted", origin: "independently_user_authored", independentlyAuthoredAttested: true,
@@ -251,6 +255,10 @@ describe("encrypted device vault", () => {
     });
 
     expect(migrated.version).toBe(14);
+    expect(migrated.aiUsage).toEqual([{
+      id: "legacy-usage", contactId: "alex", modelId: "legacy-model", promptCharacters: 42,
+      variants: 3, estimatedCostUsd: 0, createdAt: "2026-08-01T00:00:00.000Z",
+    }]);
     expect(migrated.personalLearning.enabled).toBe(true);
     expect(migrated.cloudLearningSync).toEqual([]);
     expect(migrated.feedback).toHaveLength(1);

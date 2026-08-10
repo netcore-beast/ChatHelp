@@ -59,6 +59,22 @@ const automaticSnapshot = (messages: SnapshotMessage[] = [{
   messages,
 });
 
+function usageResponse(): Response {
+  const totals = {
+    uncachedInputTokens: 0, cacheWriteTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0,
+    cacheReadTokens: 0, outputTokens: 0, thinkingTokens: 0, promptTokens: 0, completionTokens: 0,
+    totalTokens: 0, estimatedNeurons: 0,
+  };
+  return new Response(JSON.stringify({
+    periodStart: "2026-08-01T00:00:00.000Z",
+    nextResetAt: "2026-09-01T00:00:00.000Z",
+    providers: {
+      anthropic: { provider: "anthropic", consumedMicroUsd: 0, allowanceMicroUsd: 10_000_000, remainingMicroUsd: 10_000_000, quality: "unavailable", totals, models: [] },
+      workersAi: { provider: "workers_ai", consumedMicroUsd: 0, allowanceMicroUsd: 2_000_000, remainingMicroUsd: 2_000_000, quality: "unavailable", totals, models: [] },
+    },
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
 async function announceExtension() {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await act(async () => {
@@ -286,6 +302,9 @@ describe("secure conversation workspace interaction", () => {
       provider: "anthropic",
       model: "claude-opus-4-6",
       mode: "stage-aware-single-draft-v1",
+      usageAccounting: "recorded",
+      requestId: "123e4567-e89b-42d3-a456-426614174000",
+      fallbackReason: null,
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", request);
     const user = userEvent.setup();
@@ -313,7 +332,7 @@ describe("secure conversation workspace interaction", () => {
 
     expect(await screen.findByLabelText("Edit draft 1")).toBeTruthy();
     expect(screen.queryByLabelText("Edit draft 2")).toBeNull();
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls.filter(([path]) => path === "/api/drafts")).toHaveLength(1);
     expect(request.mock.calls[0][1]?.credentials).toBe("same-origin");
     const requestBody = JSON.parse(request.mock.calls[0][1]?.body as string);
     expect(requestBody.replyObjective).toBe("");
@@ -329,12 +348,56 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.getByRole("link", { name: /Open LinkedIn to review and paste/ })).toBeTruthy();
   }, 20_000);
 
+  it("refreshes the server allowance after generation and when Settings opens without appending local usage", async () => {
+    const totals = {
+      uncachedInputTokens: 0, cacheWriteTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0,
+      cacheReadTokens: 0, outputTokens: 0, thinkingTokens: 0, promptTokens: 0, completionTokens: 0,
+      totalTokens: 0, estimatedNeurons: 0,
+    };
+    const usage = {
+      periodStart: "2026-08-01T00:00:00.000Z",
+      nextResetAt: "2026-09-01T00:00:00.000Z",
+      providers: {
+        anthropic: { provider: "anthropic", consumedMicroUsd: 0, allowanceMicroUsd: 10_000_000, remainingMicroUsd: 10_000_000, quality: "unavailable", totals, models: [] },
+        workersAi: { provider: "workers_ai", consumedMicroUsd: 0, allowanceMicroUsd: 2_000_000, remainingMicroUsd: 2_000_000, quality: "unavailable", totals, models: [] },
+      },
+    };
+    const request = vi.fn(async (path: RequestInfo | URL) => {
+      if (String(path) === "/api/usage") return new Response(JSON.stringify(usage), { status: 200, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({
+        draft: "A server-accounted reply.", provider: "anthropic", model: "claude-opus-4-6",
+        mode: "stage-aware-single-draft-v1", usageAccounting: "recorded", requestId: "123e4567-e89b-42d3-a456-426614174000", fallbackReason: null,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", request);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await announceExtension();
+    await deliverSnapshot();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
+    await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
+
+    expect(await screen.findByDisplayValue("A server-accounted reply.")).toBeTruthy();
+    await waitFor(async () => expect((await openDeviceVault()).workspace.contacts[0].draftHistory?.[0]?.drafts).toEqual(["A server-accounted reply."]));
+    expect((await openDeviceVault()).workspace.aiUsage).toEqual([]);
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => path === "/api/usage")).toHaveLength(1));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => path === "/api/usage")).toHaveLength(2));
+  }, 20_000);
+
   it("defaults approved learning on and still requires independent authorship before retrieval", async () => {
     const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       draft: "I can share the brief. Which part would be most useful to explore first?",
       provider: "anthropic",
       model: "claude-opus-4-6",
       mode: "stage-aware-single-draft-v1",
+      usageAccounting: "recorded",
+      requestId: "123e4567-e89b-42d3-a456-426614174000",
+      fallbackReason: null,
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", request);
     const user = userEvent.setup();
@@ -450,6 +513,9 @@ describe("secure conversation workspace interaction", () => {
       provider: "anthropic",
       model: "claude-opus-4-6",
       mode: "stage-aware-single-draft-v1",
+      usageAccounting: "recorded",
+      requestId: "123e4567-e89b-42d3-a456-426614174000",
+      fallbackReason: null,
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", request);
     const user = userEvent.setup();
@@ -903,7 +969,7 @@ describe("secure conversation workspace interaction", () => {
     streamController?.enqueue(encoder.encode('event: stage\ndata: {"stage":"analyzing","status":"in-progress"}\n\n'));
     streamController?.enqueue(encoder.encode('event: stage\ndata: {"stage":"analyzing","status":"done"}\n\nevent: stage\ndata: {"stage":"drafting","status":"in-progress"}\n\n'));
     await waitFor(() => expect(screen.getByText("Writing one precise reply").closest("li")?.dataset.status).toBe("in-progress"));
-    streamController?.enqueue(encoder.encode('event: stage\ndata: {"stage":"drafting","status":"done"}\n\nevent: stage\ndata: {"stage":"reviewing","status":"in-progress"}\n\nevent: stage\ndata: {"stage":"reviewing","status":"done"}\n\nevent: stage\ndata: {"stage":"finalizing","status":"in-progress"}\n\nevent: stage\ndata: {"stage":"finalizing","status":"done"}\n\nevent: result\ndata: {"draft":"One precise reply","provider":"anthropic","model":"claude-opus-4-6","mode":"stage-aware-single-draft-v1"}\n\n'));
+    streamController?.enqueue(encoder.encode('event: stage\ndata: {"stage":"drafting","status":"done"}\n\nevent: stage\ndata: {"stage":"reviewing","status":"in-progress"}\n\nevent: stage\ndata: {"stage":"reviewing","status":"done"}\n\nevent: stage\ndata: {"stage":"finalizing","status":"in-progress"}\n\nevent: stage\ndata: {"stage":"finalizing","status":"done"}\n\nevent: result\ndata: {"draft":"One precise reply","provider":"anthropic","model":"claude-opus-4-6","mode":"stage-aware-single-draft-v1","usageAccounting":"recorded","requestId":"123e4567-e89b-42d3-a456-426614174000","fallbackReason":null}\n\n'));
     streamController?.close();
 
     expect((await screen.findByRole("button", { name: "Generate Precise Draft" }) as HTMLButtonElement).disabled).toBe(false);
@@ -990,19 +1056,19 @@ describe("secure conversation workspace interaction", () => {
   }, 30_000);
 
   it("keeps role playbooks isolated and applies the persisted Inbox role to every draft request", async () => {
-    const request = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        draft: "Network draft one",
-        provider: "cloudflare",
-        model: "@cf/meta/llama-3.1-8b-instruct-fast + @cf/openai/gpt-oss-120b",
-        mode: "stage-aware-single-draft-v1",
-      }), { status: 200, headers: { "Content-Type": "application/json" } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        draft: "HR draft one",
-        provider: "anthropic",
-        model: "claude-opus-4-6",
-        mode: "stage-aware-single-draft-v1",
-      }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const drafts = [
+      { draft: "Network draft one", provider: "cloudflare", model: "@cf/meta/llama-3.1-8b-instruct-fast + @cf/openai/gpt-oss-120b", fallbackReason: "anthropic-pipeline-failed" },
+      { draft: "HR draft one", provider: "anthropic", model: "claude-opus-4-6", fallbackReason: null },
+    ];
+    const request = vi.fn(async (path: RequestInfo | URL) => {
+      if (String(path) === "/api/usage") return usageResponse();
+      const next = drafts.shift();
+      if (!next) throw new Error("Unexpected draft request");
+      return new Response(JSON.stringify({ ...next, mode: "stage-aware-single-draft-v1", usageAccounting: "recorded", requestId: "123e4567-e89b-42d3-a456-426614174000" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
     vi.stubGlobal("fetch", request);
     const user = userEvent.setup();
     const firstRender = render(<ChatHelpApp />);
@@ -1061,12 +1127,12 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.queryByLabelText("Edit draft 1")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
     expect(await screen.findByDisplayValue("HR draft one")).toBeTruthy();
-    const hrRequest = JSON.parse(request.mock.calls[1][1]?.body as string);
+    const hrRequest = JSON.parse(request.mock.calls.filter(([path]) => path === "/api/drafts")[1][1]?.body as string);
     expect(hrRequest.playbook.role).toBe("Human Resource");
     expect(hrRequest.playbook.relationshipGoal).toBe("HR-ONLY-GOAL");
     expect(hrRequest.playbook.rulebookFull).toBe("HR-ONLY-RULES");
     expect(JSON.stringify(hrRequest)).not.toContain("NETWORK-ONLY-GOAL");
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls.filter(([path]) => path === "/api/drafts")).toHaveLength(2);
 
     await waitFor(() => expect(document.querySelector(".save-state")?.textContent).toContain("Encrypted"), { timeout: 3_000 });
     firstRender.unmount();

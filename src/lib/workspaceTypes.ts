@@ -249,6 +249,7 @@ export interface WorkspaceData {
   guidance: MessagingGuidance;
   inboxRole: MessagingRole;
   feedback: Feedback[];
+  // Read-only v13 migration residue. Current allowance data is server-authoritative.
   aiUsage: AiUsageEntry[];
   personalGuidelines: string;
   personalLearning: PersonalLearningSettings;
