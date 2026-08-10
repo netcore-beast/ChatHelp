@@ -69,7 +69,19 @@ function parseExactIsoTimestamp(value: unknown): string {
 
 function parseTotals(value: unknown): UsageTokenTotals {
   if (!isPlainObject(value) || !hasExactKeys(value, TOTAL_KEYS) || !TOTAL_KEYS.every((key) => isNonNegativeSafeInteger(value[key]))) return invalidResponse();
-  return Object.fromEntries(TOTAL_KEYS.map((key) => [key, value[key]])) as UsageTokenTotals;
+  return {
+    uncachedInputTokens: Number(value.uncachedInputTokens),
+    cacheWriteTokens: Number(value.cacheWriteTokens),
+    cacheWrite5mTokens: Number(value.cacheWrite5mTokens),
+    cacheWrite1hTokens: Number(value.cacheWrite1hTokens),
+    cacheReadTokens: Number(value.cacheReadTokens),
+    outputTokens: Number(value.outputTokens),
+    thinkingTokens: Number(value.thinkingTokens),
+    promptTokens: Number(value.promptTokens),
+    completionTokens: Number(value.completionTokens),
+    totalTokens: Number(value.totalTokens),
+    estimatedNeurons: Number(value.estimatedNeurons),
+  };
 }
 
 function parseModel(value: unknown): UsageModelSummary {
@@ -91,7 +103,19 @@ function combinedQuality(models: readonly UsageModelSummary[]): UsageProviderSum
 
 function sumModels(models: readonly UsageModelSummary[]): { consumedMicroUsd: number; totals: UsageTokenTotals } {
   let consumedMicroUsd = 0;
-  const totals = Object.fromEntries(TOTAL_KEYS.map((key) => [key, 0])) as UsageTokenTotals;
+  const totals: UsageTokenTotals = {
+    uncachedInputTokens: 0,
+    cacheWriteTokens: 0,
+    cacheWrite5mTokens: 0,
+    cacheWrite1hTokens: 0,
+    cacheReadTokens: 0,
+    outputTokens: 0,
+    thinkingTokens: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    estimatedNeurons: 0,
+  };
   for (const model of models) {
     consumedMicroUsd += model.consumedMicroUsd;
     if (!Number.isSafeInteger(consumedMicroUsd)) return invalidResponse();

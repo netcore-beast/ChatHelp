@@ -80,12 +80,34 @@ function terminalRow(terminal = succeededUsage) {
   };
 }
 
+function summaryModelRow(provider: "anthropic" | "workers_ai", overrides: Record<string, unknown> = {}) {
+  return {
+    provider,
+    model_id: provider === "anthropic" ? "claude-opus-4-6" : "@cf/openai/gpt-oss-120b",
+    monthly_allowance_micro_usd: null,
+    usage_quality: "exact",
+    uncached_input_tokens: "0",
+    cache_write_tokens: "0",
+    cache_write_5m_tokens: "0",
+    cache_write_1h_tokens: "0",
+    cache_read_tokens: "0",
+    output_tokens: "0",
+    thinking_tokens: "0",
+    prompt_tokens: "0",
+    completion_tokens: "0",
+    total_tokens: "0",
+    estimated_neurons: "0",
+    consumed_micro_usd: "0",
+    ...overrides,
+  };
+}
+
 describe("server-authoritative AI usage ledger", () => {
   it("permits one started-to-terminal transition and an identical retry", async () => {
     let storedTerminal: ReturnType<typeof terminalRow> | null = null;
     const query = vi.fn(async (_binding: unknown, sql: string) => {
       if (/SELECT[\s\S]+monthly_allowance_micro_usd/iu.test(sql)) {
-        return { rows: [{ monthly_allowance_micro_usd: null, consumed_micro_usd: "0" }] };
+        return { rows: [{ monthly_allowance_micro_usd: null, consumed_micro_usd: "0", started_attempts: "0", inserted: true }] };
       }
       if (/INSERT INTO dialogmint_ai_usage_attempts/iu.test(sql)) return { rows: [{ inserted: true }], rowCount: 1 };
       if (/UPDATE dialogmint_ai_usage_attempts/iu.test(sql)) {
@@ -111,7 +133,7 @@ describe("server-authoritative AI usage ledger", () => {
 
   it("does not insert a started row after the app allowance is consumed", async () => {
     const query = vi.fn().mockResolvedValue({
-      rows: [{ monthly_allowance_micro_usd: "100", consumed_micro_usd: "100" }],
+      rows: [{ monthly_allowance_micro_usd: "100", consumed_micro_usd: "100", started_attempts: "0", inserted: false }],
     });
 
     await expect(beginUsageAttempt(validAttempt, { query, now: NOW })).resolves.toEqual({
@@ -119,6 +141,76 @@ describe("server-authoritative AI usage ledger", () => {
       nextResetAt: "2026-09-01T00:00:00.000Z",
     });
     expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed without inserting a started attempt when the allowance aggregate is missing or malformed", async () => {
+    for (const result of [{ rows: [] }, { rows: [{ monthly_allowance_micro_usd: null }] }]) {
+      const query = vi.fn().mockResolvedValue(result);
+      await expect(beginUsageAttempt(validAttempt, { query, now: NOW })).rejects.toThrow("usage_allowance_unavailable");
+      expect(query).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("fails closed when an atomic allowance admission sees an in-flight attempt", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [{
+      monthly_allowance_micro_usd: "100",
+      consumed_micro_usd: "0",
+      started_attempts: "1",
+      inserted: false,
+    }] });
+    await expect(beginUsageAttempt(validAttempt, { query, now: NOW })).resolves.toEqual({
+      kind: "allowance-unavailable",
+      nextResetAt: "2026-09-01T00:00:00.000Z",
+    });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][1]).toMatch(/pg_advisory_xact_lock/u);
+  });
+
+  it("blocks a lingering started attempt across a billing-month boundary", async () => {
+    const septemberAttempt = { ...validAttempt, attemptId: "33333333-3333-4333-8333-333333333333", startedAt: "2026-09-01T00:00:00.000Z" };
+    const query = vi.fn(async (_binding: unknown, sql: string) => {
+      const startedAttemptFilter = sql.match(/count\(\*\) FILTER \([\s\S]*?\) AS started_attempts/u)?.[0] ?? "";
+      const incorrectlyScopesToSeptember = startedAttemptFilter.includes("started_at >= $4");
+      return { rows: [{
+        monthly_allowance_micro_usd: "100",
+        consumed_micro_usd: "0",
+        started_attempts: incorrectlyScopesToSeptember ? "0" : "1",
+        inserted: !incorrectlyScopesToSeptember,
+      }] };
+    });
+
+    await expect(beginUsageAttempt(septemberAttempt, { query, now: new Date("2026-09-01T00:00:00.000Z") })).resolves.toEqual({
+      kind: "allowance-unavailable",
+      nextResetAt: "2026-10-01T00:00:00.000Z",
+    });
+  });
+
+  it("rejects incomplete exact and estimated terminal accounting before a database write", async () => {
+    const query = vi.fn();
+    const handle = Object.freeze({ ...validAttempt });
+    await expect(finishUsageAttempt(handle, {
+      ...succeededUsage,
+      usage: { ...succeededUsage.usage, estimatedCostMicroUsd: undefined },
+    }, { query, now: NOW })).rejects.toThrow("invalid_usage_terminal");
+    await expect(finishUsageAttempt(handle, {
+      ...succeededUsage,
+      usage: { ...succeededUsage.usage, quality: "estimated", estimatorVersion: null },
+    }, { query, now: NOW })).rejects.toThrow("invalid_usage_terminal");
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it("rejects terminal token invariants and tokens above the pricing ceiling before a database write", async () => {
+    const query = vi.fn();
+    const handle = Object.freeze({ ...validAttempt });
+    for (const usage of [
+      { ...succeededUsage.usage, thinkingTokens: 51 },
+      { ...succeededUsage.usage, cacheWriteTokens: 31 },
+      { ...succeededUsage.usage, outputTokens: 100_000_001 },
+      { ...succeededUsage.usage, estimatedNeurons: 100_000_001 },
+    ]) {
+      await expect(finishUsageAttempt(handle, { ...succeededUsage, usage }, { query, now: NOW })).rejects.toThrow("invalid_usage_terminal");
+    }
+    expect(query).not.toHaveBeenCalled();
   });
 
   it("uses approved bounded defaults and ignores malformed configured values", () => {
@@ -205,12 +297,97 @@ describe("server-authoritative AI usage ledger", () => {
     ]);
   });
 
+  it("marks a provider unavailable while started accounting is pending instead of claiming exact usage", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [{
+      provider: "anthropic",
+      model_id: "claude-opus-4-6",
+      monthly_allowance_micro_usd: null,
+      usage_quality: "unavailable",
+      uncached_input_tokens: "0",
+      cache_write_tokens: "0",
+      cache_write_5m_tokens: "0",
+      cache_write_1h_tokens: "0",
+      cache_read_tokens: "0",
+      output_tokens: "0",
+      thinking_tokens: "0",
+      prompt_tokens: "0",
+      completion_tokens: "0",
+      total_tokens: "0",
+      estimated_neurons: "0",
+      consumed_micro_usd: "0",
+    }, {
+      provider: "workers_ai",
+      model_id: null,
+      monthly_allowance_micro_usd: null,
+    }] });
+    const summary = await getUsageSummary(binding, ACCOUNT_A, "2026-08", { query, environment: "testing", now: NOW });
+    expect(summary.providers.anthropic.quality).toBe("unavailable");
+    expect(query.mock.calls[0][1]).toMatch(/bool_or\(status = 'started' OR usage_quality = 'unavailable'\)/u);
+    expect(query.mock.calls[0][1]).not.toContain("status <> 'started'");
+  });
+
+  it("rejects unsafe aggregate totals and server summaries beyond the client model limits", async () => {
+    const row = {
+      provider: "anthropic",
+      monthly_allowance_micro_usd: null,
+      usage_quality: "exact",
+      uncached_input_tokens: String(Number.MAX_SAFE_INTEGER),
+      cache_write_tokens: "0",
+      cache_write_5m_tokens: "0",
+      cache_write_1h_tokens: "0",
+      cache_read_tokens: "0",
+      output_tokens: "0",
+      thinking_tokens: "0",
+      prompt_tokens: "0",
+      completion_tokens: "0",
+      total_tokens: "0",
+      estimated_neurons: "0",
+      consumed_micro_usd: "0",
+    };
+    for (const rows of [
+      [{ ...row, model_id: "claude-opus-4-6" }, { ...row, model_id: "claude-opus-4-6" }],
+      Array.from({ length: 101 }, (_, index) => ({ ...row, uncached_input_tokens: "0", model_id: `model-${index}` })),
+      [{ ...row, uncached_input_tokens: "0", model_id: "m".repeat(201) }],
+    ]) {
+      await expect(getUsageSummary(binding, ACCOUNT_A, "2026-08", {
+        query: vi.fn().mockResolvedValue({ rows }), environment: "testing", now: NOW,
+      })).rejects.toThrow("invalid_stored_usage");
+    }
+  });
+
   it("reports unavailable quality when no terminal usage exists", async () => {
-    const query = vi.fn().mockResolvedValue({ rows: [] });
+    const query = vi.fn().mockResolvedValue({ rows: [
+      { provider: "anthropic", model_id: null, monthly_allowance_micro_usd: null },
+      { provider: "workers_ai", model_id: null, monthly_allowance_micro_usd: null },
+    ] });
     const summary = await getUsageSummary(binding, ACCOUNT_A, "2026-08", { query, environment: "testing", now: NOW });
     expect(summary.providers.anthropic.quality).toBe("unavailable");
     expect(summary.providers.workersAi.quality).toBe("unavailable");
     expect(summary.providers.anthropic.models).toEqual([]);
+  });
+
+  it("fails closed when a summary aggregate is missing either required provider row", async () => {
+    for (const result of [{ rows: [] }, { rows: [{ provider: "anthropic", model_id: null, monthly_allowance_micro_usd: null }] }, {}]) {
+      await expect(getUsageSummary(binding, ACCOUNT_A, "2026-08", {
+        query: vi.fn().mockResolvedValue(result), environment: "testing", now: NOW,
+      })).rejects.toThrow("invalid_stored_usage");
+    }
+  });
+
+  it("fails closed on malformed model aggregate rows instead of accepting exact zero usage", async () => {
+    const malformedRows = [
+      (() => { const row = summaryModelRow("anthropic"); delete row.uncached_input_tokens; return row; })(),
+      summaryModelRow("anthropic", { output_tokens: null }),
+      summaryModelRow("anthropic", { total_tokens: "not-an-integer" }),
+      (() => { const row = summaryModelRow("anthropic"); delete row.consumed_micro_usd; return row; })(),
+    ];
+    for (const malformed of malformedRows) {
+      await expect(getUsageSummary(binding, ACCOUNT_A, "2026-08", {
+        query: vi.fn().mockResolvedValue({ rows: [malformed, summaryModelRow("workers_ai")] }),
+        environment: "testing",
+        now: NOW,
+      })).rejects.toThrow("invalid_stored_usage");
+    }
   });
 
   it("returns an account allowance override even when that provider has no usage", async () => {
@@ -231,6 +408,10 @@ describe("server-authoritative AI usage ledger", () => {
       total_tokens: "0",
       estimated_neurons: "0",
       consumed_micro_usd: "0",
+    }, {
+      provider: "workers_ai",
+      model_id: null,
+      monthly_allowance_micro_usd: null,
     }] });
 
     const summary = await getUsageSummary(binding, ACCOUNT_A, "2026-08", {
@@ -250,7 +431,10 @@ describe("server-authoritative AI usage ledger", () => {
 
   it("rate limits an authenticated usage read and queries only that opaque account", async () => {
     const bindings = env();
-    const query = vi.fn().mockResolvedValue({ rows: [] });
+    const query = vi.fn().mockResolvedValue({ rows: [
+      { provider: "anthropic", model_id: null, monthly_allowance_micro_usd: null },
+      { provider: "workers_ai", model_id: null, monthly_allowance_micro_usd: null },
+    ] });
     const request = new Request(`${TESTING_ORIGIN}/api/usage?month=2026-08`);
     const response = await handleUsageRequest(request, bindings, new URL(request.url), {
       accountId: ACCOUNT_A,
@@ -278,7 +462,7 @@ describe("server-authoritative AI usage ledger", () => {
     }
   });
 
-  it("schedules exactly one numeric-only terminal retry", async () => {
+  it("schedules exactly one retry with only the strict terminal SQL parameters", async () => {
     const retryRow = terminalRow();
     const query = vi.fn()
       .mockRejectedValueOnce(new Error("synthetic database outage"))
@@ -289,9 +473,12 @@ describe("server-authoritative AI usage ledger", () => {
 
     expect(await finishUsageAttempt(handle, succeededUsage, { query, now: NOW, executionContext })).toBe("pending");
     expect(executionContext.waitUntil).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(executionContext.waitUntil.mock.calls)).not.toMatch(/prompt|conversation|draft|reply/iu);
     await Promise.all(scheduled);
     expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[1][2]).toEqual([
+      ACCOUNT_A, REQUEST_ID, ATTEMPT_ID, "succeeded", "exact", 100, 30, 10, 20, 30, 50, 5,
+      null, null, null, null, 2_000, "2026-08-09-v1", null, "published-model", NOW.toISOString(),
+    ]);
   });
 
   it("cleans only the active environment after 365 days and leaves allowances untouched", async () => {

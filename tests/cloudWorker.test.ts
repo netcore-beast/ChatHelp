@@ -510,7 +510,7 @@ describe("Cloudflare private inference Worker", () => {
     const query = vi.fn(async (_binding: unknown, sql: string, values: unknown[] = []) => {
       if (sql.includes("dialogmint_learning_preferences")) return { rows: [{ enabled: false }] };
       if (sql.includes("monthly_allowance_micro_usd")) {
-        return { rows: [{ monthly_allowance_micro_usd: 10_000_000, consumed_micro_usd: 0 }] };
+        return { rows: [{ monthly_allowance_micro_usd: 10_000_000, consumed_micro_usd: 0, started_attempts: 0, inserted: true }] };
       }
       if (sql.includes("INSERT INTO dialogmint_ai_usage_attempts")) return { rows: [{ inserted: true }], rowCount: 1 };
       if (sql.includes("WITH updated AS")) {
@@ -561,13 +561,13 @@ describe("Cloudflare private inference Worker", () => {
     const insertCalls = query.mock.calls.filter(([, sql]) => String(sql).includes("INSERT INTO dialogmint_ai_usage_attempts"));
     expect(insertCalls).toHaveLength(3);
     const insertValues = insertCalls.map((call) => call[2] as unknown[]);
-    expect(new Set(insertValues.map((values) => values[1]))).toEqual(new Set([REQUEST_ID]));
-    expect(new Set(insertValues.map((values) => values[2])).size).toBe(3);
+    expect(new Set(insertValues.map((values) => values[5]))).toEqual(new Set([REQUEST_ID]));
+    expect(new Set(insertValues.map((values) => values[6])).size).toBe(3);
     for (const values of insertValues) {
       expect(values[0]).toMatch(/^[0-9a-f]{64}$/u);
-      expect(values[2]).toMatch(/^[0-9a-f-]{36}$/u);
-      expect(values[3]).toBe("anthropic");
-      expect(values[8]).toBe("testing");
+      expect(values[6]).toMatch(/^[0-9a-f-]{36}$/u);
+      expect(values[1]).toBe("anthropic");
+      expect(values[2]).toBe("testing");
     }
     expect(query.mock.calls.every(([binding]) => binding === env.NEON_TESTING)).toBe(true);
   });
@@ -687,7 +687,10 @@ describe("Cloudflare private inference Worker", () => {
     expect(unauthenticatedEnv.DRAFT_RATE_LIMITER.limit).not.toHaveBeenCalled();
 
     const authenticatedEnv = workerEnv();
-    const query = vi.fn().mockResolvedValue({ rows: [] });
+    const query = vi.fn().mockResolvedValue({ rows: [
+      { provider: "anthropic", model_id: null, monthly_allowance_micro_usd: null },
+      { provider: "workers_ai", model_id: null, monthly_allowance_micro_usd: null },
+    ] });
     const authenticated = await handleRequest(new Request(`${TESTING_ORIGIN}/api/usage`, {
       headers: { "Cf-Access-Jwt-Assertion": SYNTHETIC_ASSERTION },
     }), authenticatedEnv, { verifyAccess, query, now: new Date("2026-08-09T12:00:00.000Z") });

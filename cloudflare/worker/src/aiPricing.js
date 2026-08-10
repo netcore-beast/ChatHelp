@@ -163,5 +163,9 @@ export function normalizeWorkersAiUsage(result, context = {}) {
     cacheReadTokens: 0,
     outputTokens: output.value,
     thinkingTokens: 0,
+    promptTokens: optionalUsageNumber(usage, ["prompt_tokens", "promptTokens"], "prompt_tokens"),
+    completionTokens: optionalUsageNumber(usage, ["completion_tokens", "completionTokens"], "completion_tokens"),
+    totalTokens: optionalUsageNumber(usage, ["total_tokens", "totalTokens"], "total_tokens"),
+    estimatedNeurons: optionalUsageNumber(usage, ["estimated_neurons", "estimatedNeurons", "neurons"], "estimated_neurons"),
   }, "workers_ai", modelId, quality, quality === "exact" ? null : ESTIMATOR_VERSION);
 }

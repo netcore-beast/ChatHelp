@@ -83,4 +83,23 @@ describe("AI usage pricing", () => {
     expect(usage).toMatchObject({ inputTokens: 8, outputTokens: 1, quality: "estimated" });
     expect(usage.estimatorVersion).toBe("characters-over-four-v1");
   });
+
+  it("preserves dedicated Workers prompt, completion, total, and neuron counters", () => {
+    const usage = normalizeWorkersAiUsage({
+      usage: {
+        input_tokens: 8,
+        output_tokens: 5,
+        prompt_tokens: 7,
+        completion_tokens: 4,
+        total_tokens: 11,
+        estimated_neurons: 13,
+      },
+    }, {
+      modelId: "@cf/openai/gpt-oss-120b",
+      normalizedInputText: "ignored",
+      normalizedOutputText: "ignored",
+    });
+
+    expect(usage).toMatchObject({ promptTokens: 7, completionTokens: 4, totalTokens: 11, estimatedNeurons: 13 });
+  });
 });

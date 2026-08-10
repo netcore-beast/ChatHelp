@@ -1,4 +1,4 @@
-import { PRICING_EFFECTIVE_DATE, PRICING_VERSION } from "./aiPricing.js";
+import { MAX_USAGE_TOKENS, PRICING_EFFECTIVE_DATE, PRICING_VERSION } from "./aiPricing.js";
 import { queryNeon, resolveNeonContext } from "./neonDb.js";
 
 const ACCOUNT_ID = /^[0-9a-f]{64}$/u;
@@ -12,6 +12,7 @@ const USAGE_QUALITIES = new Set(["exact", "estimated", "unavailable"]);
 const PRICING_SOURCES = new Set(["published-model", "published-proxy"]);
 const MAX_PRIOR_MONTHS = 12;
 const RETENTION_DAYS = 365;
+const MAX_MODELS_PER_PROVIDER = 100;
 
 const USAGE_HEADERS = {
   "Cache-Control": "no-store",
@@ -138,63 +139,94 @@ function freezeAttemptHandle(input) {
   return Object.freeze({ ...input });
 }
 
-async function readAllowanceAndConsumed(input, options) {
+async function admitUsageAttempt(input, options) {
   const defaults = resolveAllowanceDefaults(options?.env);
   const { periodStart, nextResetAt } = monthPeriod(input.startedAt.slice(0, 7), options);
   const result = await queryDatabase(input.binding, `
-    SELECT
-      (SELECT monthly_allowance_micro_usd
-       FROM dialogmint_ai_allowances
-       WHERE account_id = $1 AND provider = $2) AS monthly_allowance_micro_usd,
-      COALESCE(sum(estimated_cost_micro_usd) FILTER (
-        WHERE status <> 'started' AND environment = $3 AND started_at >= $4 AND started_at < $5
-      ), 0) AS consumed_micro_usd
-    FROM dialogmint_ai_usage_attempts
-    WHERE account_id = $1 AND provider = $2
-  `, [input.accountId, input.provider, input.environment, periodStart, nextResetAt], options);
-  const row = result?.rows?.[0] ?? {};
-  const configured = boundedInteger(row.monthly_allowance_micro_usd, "allowance", defaults[input.provider]);
-  const consumed = boundedInteger(row.consumed_micro_usd, "consumed", 0);
+    WITH admission_lock AS (
+      SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2 || ':' || $3, 0))
+    ), allowance_state AS (
+      SELECT
+        COALESCE((SELECT monthly_allowance_micro_usd
+                  FROM dialogmint_ai_allowances
+                  WHERE account_id = $1 AND provider = $2), $11::bigint) AS monthly_allowance_micro_usd,
+        COALESCE(sum(estimated_cost_micro_usd) FILTER (
+          WHERE status <> 'started' AND environment = $3 AND started_at >= $4 AND started_at < $5
+        ), 0) AS consumed_micro_usd,
+        count(*) FILTER (
+          WHERE status = 'started' AND environment = $3
+        ) AS started_attempts
+      FROM dialogmint_ai_usage_attempts, admission_lock
+      WHERE account_id = $1 AND provider = $2
+    ), inserted AS (
+      INSERT INTO dialogmint_ai_usage_attempts (
+        account_id, request_id, attempt_id, provider, model_id, pipeline_stage, status,
+        usage_quality, estimated_cost_micro_usd, pricing_version, pricing_effective_date,
+        pricing_source, environment, started_at, completed_at
+      )
+      SELECT $1, $6, $7, $2, $8, $9, 'started', 'unavailable', 0, $12, $13, 'published-model', $3, $10, NULL
+      FROM allowance_state
+      WHERE consumed_micro_usd < monthly_allowance_micro_usd AND started_attempts = 0
+      ON CONFLICT (account_id, request_id, attempt_id) DO NOTHING
+      RETURNING true AS inserted
+    )
+    SELECT allowance_state.*, COALESCE((SELECT inserted FROM inserted), false) AS inserted
+    FROM allowance_state
+  `, [
+    input.accountId,
+    input.provider,
+    input.environment,
+    periodStart,
+    nextResetAt,
+    input.requestId,
+    input.attemptId,
+    input.modelId,
+    input.pipelineStage,
+    input.startedAt,
+    defaults[input.provider],
+    PRICING_VERSION,
+    PRICING_EFFECTIVE_DATE,
+  ], options);
+  const row = result?.rows?.[0];
+  if (!row || typeof row !== "object"
+      || !Object.prototype.hasOwnProperty.call(row, "monthly_allowance_micro_usd")
+      || !Object.prototype.hasOwnProperty.call(row, "consumed_micro_usd")
+      || !Object.prototype.hasOwnProperty.call(row, "started_attempts")
+      || typeof row.inserted !== "boolean") {
+    throw new Error("usage_allowance_unavailable");
+  }
+  let configured;
+  let consumed;
+  let startedAttempts;
+  try {
+    configured = boundedInteger(row.monthly_allowance_micro_usd, "allowance", defaults[input.provider]);
+    consumed = boundedInteger(row.consumed_micro_usd, "consumed", null);
+    startedAttempts = boundedInteger(row.started_attempts, "started_attempts", null);
+  } catch {
+    throw new Error("usage_allowance_unavailable");
+  }
+  if (consumed === null || startedAttempts === null) throw new Error("usage_allowance_unavailable");
   return {
     allowanceMicroUsd: configured,
     consumedMicroUsd: consumed,
+    startedAttempts,
+    inserted: row.inserted,
     remainingMicroUsd: Math.max(0, configured - consumed),
     nextResetAt,
   };
 }
 
-async function insertStartedAttempt(input, options) {
-  const result = await queryDatabase(input.binding, `
-    INSERT INTO dialogmint_ai_usage_attempts (
-      account_id, request_id, attempt_id, provider, model_id, pipeline_stage, status,
-      usage_quality, estimated_cost_micro_usd, pricing_version, pricing_effective_date,
-      pricing_source, environment, started_at, completed_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, 'started', 'unavailable', 0, $7, $8, 'published-model', $9, $10, NULL)
-    ON CONFLICT (account_id, request_id, attempt_id) DO NOTHING
-    RETURNING true AS inserted
-  `, [
-    input.accountId,
-    input.requestId,
-    input.attemptId,
-    input.provider,
-    input.modelId,
-    input.pipelineStage,
-    PRICING_VERSION,
-    PRICING_EFFECTIVE_DATE,
-    input.environment,
-    input.startedAt,
-  ], options);
-  if (result?.rows?.[0]?.inserted !== true && result?.rowCount !== 1) throw new Error("usage_attempt_conflict");
-}
-
 export async function beginUsageAttempt(rawInput, options = {}) {
   const validated = validateAttemptInput(rawInput, options);
   const input = { ...validated, binding: rawInput?.binding ?? options.binding };
-  const allowance = await readAllowanceAndConsumed(input, options);
+  const allowance = await admitUsageAttempt(input, options);
   if (allowance.remainingMicroUsd <= 0) {
     return Object.freeze({ kind: "allowance-exhausted", nextResetAt: allowance.nextResetAt });
   }
-  await insertStartedAttempt(input, options);
+  if (allowance.startedAttempts > 0) {
+    return Object.freeze({ kind: "allowance-unavailable", nextResetAt: allowance.nextResetAt });
+  }
+  if (!allowance.inserted) throw new Error("usage_attempt_conflict");
   return Object.freeze({ kind: "started", handle: freezeAttemptHandle(validated) });
 }
 
@@ -208,25 +240,49 @@ function normalizeTerminal(terminal, options) {
   const quality = usage.quality;
   const pricingSource = usage.pricingSource ?? "published-model";
   if (!USAGE_QUALITIES.has(quality) || !PRICING_SOURCES.has(pricingSource)) throw new Error("invalid_usage_terminal");
-  const cacheWrite5mTokens = boundedInteger(usage.cacheWrite5mTokens, "cache_write_5m_tokens", 0);
-  const cacheWrite1hTokens = boundedInteger(usage.cacheWrite1hTokens, "cache_write_1h_tokens", 0);
+  let normalized;
+  try {
+    const cacheWrite5mTokens = boundedInteger(usage.cacheWrite5mTokens, "cache_write_5m_tokens", 0);
+    const cacheWrite1hTokens = boundedInteger(usage.cacheWrite1hTokens, "cache_write_1h_tokens", 0);
+    normalized = {
+      uncachedInputTokens: boundedInteger(usage.uncachedInputTokens ?? usage.inputTokens, "uncached_input_tokens", null),
+      cacheWriteTokens: boundedInteger(usage.cacheWriteTokens, "cache_write_tokens", cacheWrite5mTokens + cacheWrite1hTokens),
+      cacheWrite5mTokens,
+      cacheWrite1hTokens,
+      cacheReadTokens: boundedInteger(usage.cacheReadTokens, "cache_read_tokens", 0),
+      outputTokens: boundedInteger(usage.outputTokens, "output_tokens", null),
+      thinkingTokens: boundedInteger(usage.thinkingTokens, "thinking_tokens", 0),
+      promptTokens: boundedInteger(usage.promptTokens, "prompt_tokens", null),
+      completionTokens: boundedInteger(usage.completionTokens, "completion_tokens", null),
+      totalTokens: boundedInteger(usage.totalTokens, "total_tokens", null),
+      estimatedNeurons: boundedInteger(usage.estimatedNeurons, "estimated_neurons", null),
+      estimatedCostMicroUsd: boundedInteger(usage.estimatedCostMicroUsd, "estimated_cost_micro_usd", null),
+    };
+  } catch {
+    throw new Error("invalid_usage_terminal");
+  }
+  const tokenFields = [
+    normalized.uncachedInputTokens, normalized.cacheWriteTokens, normalized.cacheWrite5mTokens,
+    normalized.cacheWrite1hTokens, normalized.cacheReadTokens, normalized.outputTokens,
+    normalized.thinkingTokens, normalized.promptTokens, normalized.completionTokens, normalized.totalTokens,
+    normalized.estimatedNeurons,
+  ];
+  if (tokenFields.some((value) => value !== null && value > MAX_USAGE_TOKENS)
+      || normalized.thinkingTokens > (normalized.outputTokens ?? 0)
+      || normalized.cacheWriteTokens !== normalized.cacheWrite5mTokens + normalized.cacheWrite1hTokens
+      || (quality === "exact" && (normalized.uncachedInputTokens === null
+        || normalized.outputTokens === null || normalized.estimatedCostMicroUsd === null))) {
+    throw new Error("invalid_usage_terminal");
+  }
+  if (quality === "estimated" && (typeof usage.estimatorVersion !== "string" || !usage.estimatorVersion)) {
+    throw new Error("invalid_usage_terminal");
+  }
   const completedAtWasProvided = Object.prototype.hasOwnProperty.call(terminal, "completedAt");
   const completedAt = timestamp(terminal.completedAt, requestNow(options));
   return Object.freeze({
     status: terminal.status,
     usageQuality: quality,
-    uncachedInputTokens: boundedInteger(usage.uncachedInputTokens ?? usage.inputTokens, "uncached_input_tokens", null),
-    cacheWriteTokens: boundedInteger(usage.cacheWriteTokens, "cache_write_tokens", cacheWrite5mTokens + cacheWrite1hTokens),
-    cacheWrite5mTokens,
-    cacheWrite1hTokens,
-    cacheReadTokens: boundedInteger(usage.cacheReadTokens, "cache_read_tokens", 0),
-    outputTokens: boundedInteger(usage.outputTokens, "output_tokens", null),
-    thinkingTokens: boundedInteger(usage.thinkingTokens, "thinking_tokens", 0),
-    promptTokens: boundedInteger(usage.promptTokens, "prompt_tokens", null),
-    completionTokens: boundedInteger(usage.completionTokens, "completion_tokens", null),
-    totalTokens: boundedInteger(usage.totalTokens, "total_tokens", null),
-    estimatedNeurons: boundedInteger(usage.estimatedNeurons, "estimated_neurons", null),
-    estimatedCostMicroUsd: boundedInteger(usage.estimatedCostMicroUsd, "estimated_cost_micro_usd", 0),
+    ...normalized,
     pricingVersion: typeof usage.pricingVersion === "string" && usage.pricingVersion ? usage.pricingVersion : PRICING_VERSION,
     estimatorVersion: usage.estimatorVersion === null || usage.estimatorVersion === undefined
       ? null
@@ -379,11 +435,28 @@ function emptyTotals() {
 }
 
 function totalsFromRow(row) {
-  return Object.fromEntries(TOTAL_FIELDS.map(([column, field]) => [field, boundedInteger(row?.[column], column, 0)]));
+  return Object.fromEntries(TOTAL_FIELDS.map(([column, field]) => [field, requiredStoredInteger(row, column)]));
+}
+
+function requiredStoredInteger(row, column) {
+  if (!row || typeof row !== "object" || !Object.prototype.hasOwnProperty.call(row, column)) {
+    throw new Error("invalid_stored_usage");
+  }
+  try {
+    const value = boundedInteger(row[column], column, null);
+    if (value === null) throw new Error("invalid_stored_usage");
+    return value;
+  } catch {
+    throw new Error("invalid_stored_usage");
+  }
 }
 
 function addTotals(target, addition) {
-  for (const [, field] of TOTAL_FIELDS) target[field] += addition[field];
+  for (const [, field] of TOTAL_FIELDS) {
+    const next = target[field] + addition[field];
+    if (!Number.isSafeInteger(next)) throw new Error("invalid_stored_usage");
+    target[field] = next;
+  }
 }
 
 function aggregateQuality(qualities) {
@@ -405,10 +478,11 @@ function providerSummary(provider, rows, defaultAllowance) {
       allowanceMicroUsd = override;
     }
     if (row.model_id === null || row.model_id === undefined) continue;
-    if (typeof row.model_id !== "string" || !row.model_id) throw new Error("invalid_stored_usage");
+    if (typeof row.model_id !== "string" || !row.model_id || row.model_id.length > 200) throw new Error("invalid_stored_usage");
+    if (models.length >= MAX_MODELS_PER_PROVIDER) throw new Error("invalid_stored_usage");
     if (!USAGE_QUALITIES.has(row.usage_quality)) throw new Error("invalid_stored_usage");
     const modelTotals = totalsFromRow(row);
-    const modelCost = boundedInteger(row.consumed_micro_usd, "consumed", 0);
+    const modelCost = requiredStoredInteger(row, "consumed_micro_usd");
     addTotals(totals, modelTotals);
     consumedMicroUsd += modelCost;
     if (!Number.isSafeInteger(consumedMicroUsd)) throw new Error("invalid_stored_usage");
@@ -445,7 +519,7 @@ export async function getUsageSummary(binding, accountId, month, options = {}) {
         provider,
         model_id,
         CASE
-          WHEN bool_or(usage_quality = 'unavailable') THEN 'unavailable'
+          WHEN bool_or(status = 'started' OR usage_quality = 'unavailable') THEN 'unavailable'
           WHEN bool_or(usage_quality = 'estimated') THEN 'estimated'
           ELSE 'exact'
         END AS usage_quality,
@@ -466,7 +540,6 @@ export async function getUsageSummary(binding, accountId, month, options = {}) {
         AND environment = $2
         AND started_at >= $3
         AND started_at < $4
-        AND status <> 'started'
       GROUP BY provider, model_id
     )
     SELECT
@@ -492,7 +565,9 @@ export async function getUsageSummary(binding, accountId, month, options = {}) {
     LEFT JOIN monthly_attempts ON monthly_attempts.provider = providers.provider
     ORDER BY providers.provider, monthly_attempts.model_id
   `, [accountId, environment, period.periodStart, period.nextResetAt], options);
-  const rows = Array.isArray(result?.rows) ? result.rows : [];
+  const rows = result?.rows;
+  if (!Array.isArray(rows) || !rows.some((row) => row?.provider === "anthropic")
+      || !rows.some((row) => row?.provider === "workers_ai")) throw new Error("invalid_stored_usage");
   const defaults = resolveAllowanceDefaults(options.env);
   return {
     periodStart: period.periodStart,
