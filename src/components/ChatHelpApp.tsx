@@ -1,14 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { applyRetention } from "@/lib/retention";
 import { buildOutcomeSummary, containsLinkedInPageNoise, isConversationCapture, isLikelyFullLinkedInPageCapture, selectRelevantContext, validateContextFile } from "@/lib/retrieval";
 import { captureVisibleScreen, cropImageToRegion, extractTextFromImage, type NormalizedCropRegion } from "@/lib/localOcr";
-import { buildDraftContextSummary, CLOUDFLARE_MODEL_NAME, generatePrivateDraft, type PrivateAiInput } from "@/lib/privateAi";
+import { buildDraftContextSummary, CLOUDFLARE_MODEL_NAME, generatePrivateDraft, type CloudDraftResult, type PrivateAiInput } from "@/lib/privateAi";
 import { selectLearningExamples } from "@/lib/personalLearning";
 import { extractRelationshipStageFeatures, predictRelationshipStage, trainStageClassifier } from "@/lib/relationshipStageClassifier";
 import { type DraftPipelineStage, type DraftProgressUpdate, type DraftStageStatus } from "@/lib/draftProgress";
 import { DraftProgressPanel } from "@/components/DraftProgressPanel";
+import { DraftComposer } from "@/components/DraftComposer";
+import { CompletedDraftCard } from "@/components/CompletedDraftCard";
 import { LearningSettingsCard } from "@/components/LearningSettingsCard";
 import { SaveImprovementDialog } from "@/components/SaveImprovementDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -116,6 +118,16 @@ const ROLE_ID_BY_MESSAGING_ROLE = {
   "Job Seeker": "job_seeker",
   "Socializing/Networking": "socializing_networking",
 } as const;
+const COMPACT_RELATIONSHIP_STAGE_LABELS: Record<RelationshipStage, string> = {
+  new_connection: "New connection",
+  genuine_rapport: "Genuine rapport",
+  learn_interests: "Learn interests",
+  identify_need: "Identify need",
+  ask_permission: "Ask permission",
+  introduce_value: "Introduce value",
+  answer_without_pressure: "Answer without pressure",
+  voluntary_next_step: "Voluntary next step",
+};
 const LEARNING_RETENTION_MS = 365 * 86_400_000;
 const MAX_LOCAL_LEARNING_METADATA = 1_000;
 
@@ -362,6 +374,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [wizardOpen, setWizardOpen] = useState(false);
   const [agenda, setAgenda] = useState("");
   const [drafts, setDrafts] = useState<string[]>(() => latestDraftsForRole(initial.contacts[0], initial.inboxRole));
+  const [latestDraftResult, setLatestDraftResult] = useState<{ contactId: string; role: MessagingRole; result: CloudDraftResult } | null>(null);
   const [aiStatus, setAiStatus] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [draftAbortController, setDraftAbortController] = useState<AbortController | null>(null);
@@ -392,6 +405,9 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const labelsRef = useRef<HTMLInputElement>(null);
   const shortcutDialogRef = useRef<HTMLDialogElement>(null);
   const workspaceRef = useRef(workspace);
+  const activeContactIdRef = useRef(initial.contacts[0]?.id ?? "");
+  const draftRequestEpochRef = useRef(0);
+  const draftAbortControllerRef = useRef<AbortController | null>(null);
   const pendingLearningRecordIdsRef = useRef(new Set(workspace.pendingLearningRecords.map((record) => record.recordId)));
   const cloudLearningStatusRequestRef = useRef(0);
   const extensionConnectedRef = useRef(false);
@@ -403,10 +419,32 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const contactContextAvailable = Boolean(contact && inboxView !== "settings" && inboxView !== "pipeline");
   const contactContextOpen = contactContextExpanded && contactContextAvailable;
 
+  const invalidateDraftRequest = useCallback(() => {
+    draftRequestEpochRef.current += 1;
+    draftAbortControllerRef.current?.abort();
+    draftAbortControllerRef.current = null;
+    setDraftAbortController(null);
+    setIsGenerating(false);
+    setAiStatus("");
+    setDraftError("");
+    setDraftProgressAvailable(false);
+    setDraftProgressExpanded(false);
+  }, []);
+
+  const synchronizeActiveDraftContact = useCallback((contactId: string) => {
+    if (activeContactIdRef.current === contactId) return;
+    activeContactIdRef.current = contactId;
+    invalidateDraftRequest();
+  }, [invalidateDraftRequest]);
+
   useEffect(() => {
     workspaceRef.current = workspace;
     pendingLearningRecordIdsRef.current = new Set(workspace.pendingLearningRecords.map((record) => record.recordId));
   }, [workspace]);
+
+  useEffect(() => {
+    synchronizeActiveDraftContact(contact?.id ?? "");
+  }, [contact?.id, synchronizeActiveDraftContact]);
 
   useEffect(() => () => draftAbortController?.abort(), [draftAbortController]);
 
@@ -479,6 +517,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       }
       const syncedContact = preview.contacts.find((item) => item.id === preview.contactId);
       setImprovementDraft(null);
+      synchronizeActiveDraftContact(preview.contactId);
       setSelectedId(preview.contactId);
       setMobileConversationOpen(true);
       setDrafts(latestDraftsForRole(syncedContact, workspaceRef.current.inboxRole));
@@ -503,7 +542,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       window.clearTimeout(extensionTimer);
       window.removeEventListener("message", handleSnapshot);
     };
-  }, []);
+  }, [synchronizeActiveDraftContact]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -750,6 +789,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
 
   const setActiveContactId = useCallback((contactId: string) => {
     setImprovementDraft(null);
+    synchronizeActiveDraftContact(contactId);
     setSelectedId(contactId);
     const selected = workspace.contacts.find((item) => item.id === contactId);
     const latestIncoming = selected?.chat.findLast((message) => message.role === "them");
@@ -760,7 +800,17 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       ...current,
       contacts: current.contacts.map((item) => item.id === contactId ? { ...item, lastReadIncomingMessageId: latestIncoming.id } : item),
     }));
-  }, [workspace.cloudRecovery.enabled, workspace.cloudRecovery.revision, workspace.contacts]);
+  }, [synchronizeActiveDraftContact, workspace.cloudRecovery.enabled, workspace.cloudRecovery.revision, workspace.contacts]);
+
+  function openConversation(event: ReactMouseEvent<HTMLElement>) {
+    const contactId = event.currentTarget.dataset.contactId ?? "";
+    const selected = workspace.contacts.find((item) => item.id === contactId);
+    if (!selected) return;
+    setActiveContactId(contactId);
+    setDrafts(latestDraftsForRole(selected, workspace.inboxRole));
+    setDraftError("");
+    setMobileConversationOpen(true);
+  }
 
   function changeInboxView(view: InboxView) {
     setInboxView(view);
@@ -862,8 +912,10 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
 
   function changeInboxRole(role: MessagingRole) {
     if (role === workspace.inboxRole) return;
+    invalidateDraftRequest();
     updateWorkspace((current) => ({ ...current, inboxRole: role }));
     setDrafts([]);
+    setLatestDraftResult(null);
     setDraftError("");
     setAiStatus("");
     setDraftProgressAvailable(false);
@@ -1092,6 +1144,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       setSaveStatus("Unsaved changes");
       setCloudSyncState(matchesRemote ? { status: "synced", contactCount: remoteSummary.contactCount, messageCount: remoteSummary.messageCount, revision: remote.revision, logicalDigest: remoteSummary.logicalDigest } : baseCloudSyncState("pending", remote.revision));
       setImprovementDraft(null);
+      synchronizeActiveDraftContact(next.contacts[0]?.id ?? "");
       setSelectedId(next.contacts[0]?.id ?? "");
       setInboxView("inbox");
       setInboxFilter("main");
@@ -1220,7 +1273,21 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   }
 
   function stopGenerating() {
-    draftAbortController?.abort();
+    invalidateDraftRequest();
+  }
+
+  function handleDraftGeneration() {
+    if (isGenerating) {
+      stopGenerating();
+      return;
+    }
+    void generate();
+  }
+
+  async function handleWizardDraftGeneration(contactId: string, nextAgenda: string) {
+    setActiveContactId(contactId);
+    setAgenda(nextAgenda);
+    await generate(nextAgenda, contactId);
   }
 
   async function generate(agendaOverride?: string, contactIdOverride?: string) {
@@ -1239,15 +1306,22 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setAppError("");
     setDraftError("");
     setDrafts([]);
+    setLatestDraftResult(null);
     setAiStatus("");
     setIsGenerating(true);
     setDraftProgressAvailable(true);
     setDraftProgressExpanded(false);
     setDraftStageStatuses({ analyzing: "pending", drafting: "pending", reviewing: "pending", finalizing: "pending" });
+    draftAbortControllerRef.current?.abort();
+    const requestEpoch = draftRequestEpochRef.current + 1;
+    draftRequestEpochRef.current = requestEpoch;
     const abortController = new AbortController();
+    draftAbortControllerRef.current = abortController;
     setDraftAbortController(abortController);
+    const requestIsCurrent = () => draftRequestEpochRef.current === requestEpoch && activeContactIdRef.current === activeContact.id;
     let receivedStageEvent = false;
     const handleDraftProgress = (update: DraftProgressUpdate) => {
+      if (!requestIsCurrent()) return;
       if (update.kind === "message") {
         setAiStatus(update.message);
         return;
@@ -1258,12 +1332,10 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     try {
       const result = await generatePrivateDraft(CLOUDFLARE_MODEL_ID, createDraftInput(activeContact, draftingGuidance, requestAgenda, workspace), handleDraftProgress, workspace.cloudInference, abortController.signal);
       void refreshCloudUsage();
+      if (!requestIsCurrent()) return;
       const nextDrafts = [result.draft];
       if (!receivedStageEvent) setDraftStageStatuses({ analyzing: "done", drafting: "done", reviewing: "done", finalizing: "done" });
-      if (workspaceRef.current.inboxRole !== draftingRole) {
-        setAiStatus("");
-        return;
-      }
+      setLatestDraftResult({ contactId: activeContact.id, role: draftingRole, result });
       setDrafts(nextDrafts);
       const generatedAt = new Date().toISOString();
       updateWorkspace((current) => ({
@@ -1278,6 +1350,8 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         : "the Llama 3.1 8B + GPT-OSS 120B Cloudflare fallback";
       setAiStatus(`Generated one precise draft with ${providerName}, independently reviewed against the full ${draftingRole} rulebook (${draftingGuidance.boundaries.trim().length.toLocaleString()} rule characters). Nothing was sent to LinkedIn.`);
     } catch (error) {
+      if (!isAbortError(error)) void refreshCloudUsage();
+      if (!requestIsCurrent()) return;
       setAiStatus("");
       if (isAbortError(error)) {
         setDraftError("");
@@ -1291,10 +1365,13 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         return activeStage ? { ...current, [activeStage]: "error" } : current;
       });
       setDraftError(formatError(error));
-      void refreshCloudUsage();
+      setDraftProgressExpanded(true);
     } finally {
-      setDraftAbortController((current) => current === abortController ? null : current);
-      setIsGenerating(false);
+      if (requestIsCurrent()) {
+        if (draftAbortControllerRef.current === abortController) draftAbortControllerRef.current = null;
+        setDraftAbortController((current) => current === abortController ? null : current);
+        setIsGenerating(false);
+      }
     }
   }
 
@@ -1445,6 +1522,11 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const latestMeaningfulIncomingId = useMemo(() => contact?.chat.findLast((message) => message.role === "them" && (message.body.trim() || message.attachments?.length))?.id ?? "", [contact]);
   const selectedSettingsPlaybook = workspace.guidance.playbooks[workspace.guidance.selectedRole];
   const activeDraftGuidance = resolveRoleGuidance(workspace.guidance, workspace.inboxRole);
+  const activeDraftHistory = contact?.draftHistory?.findLast((entry) => entry.role === workspace.inboxRole)
+    ?? contact?.draftHistory?.findLast((entry) => !entry.role);
+  const activeStrictDraftResult = latestDraftResult?.contactId === contact?.id && latestDraftResult?.role === workspace.inboxRole
+    ? latestDraftResult.result
+    : null;
   const activeConversationState = contact ? deriveConversationState(contact, now) : null;
   const stageSuggestion = useMemo(() => {
     if (!contact || !workspace.personalLearning.enabled || !workspace.stageTrainingRecords.length) return null;
@@ -1579,12 +1661,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 const latestIncoming = item.chat.findLast((message) => message.role === "them");
                 const hasUnread = Boolean(latestIncoming && latestIncoming.id !== item.lastReadIncomingMessageId);
                 return <div className={item.id === contact?.id ? "conversation-row-shell active" : "conversation-row-shell"} key={item.id}>
-                  <button className="conversation-row" aria-label={`Open conversation with ${item.name}`} onClick={() => {
-                    setActiveContactId(item.id);
-                    setDrafts(latestDraftsForRole(item, workspace.inboxRole));
-                    setDraftError("");
-                    setMobileConversationOpen(true);
-                  }}>
+                  <button className="conversation-row" data-contact-id={item.id} aria-label={`Open conversation with ${item.name}`} onClick={openConversation}>
                     <span className="conversation-avatar-shell">{renderAvatar(item)}{hasUnread && <span className="unread-dot" title={`Unread message from ${item.name}`} aria-label={`Unread message from ${item.name}`} />}</span>
                     <span className="conversation-row-body">
                       <span className="conversation-row-title"><strong>{item.name}</strong><time dateTime={latest?.createdAt || item.lastSyncedAt}>{formatRelativeTime(latest?.createdAt || item.lastSyncedAt, now)}</time></span>
@@ -1606,12 +1683,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
             <header className="conversation-header"><div><p className="eyebrow">LOCAL WORKFLOW</p><h2>Conversation pipeline</h2><p>Drag contacts between stages. This changes only the encrypted local workspace.</p></div></header>
             <div className="pipeline-board">{PIPELINE_STAGES.map((stage) => <section className="pipeline-column" key={stage.value} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData("text/contact-id"); if (id) moveContactToStage(id, stage.value); }}>
               <header><strong>{stage.label}</strong><span>{stageCounts[stage.value]}</span></header>
-              <div>{workspace.contacts.filter((item) => !item.archivedAt && contactStage(item) === stage.value).map((item) => <article className={item.id === contact?.id ? "pipeline-card selected" : "pipeline-card"} draggable key={item.id} onDragStart={(event) => event.dataTransfer.setData("text/contact-id", item.id)} onClick={() => {
-                setActiveContactId(item.id);
-                setDrafts(latestDraftsForRole(item, workspace.inboxRole));
-                setDraftError("");
-                setMobileConversationOpen(true);
-              }}><div><strong>{item.name}</strong><small>{formatRelativeTime(item.chat.at(-1)?.createdAt || item.lastSyncedAt, now)}</small></div><p>{item.chat.at(-1)?.body || item.headline || "No message preview"}</p><select aria-label={"Move " + item.name + " to pipeline stage"} value={contactStage(item)} onClick={(event) => event.stopPropagation()} onChange={(event) => moveContactToStage(item.id, event.target.value as PipelineStage)}>{PIPELINE_STAGES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></article>)}</div>
+              <div>{workspace.contacts.filter((item) => !item.archivedAt && contactStage(item) === stage.value).map((item) => <article className={item.id === contact?.id ? "pipeline-card selected" : "pipeline-card"} data-contact-id={item.id} draggable key={item.id} onDragStart={(event) => event.dataTransfer.setData("text/contact-id", item.id)} onClick={openConversation}><div><strong>{item.name}</strong><small>{formatRelativeTime(item.chat.at(-1)?.createdAt || item.lastSyncedAt, now)}</small></div><p>{item.chat.at(-1)?.body || item.headline || "No message preview"}</p><select aria-label={"Move " + item.name + " to pipeline stage"} value={contactStage(item)} onClick={(event) => event.stopPropagation()} onChange={(event) => moveContactToStage(item.id, event.target.value as PipelineStage)}>{PIPELINE_STAGES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></article>)}</div>
             </section>)}</div>
           </section> : inboxView === "settings" ? <section className="conversation-column settings-column">
             <header className="conversation-header"><div><p className="eyebrow">SETTINGS</p><h2>Workspace and drafting</h2><p>Preferences and guidance stay in this encrypted browser vault.</p></div></header>
@@ -1713,48 +1785,72 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 </div>
 
                 <div className="drafting-scroll" aria-label="Draft composer and generated responses">
-                <section className="composer-card">
-                  <div className="composer-heading"><div><p className="eyebrow">PRIVATE DRAFTING</p><h3>Reply to {contact.name}</h3></div><span>Review and send manually</span></div>
-                  <div className="draft-playbook-control">
-                    <label className="draft-role-select"><span>Your role or team</span><select aria-label="Your role or team" value={workspace.inboxRole} onChange={(event) => changeInboxRole(event.target.value as MessagingRole)}>{MESSAGING_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
-                    <div className="active-playbook-summary" role="status" aria-live="polite"><strong>Using {activeDraftGuidance.role} playbook</strong><span className="composer-info"><button className="info-button" type="button" aria-label={`About the ${activeDraftGuidance.role} playbook`} aria-describedby="active-playbook-description">i</button><span className="composer-tooltip" id="active-playbook-description" role="tooltip">Relationship goal: {activeDraftGuidance.objective.trim() || "No relationship goal configured"}. {activeDraftGuidance.boundaries.trim() ? `${activeDraftGuidance.boundaries.trim().length.toLocaleString()} rule characters loaded.` : "No reply rules configured for this role."}</span></span></div>
-                  </div>
-                  <details className="draft-context-inspector">
-                    <summary>Draft context</summary>
-                    <div role="region" aria-label="Draft context">
-                      {draftContextSummary ? <>
-                        <span>{draftContextSummary.role} playbook</span>
-                        <span>{draftContextSummary.hasRelationshipGoal ? "Relationship goal included" : "No relationship goal"}</span>
-                        <span>{draftContextSummary.replyRuleCharacters.toLocaleString()} reply-rule characters</span>
-                        <span>{draftContextSummary.hasObjective ? "Optional objective included" : "No optional objective"}</span>
-                        <span>{draftContextSummary.hasContactNotes ? "Contact notes included" : "No contact notes"}</span>
-                        <span>{draftContextSummary.structuredMessagesIncluded} conversation message{draftContextSummary.structuredMessagesIncluded === 1 ? "" : "s"} included</span>
-                        <span>{draftContextSummary.conversationCaptureCount} safe conversation capture{draftContextSummary.conversationCaptureCount === 1 ? "" : "s"} included</span>
-                        <span>Latest incoming: {draftContextSummary.latestIncomingText || "Not available"}</span>
-                        <span>Generation mode: {CLOUDFLARE_MODEL_NAME}</span>
-                      </> : <span>No draft context available</span>}
+                <DraftComposer
+                  contactName={contact.name}
+                  roleLabel={activeDraftGuidance.role}
+                  stageLabel={COMPACT_RELATIONSHIP_STAGE_LABELS[normalizeRelationshipStage(contact.relationshipStage)]}
+                  providerLabel="Claude primary"
+                  objective={agenda}
+                  objectiveRef={agendaRef}
+                  onObjectiveChange={setAgenda}
+                  onGenerate={handleDraftGeneration}
+                  isGenerating={isGenerating}
+                  generateDisabled={!isGenerating && (!conversationReady || !cloudReady || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("processed locally")))}
+                  status={aiStatus}
+                  advancedControls={<>
+                    <div className="draft-playbook-control">
+                      <label className="draft-role-select"><span>Your role or team</span><select aria-label="Your role or team" value={workspace.inboxRole} onChange={(event) => changeInboxRole(event.target.value as MessagingRole)}>{MESSAGING_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
+                      <div className="active-playbook-summary" role="status" aria-live="polite"><strong>Using {activeDraftGuidance.role} playbook</strong><span className="composer-info"><button className="info-button" type="button" aria-label={`About the ${activeDraftGuidance.role} playbook`} aria-describedby="active-playbook-description">i</button><span className="composer-tooltip" id="active-playbook-description" role="tooltip">Relationship goal: {activeDraftGuidance.objective.trim() || "No relationship goal configured"}. {activeDraftGuidance.boundaries.trim() ? `${activeDraftGuidance.boundaries.trim().length.toLocaleString()} rule characters loaded.` : "No reply rules configured for this role."}</span></span></div>
                     </div>
-                  </details>
-                  <div className="stage-goal-controls">
-                    <label><span>Relationship stage</span><select aria-label="Relationship stage" value={normalizeRelationshipStage(contact.relationshipStage)} onChange={(event) => confirmRelationshipStage(normalizeRelationshipStage(event.target.value))}>{RELATIONSHIP_STAGES.map((stage) => <option key={stage} value={stage}>{RELATIONSHIP_STAGE_LABELS[stage]}</option>)}</select></label>
-                    <label><span>Conversation goal</span><textarea aria-label="Conversation goal" maxLength={CONVERSATION_GOAL_MAX_CHARS} value={contact.conversationGoal ?? ""} onChange={(event) => updateContact((current) => ({ ...current, conversationGoal: event.target.value.slice(0, CONVERSATION_GOAL_MAX_CHARS) }))} placeholder="What is the next relationship outcome—not a sales target?" /></label>
-                  </div>
-                  {stageSuggestion && <div className="stage-suggestion" role="status"><span>{stageSuggestion.usedFallback ? `No confident local stage suggestion yet (${Math.round(stageSuggestion.confidence * 100)}%). Current stage retained.` : `Suggested stage: ${RELATIONSHIP_STAGE_LABELS[stageSuggestion.suggestedStage]} (${Math.round(stageSuggestion.confidence * 100)}% confidence)`}</span>{!stageSuggestion.usedFallback && stageSuggestion.suggestedStage !== normalizeRelationshipStage(contact.relationshipStage) && <button type="button" aria-label="Apply suggested relationship stage" onClick={() => confirmRelationshipStage(stageSuggestion.suggestedStage)}>Apply suggestion</button>}</div>}
-                  <div className="objective-field">
-                    <div className="objective-field-label"><label htmlFor="reply-objective">What should your reply accomplish? <span className="field-optional">Optional</span></label><span className="composer-info"><button className="info-button" type="button" aria-label="About the optional reply objective" aria-describedby="objective-description">i</button><span className="composer-tooltip objective-tooltip" id="objective-description" role="tooltip">Leave blank to reply strictly from the existing chat, latest message, and selected-role rules. When provided, the objective is applied together with—not instead of—the conversation and playbook rules.</span></span></div>
-                    <div className="prompt-composer">
-                      <textarea id="reply-objective" aria-label="What should your reply accomplish?" ref={agendaRef} maxLength={5_000} value={agenda} onChange={(event) => setAgenda(event.target.value.slice(0, 5_000))} placeholder="Optional objective for this reply" />
-                      <div className="prompt-composer-actions">{aiStatus && <span className="status" aria-live="polite">{aiStatus}</span>}<button className={`primary draft-generate-button${isGenerating ? " is-loading" : ""}`} disabled={!isGenerating && (!conversationReady || !cloudReady || Boolean(aiStatus && !aiStatus.includes("Generated") && !aiStatus.includes("processed locally")))} aria-label={isGenerating ? "Stop generating draft" : "Generate Precise Draft"} title={isGenerating ? "Stop generating draft" : undefined} aria-busy={isGenerating} onClick={() => isGenerating ? stopGenerating() : void generate()}>{isGenerating ? <span className="draft-processing-symbols" aria-hidden="true"><span className="draft-button-spinner" /><span className="draft-stop-symbol">■</span></span> : <span>Generate Precise Draft</span>}</button></div>
+                    <details className="draft-context-inspector">
+                      <summary>Draft context</summary>
+                      <div role="region" aria-label="Draft context">
+                        {draftContextSummary ? <>
+                          <span>{draftContextSummary.role} playbook</span>
+                          <span>{draftContextSummary.hasRelationshipGoal ? "Relationship goal included" : "No relationship goal"}</span>
+                          <span>{draftContextSummary.replyRuleCharacters.toLocaleString()} reply-rule characters</span>
+                          <span>{draftContextSummary.hasObjective ? "Optional instruction included" : "No optional instruction"}</span>
+                          <span>{draftContextSummary.hasContactNotes ? "Contact notes included" : "No contact notes"}</span>
+                          <span>{draftContextSummary.structuredMessagesIncluded} conversation message{draftContextSummary.structuredMessagesIncluded === 1 ? "" : "s"} included</span>
+                          <span>{draftContextSummary.conversationCaptureCount} safe conversation capture{draftContextSummary.conversationCaptureCount === 1 ? "" : "s"} included</span>
+                          <span>Latest incoming: {draftContextSummary.latestIncomingText || "Not available"}</span>
+                          <span>Generation mode: {CLOUDFLARE_MODEL_NAME}</span>
+                        </> : <span>No draft context available</span>}
+                      </div>
+                    </details>
+                    <div className="stage-goal-controls">
+                      <label><span>Relationship stage</span><select aria-label="Relationship stage" value={normalizeRelationshipStage(contact.relationshipStage)} onChange={(event) => confirmRelationshipStage(normalizeRelationshipStage(event.target.value))}>{RELATIONSHIP_STAGES.map((stage) => <option key={stage} value={stage}>{RELATIONSHIP_STAGE_LABELS[stage]}</option>)}</select></label>
+                      <label><span>Conversation goal</span><textarea aria-label="Conversation goal" maxLength={CONVERSATION_GOAL_MAX_CHARS} value={contact.conversationGoal ?? ""} onChange={(event) => updateContact((current) => ({ ...current, conversationGoal: event.target.value.slice(0, CONVERSATION_GOAL_MAX_CHARS) }))} placeholder="What is the next relationship outcome—not a sales target?" /></label>
                     </div>
-                  </div>
-                  {!cloudReady && <p className="missing-context">Finish Cloudflare draft consent in Settings before generating.</p>}
-                  {!conversationReady && <p className="missing-context">Synchronize or manually import at least one relevant message first.</p>}
-                  {draftProgressAvailable && <DraftProgressPanel expanded={draftProgressExpanded} onToggle={() => setDraftProgressExpanded((current) => !current)} role={activeDraftGuidance.role} ruleCharacters={activeDraftGuidance.boundaries.trim().length} statuses={draftStageStatuses} />}
-                  {draftError && <div className="notice error inline-draft-error" role="alert"><span><strong>Draft was not generated.</strong> {draftError}</span><button aria-label="Dismiss draft generation error" onClick={() => setDraftError("")}>×</button></div>}
-                </section>
+                    {stageSuggestion && <div className="stage-suggestion" role="status"><span>{stageSuggestion.usedFallback ? `No confident local stage suggestion yet (${Math.round(stageSuggestion.confidence * 100)}%). Current stage retained.` : `Suggested stage: ${RELATIONSHIP_STAGE_LABELS[stageSuggestion.suggestedStage]} (${Math.round(stageSuggestion.confidence * 100)}% confidence)`}</span>{!stageSuggestion.usedFallback && stageSuggestion.suggestedStage !== normalizeRelationshipStage(contact.relationshipStage) && <button type="button" aria-label="Apply suggested relationship stage" onClick={() => confirmRelationshipStage(stageSuggestion.suggestedStage)}>Apply suggestion</button>}</div>}
+                    <p className="advanced-provider-note">Claude Opus 4.6 Thinking is primary. Llama 3.1 8B and GPT-OSS 120B remain the tracked Workers AI fallback.</p>
+                  </>}
+                  notices={<>
+                    {!cloudReady && <p className="missing-context">Finish Cloudflare draft consent in Settings before generating.</p>}
+                    {!conversationReady && <p className="missing-context">Synchronize or manually import at least one relevant message first.</p>}
+                    {draftError && <div className="notice error inline-draft-error" role="alert"><span><strong>Draft was not generated.</strong> {draftError}</span><button type="button" aria-label="Dismiss draft generation error" onClick={() => setDraftError("")}>×</button></div>}
+                  </>}
+                  progress={draftProgressAvailable ? <DraftProgressPanel expanded={draftProgressExpanded} onToggle={() => setDraftProgressExpanded((current) => !current)} role={activeDraftGuidance.role} ruleCharacters={activeDraftGuidance.boundaries.trim().length} statuses={draftStageStatuses} /> : null}
+                />
 
                 {cloudLearningSyncStatus && <p className="status draft-learning-status" role="status" aria-live="polite">{cloudLearningSyncStatus}</p>}
-                <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={contact.id + "-" + index}><div><span>DRAFT {index + 1}</span><div><button onClick={() => void navigator.clipboard.writeText(draft).then(() => setExtensionStatus("Draft copied. Review and send it yourself."), () => setAppError("Clipboard access was blocked."))}>Copy</button><button onClick={() => markDraftManuallySent(draft)}>Mark manually sent</button><button type="button" onClick={() => setImprovementDraft({ contactId: contact.id, draftIndex: index })}>Save improvement</button><button aria-label={"Dismiss draft " + (index + 1)} onClick={() => { const nextDrafts = drafts.filter((_item, draftIndex) => draftIndex !== index); setDrafts(nextDrafts); persistDrafts(nextDrafts); }}>Dismiss</button>{workspace.personalLearning.enabled ? <><button aria-label={"Accept draft " + (index + 1)} onClick={() => recordDraftFeedback(draft, "accepted")}>Accept</button><button aria-label={"Save edited draft " + (index + 1) + " as feedback"} onClick={() => recordDraftFeedback(draft, "edited")}>Save edit</button><button aria-label={"Reject draft " + (index + 1)} onClick={() => recordDraftFeedback(draft, "rejected")}>Reject</button></> : <small title="Enable encrypted personal learning in Settings">Learning off</small>}</div></div><textarea aria-label={"Edit draft " + (index + 1)} value={draft} onChange={(event) => setDrafts((current) => current.map((item, draftIndex) => draftIndex === index ? event.target.value.slice(0, 5_000) : item))} onBlur={() => persistDrafts()} /></article>)}</div>
+                <div className="draft-stack">{drafts.length > 0 ? <CompletedDraftCard
+                  draft={drafts[0]}
+                  provider={activeStrictDraftResult?.provider ?? activeDraftHistory?.provider}
+                  model={activeStrictDraftResult?.model ?? activeDraftHistory?.modelId}
+                  usageAccounting={activeStrictDraftResult?.usageAccounting}
+                  fallbackReason={activeStrictDraftResult ? activeStrictDraftResult.fallbackReason : undefined}
+                  learningEnabled={workspace.personalLearning.enabled}
+                  onDraftChange={(value) => setDrafts([value])}
+                  onDraftBlur={() => persistDrafts()}
+                  onCopy={() => void navigator.clipboard.writeText(drafts[0]).then(() => setExtensionStatus("Draft copied. Review and send it yourself."), () => setAppError("Clipboard access was blocked."))}
+                  onMarkSent={() => markDraftManuallySent(drafts[0])}
+                  onSaveImprovement={() => setImprovementDraft({ contactId: contact.id, draftIndex: 0 })}
+                  onDismiss={() => { setDrafts([]); setLatestDraftResult(null); persistDrafts([]); }}
+                  onAccept={() => recordDraftFeedback(drafts[0], "accepted")}
+                  onSaveEdit={() => recordDraftFeedback(drafts[0], "edited")}
+                  onReject={() => recordDraftFeedback(drafts[0], "rejected")}
+                /> : null}</div>
                 {handoffUrl && <a className="platform-link" href={handoffUrl} target="_blank" rel="noreferrer">Open LinkedIn to review and paste ↗</a>}
                 </div>
               </div>
@@ -1786,7 +1882,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         </div>
 
         <footer><span>DialogMint never sends platform messages or email automatically.</span><button className="danger-link" onClick={() => void eraseEverything()}>Erase all local data</button></footer>
-        {wizardOpen && <LinkedInTestWizard initialContact={contact} guidance={resolveRoleGuidance(workspace.guidance, workspace.inboxRole)} drafts={drafts} aiStatus={draftError ? "Draft was not generated. " + draftError : aiStatus} onClose={() => setWizardOpen(false)} onSaveProfile={saveWizardProfile} onCapture={captureContextFor} onImportChat={importChatFor} onGuidanceChange={(field, value) => { if (field === "role") changeInboxRole(value as MessagingRole); else if (field === "voice") updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: value.slice(0, PLAYBOOK_VOICE_MAX_CHARS) } })); else updateRolePlaybook(workspace.inboxRole, field, value); }} onGenerate={async (contactId, nextAgenda) => { setActiveContactId(contactId); setAgenda(nextAgenda); await generate(nextAgenda, contactId); }} />}
+        {wizardOpen && <LinkedInTestWizard initialContact={contact} guidance={resolveRoleGuidance(workspace.guidance, workspace.inboxRole)} drafts={drafts} aiStatus={draftError ? "Draft was not generated. " + draftError : aiStatus} onClose={() => setWizardOpen(false)} onSaveProfile={saveWizardProfile} onCapture={captureContextFor} onImportChat={importChatFor} onGuidanceChange={(field, value) => { if (field === "role") changeInboxRole(value as MessagingRole); else if (field === "voice") updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: value.slice(0, PLAYBOOK_VOICE_MAX_CHARS) } })); else updateRolePlaybook(workspace.inboxRole, field, value); }} onGenerate={handleWizardDraftGeneration} />}
         {cropRequest && <ScreenRegionSelector image={cropRequest.image} contactName={cropRequest.contactName} purpose={cropRequest.purpose} onCancel={() => { const request = cropRequest; setCropRequest(null); request.resolve(null); }} onConfirm={(region) => { const request = cropRequest; setCropRequest(null); request.resolve(region); }} />}
         {contact && improvementDraft?.contactId === contact.id && drafts[improvementDraft.draftIndex] !== undefined && <SaveImprovementDialog
           knownIdentifiers={{ contactName: contact.name, company: contact.company ?? "", profileUrl: contact.profileUrl ?? "", profileHandle: contact.profileUrl?.split("/").filter(Boolean).at(-1) ?? "" }}

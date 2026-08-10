@@ -2,7 +2,11 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const app = readFileSync("src/components/ChatHelpApp.tsx", "utf8");
+const composer = readFileSync("src/components/DraftComposer.tsx", "utf8");
+const completedDraft = readFileSync("src/components/CompletedDraftCard.tsx", "utf8");
+const progress = readFileSync("src/components/DraftProgressPanel.tsx", "utf8");
 const styles = readFileSync("src/app/globals.css", "utf8");
+const draftingUi = [app, composer, completedDraft, progress].join("\n");
 
 describe("desktop conversation workspace layout", () => {
   it("provides the requested navigation, inbox filters, drafting action, and collapsed right context panel", () => {
@@ -12,9 +16,9 @@ describe("desktop conversation workspace layout", () => {
     for (const filter of ["Main inbox", "To respond", "Awaiting reply", "Follow-up due", "Snoozed", "New contacts", "Archived"]) {
       expect(app).toContain(`label: "${filter}"`);
     }
-    expect(app).toContain('"Generate Precise Draft"');
-    expect(app).toContain('aria-label="Relationship stage"');
-    expect(app).toContain('aria-label="Conversation goal"');
+    expect(draftingUi).toContain('"Generate Precise Draft"');
+    expect(draftingUi).toContain('aria-label="Relationship stage"');
+    expect(draftingUi).toContain('aria-label="Conversation goal"');
     expect(app).toContain("Open LinkedIn to review and paste");
     expect(app).toContain('aria-label={contactContextOpen ? "Hide contact details" : "Show contact details"}');
     expect(app).toContain('hidden={!contactContextOpen} aria-hidden={!contactContextOpen}');
@@ -25,7 +29,7 @@ describe("desktop conversation workspace layout", () => {
     expect(styles).toContain("@media (max-width: 360px)");
     expect(styles).toMatch(/\.prompt-composer-actions\s+\.draft-generate-button\s*\{[^}]*width:\s*100%/s);
     for (const excluded of ["Add members", "Export to HubSpot", "Enrich now", "Find business email", "Find phone number"]) {
-      expect(app).not.toContain(excluded);
+      expect(draftingUi).not.toContain(excluded);
     }
   });
 
@@ -38,5 +42,33 @@ describe("desktop conversation workspace layout", () => {
     expect(styles).toContain("@media (max-width: 760px)");
     expect(styles).toMatch(/@media \(max-width: 760px\)[\s\S]*?\.mobile-list-hidden/);
     expect(styles).toMatch(/@media \(max-width: 760px\)[\s\S]*?\.mobile-conversation-hidden/);
+  });
+
+  it("keeps compact drafting responsive, theme-safe, focus-visible, and motion-reduced", () => {
+    expect(composer).toContain('className="composer-card draft-composer"');
+    expect(composer).toContain('aria-label="Optional instruction"');
+    expect(composer).toContain("<summary onClick={() => setAdvancedOpen((current) => !current)}>Advanced</summary>");
+    expect(completedDraft).toContain("<summary onClick={() => setMoreOpen((current) => !current)}>More</summary>");
+    expect(completedDraft).toContain('className="draft-primary-actions"');
+    expect(completedDraft).toContain('className="draft-provider-metadata"');
+    expect(progress).toContain('hidden={!expanded}');
+
+    expect(styles).toMatch(/\.prompt-composer textarea\s*\{[^}]*height:\s*48px;[^}]*min-height:\s*42px;[^}]*max-height:\s*56px;/);
+    expect(styles).toMatch(/\.draft-provider-metadata dd\s*\{[^}]*overflow-wrap:\s*anywhere;/);
+    expect(styles).toMatch(/\.advanced-provider-note\s*\{[^}]*overflow-wrap:\s*anywhere;/);
+    expect(styles).toMatch(/\.prompt-composer:focus-within\s*\{[^}]*outline:\s*3px solid var\(--green\);/);
+    expect(styles).toMatch(/@media \(max-width:\s*760px\)[\s\S]*?\.composer-advanced-content \.stage-goal-controls\s*\{[^}]*grid-template-columns:\s*1fr;/);
+    expect(styles).toMatch(/@media \(max-width:\s*360px\)[\s\S]*?\.prompt-composer-actions \.draft-generate-button\s*\{[^}]*width:\s*100%/);
+    expect(styles).toMatch(/@media \(max-width:\s*360px\)[\s\S]*?\.draft-primary-actions\s*\{[^}]*grid-template-columns:\s*1fr;/);
+    expect(styles).toContain(':root:not([data-theme="light"]) .composer-advanced');
+    expect(styles).toContain(':root:not([data-theme="light"]) .draft-provider-metadata > div');
+    expect(styles).toContain(':root:not([data-theme="light"]) :focus-visible');
+    expect(styles).toMatch(/@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.draft-progress-content li\[data-status="in-progress"\] \.draft-step-icon\s*\{[^}]*animation:\s*none;/);
+  });
+
+  it("invalidates draft identity synchronously on every direct contact selection path", () => {
+    expect(app).toContain("synchronizeActiveDraftContact(preview.contactId);");
+    expect(app).toMatch(/const setActiveContactId[\s\S]*?synchronizeActiveDraftContact\(contactId\);[\s\S]*?setSelectedId\(contactId\);/);
+    expect(app).toContain('synchronizeActiveDraftContact(next.contacts[0]?.id ?? "");');
   });
 });

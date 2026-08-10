@@ -318,12 +318,14 @@ describe("secure conversation workspace interaction", () => {
     expect(within(syncDiagnostics).getByText("Duplicates 0")).toBeTruthy();
     expect(within(syncDiagnostics).getByText("Result Created")).toBeTruthy();
 
-    await user.click(screen.getByText("Draft context"));
+    const composer = screen.getByRole("region", { name: "Reply to Taylor Lee" });
+    await user.click(within(composer).getByText("Advanced"));
+    await user.click(within(composer).getByText("Draft context"));
     const draftContext = screen.getByRole("region", { name: "Draft context" });
     expect(within(draftContext).getByText(/Socializing\/Networking playbook/)).toBeTruthy();
     expect(within(draftContext).getByText("1 conversation message included")).toBeTruthy();
     expect(within(draftContext).getByText(/reply-rule characters/)).toBeTruthy();
-    expect(within(draftContext).getByText("No optional objective")).toBeTruthy();
+    expect(within(draftContext).getByText("No optional instruction")).toBeTruthy();
     expect(within(draftContext).getByText(/Could you share the role brief\?/)).toBeTruthy();
   });
 
@@ -360,7 +362,8 @@ describe("secure conversation workspace interaction", () => {
     await user.click(consent);
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
-    expect((screen.getByLabelText("What should your reply accomplish?") as HTMLTextAreaElement).value).toBe("");
+    expect((screen.getByLabelText("Optional instruction") as HTMLTextAreaElement).value).toBe("");
+    await user.click(within(screen.getByRole("region", { name: "Reply to Taylor Lee" })).getByText("Advanced"));
     await user.selectOptions(screen.getByRole("combobox", { name: "Relationship stage" }), "learn_interests");
     await user.type(screen.getByRole("textbox", { name: "Conversation goal" }), "Learn which role detail matters most.");
     await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
@@ -380,6 +383,9 @@ describe("secure conversation workspace interaction", () => {
     expect(requestBody.conversationGoal).toBe("Learn which role detail matters most.");
     expect(requestBody.latestMeaningfulIncoming).toMatchObject({ sender: "CONTACT", text: "Could you share the role brief?" });
     expect(screen.getByText(/Generated one precise draft with Claude Opus 4.6/i)).toBeTruthy();
+    const progressToggle = screen.getByRole("button", { name: "Show AI steps" });
+    expect(progressToggle.getAttribute("aria-expanded")).toBe("false");
+    await user.click(progressToggle);
     expect(screen.getByText("Finalizing precise draft").closest("li")?.dataset.status).toBe("done");
     expect(screen.getByRole("link", { name: /Open LinkedIn to review and paste/ })).toBeTruthy();
   }, 20_000);
@@ -460,7 +466,10 @@ describe("secure conversation workspace interaction", () => {
 
     await user.clear(generated);
     await user.type(generated, "What part of the role would help you decide whether it is relevant?");
-    await user.click(screen.getByRole("button", { name: "Save edited draft 1 as feedback" }));
+    const draftCard = screen.getByLabelText("Edit draft 1").closest("article");
+    expect(draftCard).toBeTruthy();
+    await user.click(within(draftCard as HTMLElement).getByText("More"));
+    await user.click(within(draftCard as HTMLElement).getByRole("button", { name: "Save edited draft 1 as feedback" }));
     expect((await screen.findAllByText(/Saved encrypted feedback locally/)).length).toBeGreaterThan(0);
     await waitFor(async () => {
       const saved = (await openDeviceVault()).workspace.feedback.at(-1);
@@ -639,6 +648,7 @@ describe("secure conversation workspace interaction", () => {
     render(<ChatHelpApp />);
     await screen.findByRole("heading", { name: /private conversation studio/i });
 
+    await user.click(within(screen.getByRole("region", { name: "Reply to Taylor Lee" })).getByText("Advanced"));
     const stageSelect = screen.getByRole("combobox", { name: "Relationship stage" }) as HTMLSelectElement;
     expect(stageSelect.value).toBe("new_connection");
     expect(screen.getByText(/Suggested stage: Learn interests and situation/)).toBeTruthy();
@@ -1043,7 +1053,7 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
 
-    const objective = screen.getByRole("textbox", { name: "What should your reply accomplish?" });
+    const objective = screen.getByRole("textbox", { name: "Optional instruction" });
     const promptComposer = objective.closest(".prompt-composer");
     expect(promptComposer).toBeTruthy();
     expect(within(promptComposer as HTMLElement).getByRole("button", { name: "Generate Precise Draft" })).toBeTruthy();
@@ -1198,6 +1208,7 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
 
     await user.click(screen.getByRole("button", { name: "Inbox" }));
+    await user.click(within(screen.getByRole("region", { name: "Reply to Taylor Lee" })).getByText("Advanced"));
     const inboxRole = screen.getByLabelText("Your role or team");
     expect(inboxRole.closest(".composer-card")).toBeTruthy();
     expect(firstRender.container.querySelector(".conversation-scroll[aria-label='Conversation history']")).toBeTruthy();
@@ -1208,8 +1219,8 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.getByText(/Relationship goal: NETWORK-ONLY-GOAL/)).toBeTruthy();
     expect(screen.getByText(/rule characters loaded/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "About the Network Marketing playbook" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "About the optional reply objective" })).toBeTruthy();
-    await user.type(screen.getByLabelText("What should your reply accomplish?"), "Reply naturally using the selected playbook.");
+    expect(screen.getByRole("textbox", { name: "Optional instruction" })).toBeTruthy();
+    await user.type(screen.getByLabelText("Optional instruction"), "Reply naturally using the selected playbook.");
     await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
     expect(await screen.findByDisplayValue("Network draft one")).toBeTruthy();
     expect(screen.getByText(/independently reviewed against the full Network Marketing rulebook/)).toBeTruthy();
@@ -1235,6 +1246,7 @@ describe("secure conversation workspace interaction", () => {
     firstRender.unmount();
     render(<ChatHelpApp />);
     await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(within(screen.getByRole("region", { name: "Reply to Taylor Lee" })).getByText("Advanced"));
     expect((screen.getByLabelText("Your role or team") as HTMLSelectElement).value).toBe("Human Resource");
   }, 30_000);
 
@@ -1254,7 +1266,7 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
-    await user.type(screen.getByLabelText("What should your reply accomplish?"), "Write a short reply.");
+    await user.type(screen.getByLabelText("Optional instruction"), "Write a short reply.");
     await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
     expect((await screen.findByRole("alert")).textContent).toMatch(/Draft was not generated.*Cloudflare sign-in session could not be verified/);
     expect(request.mock.calls[0][1]?.credentials).toBe("same-origin");
