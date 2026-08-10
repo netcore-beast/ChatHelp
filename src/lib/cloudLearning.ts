@@ -1,4 +1,5 @@
-import type { CloudLearningDeletionMarker, CloudLearningSyncEntry, PendingLearningUploadRecord, WorkspaceData } from "./workspaceTypes";
+import { acknowledgeDraftLearningDecision, failDraftLearningDecision, type DraftLearningDecisionAcknowledgement } from "./draftLearningDecision";
+import type { CloudLearningDeletionMarker, CloudLearningSyncEntry, DraftLearningDecisionPayload, PendingDraftLearningDecisionMutation, PendingLearningUploadRecord, WorkspaceData } from "./workspaceTypes";
 
 const MAX_COUNT = 1_000_000;
 const MAX_PAGE_RECORDS = 25;
@@ -86,6 +87,12 @@ export interface CloudLearningKnownIdentifiers {
   profileHandle: string;
 }
 
+export type DraftLearningDecisionRequest =
+  | { decision: Extract<DraftLearningDecisionPayload, { kind: "evaluation" }> }
+  | { decision: Extract<DraftLearningDecisionPayload, { kind: "generative" }>; knownIdentifiers: CloudLearningKnownIdentifiers };
+
+export type DraftLearningDecisionResponse = DraftLearningDecisionAcknowledgement;
+
 type UploadablePendingLearningRecord = PendingLearningUploadRecord & { knownIdentifiers?: CloudLearningKnownIdentifiers };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -112,6 +119,27 @@ function isKnownIdentifiers(value: unknown): value is CloudLearningKnownIdentifi
     .every((item) => typeof item === "string" && item.length <= 2_000);
 }
 
+function isDraftLearningDecisionPayload(value: unknown): value is DraftLearningDecisionPayload {
+  if (!isPlainObject(value) || !ROLE_IDS.has(String(value.roleId)) || typeof value.relationshipStage !== "string"
+      || !Object.hasOwn(GOAL_CATEGORY_BY_STAGE, value.relationshipStage)
+      || value.goalCategory !== GOAL_CATEGORY_BY_STAGE[value.relationshipStage as keyof typeof GOAL_CATEGORY_BY_STAGE]) return false;
+  if (value.kind === "evaluation") {
+    return hasExactKeys(value, ["kind", "roleId", "relationshipStage", "goalCategory", "action"])
+      && (value.action === "useful" || value.action === "not_useful");
+  }
+  return value.kind === "generative"
+    && hasExactKeys(value, ["kind", "roleId", "relationshipStage", "goalCategory", "provenance", "target", "rightsAttested", "privacyAttested"])
+    && value.provenance === "independently_user_authored"
+    && typeof value.target === "string" && value.target.trim().length > 0 && value.target.length <= 2_000
+    && value.rightsAttested === true && value.privacyAttested === true;
+}
+
+function isDraftLearningDecisionRequest(value: unknown): value is DraftLearningDecisionRequest {
+  if (!isPlainObject(value) || !isDraftLearningDecisionPayload(value.decision)) return false;
+  if (value.decision.kind === "evaluation") return hasExactKeys(value, ["decision"]);
+  return hasExactKeys(value, ["decision", "knownIdentifiers"]) && isKnownIdentifiers(value.knownIdentifiers);
+}
+
 function parseClassifierFeatures(value: unknown): CloudClassifierFeatures {
   if (!isPlainObject(value) || !hasExactKeys(value, CLASSIFIER_FEATURE_KEYS)
       || !MESSAGE_COUNT_BUCKETS.has(String(value.messageCountBucket))
@@ -134,6 +162,10 @@ function isIsoTimestamp(value: unknown): value is string {
   if (typeof value !== "string") return false;
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+}
+
+function isJsonMediaType(contentType: string | null): boolean {
+  return contentType?.split(";", 1)[0]?.trim().toLowerCase() === "application/json";
 }
 
 function isCursor(value: unknown): value is string {
@@ -161,11 +193,54 @@ async function learningFetch(path: string, init: RequestInit = {}): Promise<unkn
     headers: { Accept: "application/json", ...init.headers },
   });
   if (!response.ok) throw new Error("Cloud learning is temporarily unavailable.");
-  if (!response.headers.get("Content-Type")?.toLowerCase().includes("application/json")) return invalidResponse();
+  if (!isJsonMediaType(response.headers.get("Content-Type"))) return invalidResponse();
   try {
     return await response.json();
   } catch {
     invalidResponse();
+  }
+}
+
+export function parseDraftLearningDecisionResponse(value: unknown, requestedRecordId: string): DraftLearningDecisionResponse {
+  if (!isRecordId(requestedRecordId) || !isPlainObject(value)
+      || !hasExactKeys(value, ["recordId", "decision", "recordKind", "contentDigest", "changed", "updatedAt"])
+      || value.recordId !== requestedRecordId
+      || (value.decision !== "useful" && value.decision !== "not_useful" && value.decision !== "authored")
+      || (value.recordKind !== "evaluation" && value.recordKind !== "generative")
+      || (value.decision === "authored") !== (value.recordKind === "generative")
+      || typeof value.contentDigest !== "string" || !/^[a-f0-9]{64}$/u.test(value.contentDigest)
+      || typeof value.changed !== "boolean" || !isIsoTimestamp(value.updatedAt)) return invalidResponse();
+  return {
+    recordId: value.recordId,
+    decision: value.decision,
+    recordKind: value.recordKind,
+    contentDigest: value.contentDigest,
+    changed: value.changed,
+    updatedAt: value.updatedAt,
+  };
+}
+
+export async function putDraftLearningDecision(recordId: string, request: DraftLearningDecisionRequest): Promise<DraftLearningDecisionResponse> {
+  if (!isRecordId(recordId) || !isDraftLearningDecisionRequest(request)) throw new Error("Cloud learning decision is invalid.");
+  let response: Response;
+  try {
+    response = await fetch(`/api/learning/decisions/${recordId}`, {
+      method: "PUT",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    });
+  } catch {
+    throw new Error("Cloud learning is temporarily unavailable.");
+  }
+  if (!response.ok) throw new Error("Cloud learning is temporarily unavailable.");
+  if (!isJsonMediaType(response.headers.get("Content-Type"))) return invalidResponse();
+  try {
+    return parseDraftLearningDecisionResponse(await response.json(), recordId);
+  } catch (error) {
+    if (error instanceof Error && error.message === "DialogMint received an invalid cloud learning response.") throw error;
+    return invalidResponse();
   }
 }
 
@@ -364,6 +439,49 @@ export async function uploadCloudLearningRecords(records: readonly UploadablePen
     body: JSON.stringify(payload),
   });
   return parseUploadResult(result, new Set(records.map((record) => record.recordId)));
+}
+
+function latestDraftLearningDecisionMutations(records: readonly PendingDraftLearningDecisionMutation[]): PendingDraftLearningDecisionMutation[] {
+  const stateRank = { useful: 0, not_useful: 1, authored: 2 } as const;
+  const latest = new Map<string, PendingDraftLearningDecisionMutation>();
+  for (const record of records) {
+    const current = latest.get(record.recordId);
+    if (!current
+        || Date.parse(record.createdAt) > Date.parse(current.createdAt)
+        || Date.parse(record.createdAt) === Date.parse(current.createdAt)
+          && stateRank[record.decision.kind === "generative" ? "authored" : record.decision.action]
+            >= stateRank[current.decision.kind === "generative" ? "authored" : current.decision.action]) latest.set(record.recordId, record);
+  }
+  return [...latest.values()];
+}
+
+export async function syncPendingDraftLearningDecisions(
+  workspace: WorkspaceData,
+  resolveKnownIdentifiers: (sourceLocalId: string) => CloudLearningKnownIdentifiers | null,
+  now = new Date(),
+): Promise<WorkspaceData> {
+  let next = workspace;
+  const pending = latestDraftLearningDecisionMutations(workspace.pendingLearningRecords.filter((record): record is PendingDraftLearningDecisionMutation => record.mutationKind === "draft_decision"));
+  for (const mutation of pending) {
+    let request: DraftLearningDecisionRequest | null;
+    if (mutation.decision.kind === "evaluation") {
+      request = { decision: mutation.decision };
+    } else {
+      const knownIdentifiers = resolveKnownIdentifiers(mutation.sourceLocalId);
+      request = knownIdentifiers ? { decision: mutation.decision, knownIdentifiers } : null;
+    }
+    if (!request) {
+      next = failDraftLearningDecision(next, mutation.recordId, now);
+      continue;
+    }
+    try {
+      const response = await putDraftLearningDecision(mutation.recordId, request);
+      next = acknowledgeDraftLearningDecision(next, response);
+    } catch {
+      next = failDraftLearningDecision(next, mutation.recordId, now);
+    }
+  }
+  return next;
 }
 
 function synchronizeAcknowledgedRecords(workspace: WorkspaceData, acknowledgements: readonly CloudLearningAcknowledgement[], updatedAt: string): WorkspaceData {

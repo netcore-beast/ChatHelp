@@ -22,6 +22,19 @@ export interface DraftLearningDecisionAcknowledgement {
   updatedAt: string;
 }
 
+function latestPendingDecisionMutation(workspace: WorkspaceData, recordId: string): PendingDraftLearningDecisionMutation | undefined {
+  const stateRank: Record<DraftLearningDecisionState, number> = { useful: 0, not_useful: 1, authored: 2 };
+  return workspace.pendingLearningRecords.reduce<PendingDraftLearningDecisionMutation | undefined>((latest, item) => {
+    if (item.mutationKind !== "draft_decision" || item.recordId !== recordId) return latest;
+    if (!latest) return item;
+    const itemTime = Date.parse(item.createdAt);
+    const latestTime = Date.parse(latest.createdAt);
+    if (itemTime > latestTime || itemTime === latestTime
+        && stateRank[decisionStateForPayload(item.decision)] >= stateRank[decisionStateForPayload(latest.decision)]) return item;
+    return latest;
+  }, undefined);
+}
+
 function updateDecision(workspace: WorkspaceData, recordId: string, update: (decision: DraftLearningDecision) => DraftLearningDecision | undefined): WorkspaceData {
   let changed = false;
   const contacts = workspace.contacts.map((contact) => ({
@@ -66,7 +79,7 @@ export function stageDraftLearningDecision(workspace: WorkspaceData, contactId: 
 }
 
 export function acknowledgeDraftLearningDecision(workspace: WorkspaceData, response: DraftLearningDecisionAcknowledgement): WorkspaceData {
-  const pending = workspace.pendingLearningRecords.find((item): item is PendingDraftLearningDecisionMutation => item.mutationKind === "draft_decision" && item.recordId === response.recordId);
+  const pending = latestPendingDecisionMutation(workspace, response.recordId);
   if (!pending || workspace.cloudLearningDeletionMarkers.some((marker) => marker.recordId === response.recordId)) return workspace;
   const state = decisionStateForPayload(pending.decision);
   const compatible = state === response.decision || response.decision === "authored" && state === "useful";

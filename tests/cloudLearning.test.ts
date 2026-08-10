@@ -1,6 +1,42 @@
 import { describe, expect, it, vi } from "vitest";
-import { applyCloudLearningSyncDelta, clearDeletedCloudLearningSyncMetadata, clearDisabledCloudLearningState, deleteCloudLearningRecord, disableAndDeleteCloudLearning, readCloudLearningRecords, readCloudLearningStatus, syncPendingLearningRecords, updateCloudLearningPreference, uploadCloudLearningRecords } from "../src/lib/cloudLearning";
-import { createEmptyWorkspace } from "../src/lib/workspaceTypes";
+import { applyCloudLearningSyncDelta, clearDeletedCloudLearningSyncMetadata, clearDisabledCloudLearningState, deleteCloudLearningRecord, disableAndDeleteCloudLearning, parseDraftLearningDecisionResponse, putDraftLearningDecision, readCloudLearningRecords, readCloudLearningStatus, syncPendingDraftLearningDecisions, syncPendingLearningRecords, updateCloudLearningPreference, uploadCloudLearningRecords } from "../src/lib/cloudLearning";
+import { stageDraftLearningDecision } from "../src/lib/draftLearningDecision";
+import { createEmptyWorkspace, type Contact, type DraftLearningDecisionPayload, type WorkspaceData } from "../src/lib/workspaceTypes";
+
+const DECISION_DRAFT_ID = "draft-00000000-0000-4000-8000-000000000001";
+const DECISION_RECORD_ID = "learning-decision-draft-00000000-0000-4000-8000-000000000001";
+
+function usefulDecision(): Extract<DraftLearningDecisionPayload, { kind: "evaluation" }> {
+  return { kind: "evaluation", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", action: "useful" };
+}
+
+function authoredDecision(): Extract<DraftLearningDecisionPayload, { kind: "generative" }> {
+  return {
+    kind: "generative", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect",
+    provenance: "independently_user_authored", target: "My independent response", rightsAttested: true, privacyAttested: true,
+  };
+}
+
+function decisionResponse(overrides: Partial<Record<string, unknown>> = {}): Response {
+  return okJson({
+    recordId: DECISION_RECORD_ID,
+    decision: "useful",
+    recordKind: "evaluation",
+    contentDigest: "a".repeat(64),
+    changed: true,
+    updatedAt: "2026-08-10T10:00:00.000Z",
+    ...overrides,
+  });
+}
+
+function workspaceWithDecisionDraft(): WorkspaceData {
+  const contact: Contact = {
+    id: "contact-1", name: "Alex", headline: "", profileNotes: "", platform: "linkedin", platformUrl: "",
+    chat: [], documents: [], outcomes: [], retentionDays: 90, labels: [], pipelineStage: "inbox", notes: "",
+    draftHistory: [{ id: DECISION_DRAFT_ID, agenda: "", drafts: ["Draft"], createdAt: "2026-08-10T09:00:00.000Z" }],
+  };
+  return { ...createEmptyWorkspace(), contacts: [contact] };
+}
 
 function okJson(value: unknown): Response {
   return new Response(JSON.stringify(value), {
@@ -498,5 +534,126 @@ describe("cloud learning client", () => {
     })));
 
     await expect(readCloudLearningRecords()).rejects.toThrow("invalid cloud learning response");
+  });
+
+  it("uses the same-origin no-store decision route and parses the exact response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(decisionResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(putDraftLearningDecision(DECISION_RECORD_ID, { decision: usefulDecision() })).resolves.toMatchObject({
+      recordId: DECISION_RECORD_ID,
+      decision: "useful",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(`/api/learning/decisions/${DECISION_RECORD_ID}`, {
+      method: "PUT",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision: usefulDecision() }),
+    });
+  });
+
+  it.each([
+    ["missing response metadata", { recordId: DECISION_RECORD_ID, decision: "useful", recordKind: "evaluation", contentDigest: "a".repeat(64), changed: true }],
+    ["response metadata with an extra key", { recordId: DECISION_RECORD_ID, decision: "useful", recordKind: "evaluation", contentDigest: "a".repeat(64), changed: true, updatedAt: "2026-08-10T10:00:00.000Z", accountId: "must-not-cross" }],
+    ["an invalid decision and record kind pair", { recordId: DECISION_RECORD_ID, decision: "authored", recordKind: "evaluation", contentDigest: "a".repeat(64), changed: true, updatedAt: "2026-08-10T10:00:00.000Z" }],
+    ["an unknown record kind", { recordId: DECISION_RECORD_ID, decision: "useful", recordKind: "classifier", contentDigest: "a".repeat(64), changed: true, updatedAt: "2026-08-10T10:00:00.000Z" }],
+    ["a non-lowercase digest", { recordId: DECISION_RECORD_ID, decision: "useful", recordKind: "evaluation", contentDigest: "A".repeat(64), changed: true, updatedAt: "2026-08-10T10:00:00.000Z" }],
+    ["a non-canonical timestamp", { recordId: DECISION_RECORD_ID, decision: "useful", recordKind: "evaluation", contentDigest: "a".repeat(64), changed: true, updatedAt: "2026-08-10T06:00:00-04:00" }],
+    ["a mismatched record ID", { recordId: "other-record", decision: "useful", recordKind: "evaluation", contentDigest: "a".repeat(64), changed: true, updatedAt: "2026-08-10T10:00:00.000Z" }],
+  ])("rejects %s from a draft decision response", (_description, value) => {
+    expect(() => parseDraftLearningDecisionResponse(value, DECISION_RECORD_ID)).toThrow("invalid cloud learning response");
+  });
+
+  it("rejects a non-JSON draft decision acknowledgement and malformed record IDs", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "text/html" },
+    })));
+
+    await expect(putDraftLearningDecision(DECISION_RECORD_ID, { decision: usefulDecision() })).rejects.toThrow("invalid cloud learning response");
+    await expect(putDraftLearningDecision("UPPERCASE", { decision: usefulDecision() })).rejects.toThrow("Cloud learning decision is invalid");
+  });
+
+  it.each(["application/jsonp", "text/application/json"])("rejects a draft decision acknowledgement served as %s", async (contentType) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      recordId: DECISION_RECORD_ID,
+      decision: "useful",
+      recordKind: "evaluation",
+      contentDigest: "a".repeat(64),
+      changed: true,
+      updatedAt: "2026-08-10T10:00:00.000Z",
+    }), { status: 200, headers: { "Content-Type": contentType } })));
+
+    await expect(putDraftLearningDecision(DECISION_RECORD_ID, { decision: usefulDecision() })).rejects.toThrow("invalid cloud learning response");
+  });
+
+  it("accepts a parameterized JSON media type for a draft decision acknowledgement", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      recordId: DECISION_RECORD_ID,
+      decision: "useful",
+      recordKind: "evaluation",
+      contentDigest: "a".repeat(64),
+      changed: true,
+      updatedAt: "2026-08-10T10:00:00.000Z",
+    }), { status: 200, headers: { "Content-Type": "application/json; charset=utf-8" } })));
+
+    await expect(putDraftLearningDecision(DECISION_RECORD_ID, { decision: usefulDecision() })).resolves.toMatchObject({ recordId: DECISION_RECORD_ID });
+  });
+
+  it("retries only the latest mutation for a decision record", async () => {
+    const useful = stageDraftLearningDecision(workspaceWithDecisionDraft(), "contact-1", DECISION_DRAFT_ID, usefulDecision(), new Date("2026-08-10T10:00:00.000Z"));
+    const negative = stageDraftLearningDecision(useful, "contact-1", DECISION_DRAFT_ID, { ...usefulDecision(), action: "not_useful" }, new Date("2026-08-10T10:01:00.000Z"));
+    const workspace = {
+      ...negative,
+      pendingLearningRecords: [...useful.pendingLearningRecords, ...negative.pendingLearningRecords],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(decisionResponse({ decision: "not_useful" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const synced = await syncPendingDraftLearningDecisions(workspace, () => {
+      throw new Error("evaluation decisions must not resolve identifiers");
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).decision.action).toBe("not_useful");
+    expect(synced.pendingLearningRecords).toEqual([]);
+    expect(synced.contacts[0].draftHistory?.[0].learningDecision).toMatchObject({ state: "not_useful", syncStatus: "synced" });
+  });
+
+  it("uses resolved identifiers only in the authored request and never returns them in workspace state", async () => {
+    const workspace = stageDraftLearningDecision(workspaceWithDecisionDraft(), "contact-1", DECISION_DRAFT_ID, authoredDecision(), new Date("2026-08-10T10:00:00.000Z"));
+    const identifiers = { contactName: "Priya", company: "Contoso", profileUrl: "https://linkedin.example/priya", profileHandle: "@priya" };
+    const fetchMock = vi.fn().mockResolvedValue(decisionResponse({ decision: "authored", recordKind: "generative" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const synced = await syncPendingDraftLearningDecisions(workspace, (sourceLocalId) => sourceLocalId === DECISION_DRAFT_ID ? identifiers : null);
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ decision: authoredDecision(), knownIdentifiers: identifiers });
+    expect(JSON.stringify(synced)).not.toContain("Priya");
+    expect(JSON.stringify(synced)).not.toContain("Contoso");
+    expect(JSON.stringify(synced)).not.toContain("linkedin.example/priya");
+  });
+
+  it("keeps an authored retry pending and marks it failed when current contact identifiers are unavailable", async () => {
+    const workspace = stageDraftLearningDecision(workspaceWithDecisionDraft(), "contact-1", DECISION_DRAFT_ID, authoredDecision(), new Date("2026-08-10T10:00:00.000Z"));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const retried = await syncPendingDraftLearningDecisions(workspace, () => null, new Date("2026-08-10T10:01:00.000Z"));
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(retried.pendingLearningRecords).toEqual(workspace.pendingLearningRecords);
+    expect(retried.contacts[0].draftHistory?.[0].learningDecision).toMatchObject({ state: "authored", syncStatus: "failed", updatedAt: "2026-08-10T10:01:00.000Z" });
+  });
+
+  it("does not send draft decision mutations through the generic upload route", async () => {
+    const workspace = stageDraftLearningDecision(workspaceWithDecisionDraft(), "contact-1", DECISION_DRAFT_ID, usefulDecision(), new Date("2026-08-10T10:00:00.000Z"));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(syncPendingLearningRecords(workspace)).resolves.toBe(workspace);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
