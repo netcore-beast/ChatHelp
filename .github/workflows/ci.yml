@@ -29,7 +29,7 @@ jobs:
           SERVER_PID=$!
           trap 'kill $SERVER_PID' EXIT
           npm run verify:live-csp
-          npm run verify:browser
+          xvfb-run -a npm run verify:browser
       - run: npm run build:native
       - run: npm run verify:static-csp
       - run: npm run verify:cloudflare

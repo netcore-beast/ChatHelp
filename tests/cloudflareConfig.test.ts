@@ -100,7 +100,7 @@ describe("Cloudflare release configuration", () => {
     expect(serverStep).toContain("SERVER_PID=$!");
     expect(serverStep).toContain("trap 'kill $SERVER_PID' EXIT");
     expect(serverStep).toContain("npm run verify:live-csp");
-    expect(serverStep).toContain("npm run verify:browser");
+    expect(serverStep).toContain("xvfb-run -a npm run verify:browser");
     expect(ci.match(/npm start/gu)).toHaveLength(1);
 
     const orderedCommands = [
