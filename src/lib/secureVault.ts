@@ -1,4 +1,4 @@
-import { CONVERSATION_GOAL_MAX_CHARS, MESSAGING_ROLES, PLAYBOOK_GOAL_MAX_CHARS, PLAYBOOK_RULES_MAX_CHARS, PLAYBOOK_VOICE_MAX_CHARS, createDefaultMessagingGuidance, createEmptyWorkspace, isMessagingRole, normalizeMessagingRole, normalizePersonalGuidelines, normalizeRelationshipStage, normalizeWorkspaceModelId, type CloudLearningDeletionMarker, type CloudLearningSyncEntry, type Contact, type ConversationAttachment, type Message, type PendingLearningRecord, type PipelineStage, type RolePlaybooks, type WorkspaceData } from "./workspaceTypes";
+import { CONVERSATION_GOAL_MAX_CHARS, MESSAGING_ROLES, PLAYBOOK_GOAL_MAX_CHARS, PLAYBOOK_RULES_MAX_CHARS, PLAYBOOK_VOICE_MAX_CHARS, createDefaultMessagingGuidance, createEmptyWorkspace, isMessagingRole, normalizeMessagingRole, normalizePersonalGuidelines, normalizeRelationshipStage, normalizeWorkspaceModelId, type CloudLearningDeletionMarker, type CloudLearningSyncEntry, type Contact, type ConversationAttachment, type DraftLearningDecision, type DraftLearningDecisionPayload, type Message, type PendingLearningRecord, type PipelineStage, type RolePlaybooks, type WorkspaceData } from "./workspaceTypes";
 import { PIPELINE_STAGES } from "./linkedinExtension";
 import { repairLegacyLinkedInMessages } from "./messageDedup";
 import { buildRulebookDigest } from "./rulebookDigest";
@@ -377,10 +377,58 @@ function normalizedGenerativePayload(value: unknown): Record<string, unknown> | 
   return { recordKind: "generative", roleId: payload.roleId, relationshipStage: payload.relationshipStage, goalCategory: payload.goalCategory, provenance: "independently_user_authored", target: payload.target.normalize("NFC").trim(), rightsAttested: true, privacyAttested: true };
 }
 
+function canonicalTimestamp(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? value : null;
+}
+
+function normalizeDraftLearningDecision(value: unknown): DraftLearningDecision | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const item = value as Record<string, unknown>;
+  if (!hasExactKeys(item, ["recordId", "state", "syncStatus", "updatedAt"])
+      || typeof item.recordId !== "string" || !/^[a-z0-9-]{1,64}$/u.test(item.recordId)
+      || (item.state !== "useful" && item.state !== "not_useful" && item.state !== "authored")
+      || (item.syncStatus !== "pending" && item.syncStatus !== "synced" && item.syncStatus !== "failed")) return undefined;
+  const updatedAt = canonicalTimestamp(item.updatedAt);
+  return updatedAt ? { recordId: item.recordId, state: item.state, syncStatus: item.syncStatus, updatedAt } : undefined;
+}
+
+function normalizeDraftLearningDecisionPayload(value: unknown): DraftLearningDecisionPayload | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as Record<string, unknown>;
+  if (item.kind === "evaluation") {
+    if (!hasExactKeys(item, ["kind", "roleId", "relationshipStage", "goalCategory", "action"])
+        || typeof item.roleId !== "string" || typeof item.relationshipStage !== "string" || typeof item.goalCategory !== "string"
+        || !ROLE_IDS.has(item.roleId) || !Object.hasOwn(GOAL_CATEGORY_BY_STAGE, item.relationshipStage)
+        || GOAL_CATEGORY_BY_STAGE[item.relationshipStage as keyof typeof GOAL_CATEGORY_BY_STAGE] !== item.goalCategory
+        || (item.action !== "useful" && item.action !== "not_useful")) return null;
+    return { kind: "evaluation", roleId: item.roleId as DraftLearningDecisionPayload["roleId"], relationshipStage: item.relationshipStage as DraftLearningDecisionPayload["relationshipStage"], goalCategory: item.goalCategory as DraftLearningDecisionPayload["goalCategory"], action: item.action };
+  }
+  if (!hasExactKeys(item, ["kind", "roleId", "relationshipStage", "goalCategory", "provenance", "target", "rightsAttested", "privacyAttested"])
+      || item.kind !== "generative" || typeof item.roleId !== "string" || typeof item.relationshipStage !== "string" || typeof item.goalCategory !== "string"
+      || !ROLE_IDS.has(item.roleId) || !Object.hasOwn(GOAL_CATEGORY_BY_STAGE, item.relationshipStage)
+      || GOAL_CATEGORY_BY_STAGE[item.relationshipStage as keyof typeof GOAL_CATEGORY_BY_STAGE] !== item.goalCategory
+      || item.provenance !== "independently_user_authored" || typeof item.target !== "string" || !item.target.trim() || item.target.length > 2_000
+      || item.rightsAttested !== true || item.privacyAttested !== true) return null;
+  return { kind: "generative", roleId: item.roleId as DraftLearningDecisionPayload["roleId"], relationshipStage: item.relationshipStage as DraftLearningDecisionPayload["relationshipStage"], goalCategory: item.goalCategory as DraftLearningDecisionPayload["goalCategory"], provenance: "independently_user_authored", target: item.target.normalize("NFC").trim(), rightsAttested: true, privacyAttested: true };
+}
+
 function normalizePendingLearningRecord(value: unknown, index: number, fallbackNow: string): PendingLearningRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const item = value as Record<string, unknown>;
-  if (item.recordKind !== "classifier" && item.recordKind !== "evaluation" && item.recordKind !== "generative"
+  if (item.mutationKind === "draft_decision") {
+    if (!hasExactKeys(item, ["mutationKind", "recordId", "decision", "sourceCollection", "sourceLocalId", "createdAt", "expiresAt"])
+        || typeof item.recordId !== "string" || !/^[a-z0-9-]{1,64}$/u.test(item.recordId)
+        || item.sourceCollection !== "draftHistory" || typeof item.sourceLocalId !== "string" || !item.sourceLocalId || item.sourceLocalId.length > 200) return null;
+    const decision = normalizeDraftLearningDecisionPayload(item.decision);
+    const createdAt = canonicalTimestamp(item.createdAt);
+    const expiresAt = canonicalTimestamp(item.expiresAt);
+    if (!decision || !createdAt || !expiresAt || Date.parse(expiresAt) <= Date.parse(createdAt) || Date.parse(expiresAt) > Date.parse(createdAt) + LEARNING_RETENTION_DAYS * 86_400_000) return null;
+    return { mutationKind: "draft_decision", recordId: item.recordId, decision, sourceCollection: "draftHistory", sourceLocalId: item.sourceLocalId, createdAt, expiresAt };
+  }
+  if (item.mutationKind !== undefined && item.mutationKind !== "record_upload"
+      || item.recordKind !== "classifier" && item.recordKind !== "evaluation" && item.recordKind !== "generative"
       || item.sourceCollection !== "feedback" && item.sourceCollection !== "stageTrainingRecords") return null;
   const recordId = typeof item.recordId === "string" ? item.recordId.slice(0, 64) : "";
   const sourceLocalId = typeof item.sourceLocalId === "string" ? item.sourceLocalId.slice(0, 200) : "";
@@ -393,7 +441,7 @@ function normalizePendingLearningRecord(value: unknown, index: number, fallbackN
   const createdAt = normalizedLearningTimestamp(item.createdAt, fallbackNow);
   const expiresAt = normalizedLearningTimestamp(item.expiresAt, new Date(Date.parse(createdAt) + LEARNING_RETENTION_DAYS * 86_400_000).toISOString());
   if (Date.parse(expiresAt) <= Date.parse(createdAt) || Date.parse(expiresAt) > Date.parse(createdAt) + LEARNING_RETENTION_DAYS * 86_400_000) return null;
-  return { recordId: recordId || `pending-${index}`, recordKind: item.recordKind, sanitizedPayload, sourceCollection: item.sourceCollection, sourceLocalId, createdAt, expiresAt };
+  return { mutationKind: "record_upload", recordId: recordId || `pending-${index}`, recordKind: item.recordKind, sanitizedPayload, sourceCollection: item.sourceCollection, sourceLocalId, createdAt, expiresAt };
 }
 
 function normalizeCloudLearningSyncEntry(value: unknown, fallbackNow: string): CloudLearningSyncEntry | null {
@@ -409,7 +457,7 @@ function normalizeCloudLearningDeletionMarker(value: unknown, fallbackNow: strin
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const item = value as Record<string, unknown>;
   const recordId = typeof item.recordId === "string" && /^[a-z0-9-]{1,64}$/u.test(item.recordId) ? item.recordId : "";
-  const sourceCollection = item.sourceCollection === "feedback" || item.sourceCollection === "stageTrainingRecords" ? item.sourceCollection : "";
+  const sourceCollection = item.sourceCollection === "feedback" || item.sourceCollection === "stageTrainingRecords" || item.sourceCollection === "draftHistory" ? item.sourceCollection : "";
   const sourceLocalId = typeof item.sourceLocalId === "string" ? item.sourceLocalId.slice(0, 200) : "";
   if (!recordId || item.disposition !== "acknowledged" && item.disposition !== "deleted") return null;
   if (item.disposition === "acknowledged" && (!sourceCollection || !sourceLocalId)) return null;
@@ -455,6 +503,7 @@ export function migrateEligibleLegacyLearning(workspace: WorkspaceData, now = ne
     const createdAt = normalizedLearningTimestamp(record.createdAt, fallbackNow);
     const expiresAt = new Date(Date.parse(createdAt) + LEARNING_RETENTION_DAYS * 86_400_000).toISOString();
     return [{
+      mutationKind: "record_upload",
       recordId: `legacy-stage-${record.id}`.slice(0, 64),
       recordKind: "classifier",
       sanitizedPayload: {
@@ -526,7 +575,7 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
   const inboxRole = isMessagingRole(source.inboxRole) ? source.inboxRole : selectedRole;
   const fallbackNow = new Date().toISOString();
   const normalized: WorkspaceData = {
-    version: 14,
+    version: 15,
     modelId: normalizeWorkspaceModelId(),
     cloudInference: {
       consentedAt: typeof cloudInference.consentedAt === "string" ? cloudInference.consentedAt.slice(0, 100) : "",
@@ -598,7 +647,8 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
           const drafts = Array.isArray(item.drafts) ? item.drafts.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.slice(0, 5_000)).slice(0, 3) : [];
           if (!drafts.length) return [];
           const provider = item.provider === "anthropic" || item.provider === "cloudflare" || item.provider === "local" ? item.provider : undefined;
-          return [{ id: typeof item.id === "string" ? item.id.slice(0, 200) : `draft-history-${draftIndex}`, agenda: typeof item.agenda === "string" ? item.agenda.slice(0, 5_000) : "", drafts, createdAt: typeof item.createdAt === "string" ? item.createdAt.slice(0, 100) : new Date().toISOString(), role: isMessagingRole(item.role) ? item.role : inboxRole, provider, modelId: typeof item.modelId === "string" ? item.modelId.slice(0, 300) : undefined }];
+           const learningDecision = normalizeDraftLearningDecision(item.learningDecision);
+           return [{ id: typeof item.id === "string" ? item.id.slice(0, 200) : `draft-history-${draftIndex}`, agenda: typeof item.agenda === "string" ? item.agenda.slice(0, 5_000) : "", drafts, createdAt: typeof item.createdAt === "string" ? item.createdAt.slice(0, 100) : new Date().toISOString(), role: isMessagingRole(item.role) ? item.role : inboxRole, provider, modelId: typeof item.modelId === "string" ? item.modelId.slice(0, 300) : undefined, ...(learningDecision ? { learningDecision } : {}) }];
         }) : [],
         relationshipStage: normalizeRelationshipStage(contact.relationshipStage),
         conversationGoal: typeof contact.conversationGoal === "string" ? contact.conversationGoal.slice(0, CONVERSATION_GOAL_MAX_CHARS) : "",
@@ -646,7 +696,7 @@ export function normalizeWorkspace(value: unknown): WorkspaceData {
       ? new Date(Date.parse(source.cloudLearningClearedAt)).toISOString()
       : "",
   };
-  return source.version === 14 ? normalized : migrateEligibleLegacyLearning(normalized);
+  return source.version === 14 || source.version === 15 ? normalized : migrateEligibleLegacyLearning(normalized);
 }
 
 export function parseLegacyWorkspace(raw: string | null): WorkspaceData | null {

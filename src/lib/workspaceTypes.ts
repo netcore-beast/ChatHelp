@@ -57,6 +57,7 @@ export interface DraftHistoryEntry {
   role?: MessagingRole;
   provider?: "anthropic" | "cloudflare" | "local";
   modelId?: string;
+  learningDecision?: DraftLearningDecision;
 }
 
 export interface ContextDocument {
@@ -176,12 +177,26 @@ export interface CloudLearningSyncEntry {
 export interface CloudLearningDeletionMarker {
   recordId: string;
   disposition: "acknowledged" | "deleted";
-  sourceCollection: "feedback" | "stageTrainingRecords" | "";
+  sourceCollection: "feedback" | "stageTrainingRecords" | "draftHistory" | "";
   sourceLocalId: string;
   deletedAt: string;
 }
 
-export interface PendingLearningRecord {
+export type DraftLearningDecisionState = "useful" | "not_useful" | "authored";
+export type DraftLearningDecisionSyncStatus = "pending" | "synced" | "failed";
+
+export interface DraftLearningDecision {
+  recordId: string;
+  state: DraftLearningDecisionState;
+  syncStatus: DraftLearningDecisionSyncStatus;
+  updatedAt: string;
+}
+
+export type CloudLearningRoleId = "human_resource" | "network_marketing" | "job_seeker" | "socializing_networking";
+export type CloudLearningGoalCategory = "connect" | "build_rapport" | "discover_interests" | "identify_need" | "request_permission" | "present_value" | "answer_questions" | "agree_next_step";
+
+export interface PendingLearningUploadRecord {
+  mutationKind: "record_upload";
   recordId: string;
   recordKind: "classifier" | "evaluation" | "generative";
   sanitizedPayload: Record<string, unknown>;
@@ -190,6 +205,22 @@ export interface PendingLearningRecord {
   createdAt: string;
   expiresAt: string;
 }
+
+export type DraftLearningDecisionPayload =
+  | { kind: "evaluation"; roleId: CloudLearningRoleId; relationshipStage: RelationshipStage; goalCategory: CloudLearningGoalCategory; action: "useful" | "not_useful" }
+  | { kind: "generative"; roleId: CloudLearningRoleId; relationshipStage: RelationshipStage; goalCategory: CloudLearningGoalCategory; provenance: "independently_user_authored"; target: string; rightsAttested: true; privacyAttested: true };
+
+export interface PendingDraftLearningDecisionMutation {
+  mutationKind: "draft_decision";
+  recordId: string;
+  decision: DraftLearningDecisionPayload;
+  sourceCollection: "draftHistory";
+  sourceLocalId: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export type PendingLearningRecord = PendingLearningUploadRecord | PendingDraftLearningDecisionMutation;
 
 export type StageMessageCountBucket = "unknown" | "low" | "medium" | "high";
 
@@ -240,7 +271,7 @@ export interface AiUsageEntry {
 }
 
 export interface WorkspaceData {
-  version: 14;
+  version: 15;
   modelId: string;
   cloudInference: CloudInferenceSettings;
   cloudRecovery: CloudRecoverySettings;
@@ -351,7 +382,7 @@ export function updateRolePlaybookRules(playbook: RolePlaybook, boundaries: stri
 export function createEmptyWorkspace(): WorkspaceData {
   const guidance = createDefaultMessagingGuidance();
   return {
-    version: 14,
+    version: 15,
     modelId: DEFAULT_MODEL_ID,
     cloudInference: {
       consentedAt: "",

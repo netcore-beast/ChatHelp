@@ -84,7 +84,7 @@ import {
   type Feedback,
   type MessagingRole,
   type MessageRole,
-  type PendingLearningRecord,
+  type PendingLearningUploadRecord,
   type PipelineStage,
   type RelationshipStage,
   type WorkspaceData,
@@ -633,7 +633,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setCloudLearningSyncStatus("Cloud learning sync complete");
   }
 
-  function applyImprovementAcknowledgement(current: WorkspaceData, pending: PendingLearningRecord, result: CloudLearningUploadResult, updatedAt: string): WorkspaceData {
+  function applyImprovementAcknowledgement(current: WorkspaceData, pending: PendingLearningUploadRecord, result: CloudLearningUploadResult, updatedAt: string): WorkspaceData {
     if (!current.pendingLearningRecords.some((item) => item.recordId === pending.recordId)) return current;
     const acknowledgement = [...result.accepted, ...result.duplicates].find((item) => item.recordId === pending.recordId);
     if (!acknowledgement) return current;
@@ -651,7 +651,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     };
   }
 
-  async function stageAndUploadImprovement(pending: PendingLearningRecord, knownIdentifiers?: CloudLearningKnownIdentifiers) {
+  async function stageAndUploadImprovement(pending: PendingLearningUploadRecord, knownIdentifiers?: CloudLearningKnownIdentifiers) {
     pendingLearningRecordIdsRef.current.add(pending.recordId);
     updateWorkspace((current) => ({
       ...current,
@@ -685,6 +685,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     const relationshipStage = normalizeRelationshipStage(contact.relationshipStage);
     const recordId = newId("learning");
     await stageAndUploadImprovement({
+      mutationKind: "record_upload",
       recordId,
       recordKind: "evaluation",
       sanitizedPayload: {
@@ -714,6 +715,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       profileHandle: contact.profileUrl?.split("/").filter(Boolean).at(-1) ?? "",
     };
     await stageAndUploadImprovement({
+      mutationKind: "record_upload",
       recordId,
       recordKind: "generative",
       sanitizedPayload: {

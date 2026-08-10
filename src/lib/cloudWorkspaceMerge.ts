@@ -1,6 +1,6 @@
 import { normalizeLinkedInConversationUrl, normalizeLinkedInProfileUrl } from "./linkedinExtension";
 import { normalizeWorkspace } from "./secureVault";
-import { createDefaultMessagingGuidance, type CloudLearningDeletionMarker, type CloudLearningSyncEntry, type Contact, type Message, type PendingLearningRecord, type WorkspaceData } from "./workspaceTypes";
+import { createDefaultMessagingGuidance, type CloudLearningDeletionMarker, type CloudLearningSyncEntry, type Contact, type DraftHistoryEntry, type DraftLearningDecision, type Message, type PendingLearningRecord, type WorkspaceData } from "./workspaceTypes";
 
 function normalizedText(value: string): string {
   return value.trim().replace(/\s+/g, " ").normalize("NFKC").toLocaleLowerCase();
@@ -57,15 +57,46 @@ function mergeById<T extends { id: string }>(local: T[] = [], remote: T[] = []):
 }
 
 function mergePendingLearningRecords(local: PendingLearningRecord[], remote: PendingLearningRecord[]): PendingLearningRecord[] {
-  const result = [...local];
-  const ids = new Set(local.map((item) => item.recordId));
-  for (const item of remote) {
-    if (!ids.has(item.recordId)) {
-      result.push(item);
-      ids.add(item.recordId);
+  const merged = new Map<string, PendingLearningRecord>();
+  for (const item of [...local, ...remote]) {
+    const current = merged.get(item.recordId);
+    if (!current) {
+      merged.set(item.recordId, item);
+      continue;
     }
+    if (item.mutationKind === "draft_decision" && current.mutationKind === "draft_decision"
+        && (timestampMillis(item.createdAt) > timestampMillis(current.createdAt)
+          || timestampMillis(item.createdAt) === timestampMillis(current.createdAt)
+            && decisionRank(item.decision.kind === "generative" ? "authored" : item.decision.action) > decisionRank(current.decision.kind === "generative" ? "authored" : current.decision.action))) merged.set(item.recordId, item);
   }
-  return result;
+  return [...merged.values()];
+}
+
+function decisionRank(state: DraftLearningDecision["state"]): number {
+  return state === "authored" ? 3 : state === "not_useful" ? 2 : 1;
+}
+
+function newerDecision(local?: DraftLearningDecision, remote?: DraftLearningDecision): DraftLearningDecision | undefined {
+  if (!local) return remote;
+  if (!remote) return local;
+  const compared = timestampMillis(remote.updatedAt) - timestampMillis(local.updatedAt);
+  return compared > 0 || compared === 0 && decisionRank(remote.state) > decisionRank(local.state) ? remote : local;
+}
+
+function mergeDraftHistory(local: DraftHistoryEntry[] = [], remote: DraftHistoryEntry[] = []): DraftHistoryEntry[] {
+  const merged = new Map(local.map((draft) => [draft.id, draft]));
+  for (const remoteDraft of remote) {
+    const current = merged.get(remoteDraft.id);
+    if (!current) {
+      merged.set(remoteDraft.id, remoteDraft);
+      continue;
+    }
+    const learningDecision = newerDecision(current.learningDecision, remoteDraft.learningDecision);
+    const editableCurrent = { ...current };
+    delete editableCurrent.learningDecision;
+    merged.set(remoteDraft.id, learningDecision ? { ...editableCurrent, learningDecision } : editableCurrent);
+  }
+  return [...merged.values()];
 }
 
 function mergeCloudLearningSync(local: CloudLearningSyncEntry[], remote: CloudLearningSyncEntry[]): CloudLearningSyncEntry[] {
@@ -149,7 +180,7 @@ function mergeContact(local: Contact, remote: Contact): Contact {
     chat: mergeMessages(local.chat, remote.chat),
     documents: mergeById(local.documents, remote.documents),
     outcomes: mergeById(local.outcomes, remote.outcomes),
-    draftHistory: mergeById(local.draftHistory ?? [], remote.draftHistory ?? []),
+    draftHistory: mergeDraftHistory(local.draftHistory, remote.draftHistory),
   };
 }
 
@@ -250,9 +281,17 @@ export async function mergeCloudWorkspaces(localValue: WorkspaceData, remoteValu
     && !atOrBefore(item.createdAt, learningClearedAt));
   const cloudLearningSync = mergeCloudLearningSync(local.cloudLearningSync, remote.cloudLearningSync).filter((item) => !deletedRecordIds.has(item.recordId)
     && !atOrBefore(item.updatedAt, learningClearedAt));
+  const contacts = merged.map((contact) => ({
+    ...contact,
+    draftHistory: contact.draftHistory?.map((draft) => draft.learningDecision
+      && (learningDeletionMarkers.some((marker) => marker.recordId === draft.learningDecision?.recordId)
+        || atOrBefore(draft.learningDecision.updatedAt, learningClearedAt))
+      ? (() => { const withoutDecision = { ...draft }; delete withoutDecision.learningDecision; return withoutDecision; })()
+      : draft),
+  }));
   return normalizeWorkspace({
     ...local,
-    contacts: merged,
+    contacts,
     guidance: mergeGuidance(local.guidance, remote.guidance),
     feedback,
     aiUsage: mergeById(local.aiUsage, remappedUsage),

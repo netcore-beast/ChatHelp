@@ -123,8 +123,8 @@ Happy to connect with you as well.`;
       { id: "stage-366", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: at366 },
     ];
     workspace.pendingLearningRecords = [
-      { recordId: "pending-364", recordKind: "classifier", sanitizedPayload: {}, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-364", createdAt: at364, expiresAt: "2026-08-01T12:00:00.000Z" },
-      { recordId: "pending-366", recordKind: "classifier", sanitizedPayload: {}, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-366", createdAt: at366, expiresAt: "2026-07-30T12:00:00.000Z" },
+      { mutationKind: "record_upload", recordId: "pending-364", recordKind: "classifier", sanitizedPayload: {}, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-364", createdAt: at364, expiresAt: "2026-08-01T12:00:00.000Z" },
+      { mutationKind: "record_upload", recordId: "pending-366", recordKind: "classifier", sanitizedPayload: {}, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-366", createdAt: at366, expiresAt: "2026-07-30T12:00:00.000Z" },
     ];
     workspace.cloudLearningSync = [
       { recordId: "pending-364", contentDigest: "a".repeat(64), status: "pending", updatedAt: at364 },

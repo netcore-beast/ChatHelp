@@ -39,7 +39,7 @@ describe("encrypted device vault", () => {
       },
     });
 
-    expect(workspace.version).toBe(14);
+    expect(workspace.version).toBe(15);
     expect(workspace.guidance.selectedRole).toBe("Human Resource");
     expect(workspace.inboxRole).toBe("Human Resource");
     expect(workspace.guidance.playbooks["Human Resource"]).toEqual({
@@ -93,6 +93,14 @@ describe("encrypted device vault", () => {
     expect(reopened.guidance.playbooks["Network Marketing"]).toEqual({ objective: "NETWORK-ONLY-GOAL", boundaries: "NETWORK-ONLY-RULES", rulebookDigest: "- NETWORK-ONLY-RULES" });
     expect(reopened.guidance.selectedRole).toBe("Human Resource");
     expect(reopened.inboxRole).toBe("Network Marketing");
+  });
+
+  it("round-trips valid draft decision metadata through the encrypted device vault", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.contacts = [{ id: "decision-contact", name: "Decision", headline: "", profileNotes: "", platform: "linkedin", platformUrl: "", chat: [], documents: [], outcomes: [], retentionDays: 90, draftHistory: [{ id: "draft-00000000-0000-4000-8000-000000000001", agenda: "", drafts: ["Draft"], createdAt: "2026-08-10T09:00:00.000Z", learningDecision: { recordId: "learning-decision-draft-00000000-0000-4000-8000-000000000001", state: "authored", syncStatus: "synced", updatedAt: "2026-08-10T10:00:00.000Z" } }] }];
+    await createDeviceVault(workspace);
+
+    expect((await openDeviceVault()).workspace.contacts[0].draftHistory?.[0].learningDecision).toEqual({ recordId: "learning-decision-draft-00000000-0000-4000-8000-000000000001", state: "authored", syncStatus: "synced", updatedAt: "2026-08-10T10:00:00.000Z" });
   });
 
   it("encrypts and restores reply rules beyond the former 20,000-character limit", async () => {
@@ -177,7 +185,7 @@ describe("encrypted device vault", () => {
       }],
     });
 
-    expect(migrated.version).toBe(14);
+    expect(migrated.version).toBe(15);
     expect(migrated.personalGuidelines).toBe("Prefer one thoughtful question.");
     expect(migrated.contacts[0]).toMatchObject({
       relationshipStage: "new_connection",
@@ -254,7 +262,7 @@ describe("encrypted device vault", () => {
       }],
     });
 
-    expect(migrated.version).toBe(14);
+    expect(migrated.version).toBe(15);
     expect(migrated.aiUsage).toEqual([{
       id: "legacy-usage", contactId: "alex", modelId: "legacy-model", promptCharacters: 42,
       variants: 3, estimatedCostUsd: 0, createdAt: "2026-08-01T00:00:00.000Z",
@@ -263,7 +271,7 @@ describe("encrypted device vault", () => {
     expect(migrated.cloudLearningSync).toEqual([]);
     expect(migrated.feedback).toHaveLength(1);
     expect(migrated.stageTrainingRecords.map((record) => record.id)).toEqual(["eligible-stage", "provider-assisted-stage"]);
-    expect(migrated.pendingLearningRecords.map((row) => row.recordKind)).toEqual(["classifier"]);
+    expect(migrated.pendingLearningRecords.map((row) => row.mutationKind === "record_upload" ? row.recordKind : undefined)).toEqual(["classifier"]);
     const serialized = JSON.stringify(migrated.pendingLearningRecords);
     expect(serialized).not.toContain("semanticTokens");
     expect(serialized).not.toContain("confidential-token");
@@ -273,6 +281,7 @@ describe("encrypted device vault", () => {
 
   it("bounds persisted pending, sync, and deletion metadata while retaining the newest valid records", () => {
     const entry = (index: number) => ({
+      mutationKind: "record_upload" as const,
       recordId: `record-${index}`,
       recordKind: "classifier" as const,
       sanitizedPayload: {

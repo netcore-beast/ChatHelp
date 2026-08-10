@@ -136,6 +136,7 @@ describe("cloud learning client", () => {
       createdAt: "2026-08-09T00:00:00.000Z",
     }];
     workspace.pendingLearningRecords = [{
+      mutationKind: "record_upload",
       recordId: "record-1",
       recordKind: "classifier",
       sanitizedPayload: {
@@ -181,7 +182,7 @@ describe("cloud learning client", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[1][1].body))).toEqual({
       records: [{
         recordId: "record-1",
-        record: workspace.pendingLearningRecords[0].sanitizedPayload,
+        record: workspace.pendingLearningRecords[0].mutationKind === "record_upload" ? workspace.pendingLearningRecords[0].sanitizedPayload : undefined,
       }],
     });
   });
@@ -189,6 +190,7 @@ describe("cloud learning client", () => {
   it("syncs pending records in bounded batches", async () => {
     const workspace = createEmptyWorkspace();
     workspace.pendingLearningRecords = Array.from({ length: 26 }, (_, index) => ({
+      mutationKind: "record_upload" as const,
       recordId: `record-${index}`,
       recordKind: "classifier" as const,
       sanitizedPayload: { recordKind: "classifier", sample: index },
@@ -262,7 +264,7 @@ describe("cloud learning client", () => {
       { id: "ordinary-feedback", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "", preferredResponse: "", outcome: "", reason: "", origin: "provider_assisted", independentlyAuthoredAttested: false, eligibleForRetrieval: false, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
     ];
     workspace.stageTrainingRecords = [{ id: "stage-1", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" }];
-    workspace.pendingLearningRecords = [{ recordId: "record-1", recordKind: "classifier", sanitizedPayload: { recordKind: "classifier" }, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-1", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
+    workspace.pendingLearningRecords = [{ mutationKind: "record_upload", recordId: "record-1", recordKind: "classifier", sanitizedPayload: { recordKind: "classifier" }, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-1", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
     workspace.cloudLearningSync = [{ recordId: "record-1", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" }];
 
     const cleared = clearDisabledCloudLearningState(workspace);
@@ -280,7 +282,7 @@ describe("cloud learning client", () => {
       { id: "stage-1", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" },
       { id: "stage-keep", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" },
     ];
-    workspace.pendingLearningRecords = [{ recordId: "record-1", recordKind: "classifier", sanitizedPayload: { recordKind: "classifier" }, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-1", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
+    workspace.pendingLearningRecords = [{ mutationKind: "record_upload", recordId: "record-1", recordKind: "classifier", sanitizedPayload: { recordKind: "classifier" }, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-1", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
     workspace.cloudLearningSync = [
       { recordId: "record-1", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" },
       { recordId: "record-2", contentDigest: "b".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" },
@@ -301,7 +303,7 @@ describe("cloud learning client", () => {
       { id: "feedback-delete", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "", preferredResponse: "Delete", outcome: "", reason: "", origin: "independently_user_authored", independentlyAuthoredAttested: true, eligibleForRetrieval: true, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
       { id: "feedback-keep", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "Ordinary", preferredResponse: "", outcome: "", reason: "", origin: "provider_assisted", independentlyAuthoredAttested: false, eligibleForRetrieval: false, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
     ];
-    workspace.pendingLearningRecords = [{ recordId: "record-feedback", recordKind: "evaluation", sanitizedPayload: { recordKind: "evaluation" }, sourceCollection: "feedback", sourceLocalId: "feedback-delete", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
+    workspace.pendingLearningRecords = [{ mutationKind: "record_upload", recordId: "record-feedback", recordKind: "evaluation", sanitizedPayload: { recordKind: "evaluation" }, sourceCollection: "feedback", sourceLocalId: "feedback-delete", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
 
     const updated = clearDeletedCloudLearningSyncMetadata(workspace, "record-feedback");
 
@@ -312,7 +314,7 @@ describe("cloud learning client", () => {
   it("retains shared source metadata until its final pending record is deleted", () => {
     const workspace = createEmptyWorkspace();
     workspace.stageTrainingRecords = [{ id: "shared-stage", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" }];
-    workspace.pendingLearningRecords = ["record-first", "record-last"].map((recordId) => ({ recordId, recordKind: "classifier" as const, sanitizedPayload: { recordKind: "classifier" }, sourceCollection: "stageTrainingRecords" as const, sourceLocalId: "shared-stage", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }));
+    workspace.pendingLearningRecords = ["record-first", "record-last"].map((recordId) => ({ mutationKind: "record_upload" as const, recordId, recordKind: "classifier" as const, sanitizedPayload: { recordKind: "classifier" }, sourceCollection: "stageTrainingRecords" as const, sourceLocalId: "shared-stage", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }));
 
     const afterFirst = clearDeletedCloudLearningSyncMetadata(workspace, "record-first");
     expect(afterFirst.stageTrainingRecords.map((item) => item.id)).toEqual(["shared-stage"]);
@@ -341,7 +343,7 @@ describe("cloud learning client", () => {
     baseline.guidance.voice = "Stale voice";
     baseline.feedback = [{ id: "ordinary-deleted", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "Ordinary", preferredResponse: "", outcome: "", reason: "", origin: "provider_assisted", independentlyAuthoredAttested: false, eligibleForRetrieval: false, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" }];
     baseline.stageTrainingRecords = [{ id: "stage-1", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" }];
-    baseline.pendingLearningRecords = [{ recordId: "record-1", recordKind: "classifier", sanitizedPayload: { recordKind: "classifier" }, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-1", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
+    baseline.pendingLearningRecords = [{ mutationKind: "record_upload", recordId: "record-1", recordKind: "classifier", sanitizedPayload: { recordKind: "classifier" }, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-1", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okJson({ accepted: [{ recordId: "record-1", contentDigest: "a".repeat(64) }], duplicates: [] })));
     const synced = await syncPendingLearningRecords(baseline, new Date("2026-08-09T01:00:00.000Z"));
     const latest = structuredClone(baseline);
@@ -388,7 +390,7 @@ describe("cloud learning client", () => {
 
   it("retains pending records when an upload acknowledgement is not for the submitted record", async () => {
     const workspace = createEmptyWorkspace();
-    workspace.pendingLearningRecords = [{ recordId: "record-1", recordKind: "classifier", sanitizedPayload: { recordKind: "classifier" }, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-1", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
+    workspace.pendingLearningRecords = [{ mutationKind: "record_upload", recordId: "record-1", recordKind: "classifier", sanitizedPayload: { recordKind: "classifier" }, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-1", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okJson({
       accepted: [{ recordId: "record-2", contentDigest: "a".repeat(64) }],
       duplicates: [],
@@ -399,6 +401,7 @@ describe("cloud learning client", () => {
 
   it("rejects an upload acknowledgement for an unsubmitted record", async () => {
     const record = {
+      mutationKind: "record_upload" as const,
       recordId: "record-1",
       recordKind: "classifier" as const,
       sanitizedPayload: { recordKind: "classifier" },
@@ -419,6 +422,7 @@ describe("cloud learning client", () => {
     const workspace = createEmptyWorkspace();
     workspace.feedback = [{ id: "feedback-1", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "", preferredResponse: "Hello [contact] at [company]", outcome: "", reason: "", origin: "independently_user_authored", independentlyAuthoredAttested: true, eligibleForRetrieval: true, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" }];
     const generativeRecord = {
+      mutationKind: "record_upload" as const,
       recordId: "generative-1",
       recordKind: "generative" as const,
       sanitizedPayload: { recordKind: "generative", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", provenance: "independently_user_authored", target: "Hello [contact] at [company]", rightsAttested: true, privacyAttested: true },
@@ -451,6 +455,7 @@ describe("cloud learning client", () => {
 
   it("retries an already-sanitized persisted generative record with exact empty transient identifiers", async () => {
     const record = {
+      mutationKind: "record_upload" as const,
       recordId: "generative-persisted",
       recordKind: "generative" as const,
       sanitizedPayload: { recordKind: "generative", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", provenance: "independently_user_authored", target: "Hello [contact]", rightsAttested: true, privacyAttested: true },

@@ -86,17 +86,20 @@ describe("DialogMint encrypted cloud recovery", () => {
     expect(safe.feedback.map((item) => item.id)).toEqual(["learning-364"]);
   });
 
-  it("serializes only retained v14 learning metadata inside the existing encrypted recovery envelope", async () => {
+  it("serializes only retained v15 learning metadata and decision state inside the existing encrypted recovery envelope", async () => {
     const workspace = createEmptyWorkspace();
+    workspace.contacts = [{ id: "decision-contact", name: "Decision", headline: "", profileNotes: "", platform: "linkedin", platformUrl: "", chat: [], documents: [], outcomes: [], retentionDays: 90, draftHistory: [{ id: "draft-00000000-0000-4000-8000-000000000001", agenda: "", drafts: ["Draft"], createdAt: "2026-08-01T00:00:00.000Z", learningDecision: { recordId: "learning-decision-draft-00000000-0000-4000-8000-000000000001", state: "useful", syncStatus: "synced", updatedAt: "2026-08-01T00:00:00.000Z" } }] }];
     workspace.pendingLearningRecords = [
-      { recordId: "current", recordKind: "classifier", sanitizedPayload: classifierPayload("low"), sourceCollection: "stageTrainingRecords", sourceLocalId: "local-current", createdAt: "2026-08-01T00:00:00.000Z", expiresAt: "2027-08-01T00:00:00.000Z" },
-      { recordId: "expired", recordKind: "classifier", sanitizedPayload: classifierPayload("high"), sourceCollection: "stageTrainingRecords", sourceLocalId: "local-expired", createdAt: "2025-07-01T00:00:00.000Z", expiresAt: "2026-07-01T00:00:00.000Z" },
+      { mutationKind: "record_upload", recordId: "current", recordKind: "classifier", sanitizedPayload: classifierPayload("low"), sourceCollection: "stageTrainingRecords", sourceLocalId: "local-current", createdAt: "2026-08-01T00:00:00.000Z", expiresAt: "2027-08-01T00:00:00.000Z" },
+      { mutationKind: "record_upload", recordId: "expired", recordKind: "classifier", sanitizedPayload: classifierPayload("high"), sourceCollection: "stageTrainingRecords", sourceLocalId: "local-expired", createdAt: "2025-07-01T00:00:00.000Z", expiresAt: "2026-07-01T00:00:00.000Z" },
     ];
     const safe = createCloudSafeWorkspace(workspace, "testing", Date.parse("2026-08-05T00:00:00.000Z"));
     const key = await importRecoveryKey((await createRecoveryBundle()).encryptionKey);
     const envelope = await encryptCloudWorkspace(safe, key, "testing", "2026-08-05T00:00:00.000Z");
     expect(JSON.stringify(envelope)).not.toContain("local-current");
-    expect((await decryptCloudWorkspace(envelope, key, "testing")).pendingLearningRecords.map((row) => row.recordId)).toEqual(["current"]);
+    const recovered = await decryptCloudWorkspace(envelope, key, "testing");
+    expect(recovered.pendingLearningRecords.map((row) => row.recordId)).toEqual(["current"]);
+    expect(recovered.contacts[0].draftHistory?.[0].learningDecision).toMatchObject({ state: "useful", syncStatus: "synced" });
   });
 
   it("summarizes exact logical and encrypted snapshots without returning private contents", async () => {

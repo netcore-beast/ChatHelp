@@ -97,9 +97,9 @@ describe("encrypted workspace merge", () => {
 
   it("merges bounded v14 learning metadata without losing encrypted local source references", async () => {
     const local = workspace([]);
-    local.pendingLearningRecords = [{ recordId: "local", recordKind: "classifier", sanitizedPayload: classifierPayload("low"), sourceCollection: "stageTrainingRecords", sourceLocalId: "local-source", createdAt: "2026-08-01T00:00:00.000Z", expiresAt: "2027-08-01T00:00:00.000Z" }];
+    local.pendingLearningRecords = [{ mutationKind: "record_upload", recordId: "local", recordKind: "classifier", sanitizedPayload: classifierPayload("low"), sourceCollection: "stageTrainingRecords", sourceLocalId: "local-source", createdAt: "2026-08-01T00:00:00.000Z", expiresAt: "2027-08-01T00:00:00.000Z" }];
     const remote = workspace([]);
-    remote.pendingLearningRecords = [{ recordId: "remote", recordKind: "classifier", sanitizedPayload: classifierPayload("medium"), sourceCollection: "stageTrainingRecords", sourceLocalId: "remote-source", createdAt: "2026-08-02T00:00:00.000Z", expiresAt: "2027-08-02T00:00:00.000Z" }];
+    remote.pendingLearningRecords = [{ mutationKind: "record_upload", recordId: "remote", recordKind: "classifier", sanitizedPayload: classifierPayload("medium"), sourceCollection: "stageTrainingRecords", sourceLocalId: "remote-source", createdAt: "2026-08-02T00:00:00.000Z", expiresAt: "2027-08-02T00:00:00.000Z" }];
     remote.cloudLearningSync = [{ recordId: "remote", contentDigest: "a".repeat(64), status: "pending", updatedAt: "2026-08-02T00:00:00.000Z" }];
 
     const merged = await mergeCloudWorkspaces(local, remote);
@@ -111,7 +111,7 @@ describe("encrypted workspace merge", () => {
   it("does not resurrect acknowledged learning sources or pending rows from a stale recovery conflict", async () => {
     const remote = workspace([]);
     remote.stageTrainingRecords = ["acknowledged", "pending"].map((suffix) => ({ id: `stage-${suffix}`, featureSchemaVersion: 1 as const, role: "Human Resource" as const, messageCountBucket: "low" as const, hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection" as const, humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" }));
-    remote.pendingLearningRecords = ["acknowledged", "pending"].map((suffix) => ({ recordId: `record-${suffix}`, recordKind: "classifier" as const, sanitizedPayload: classifierPayload("low"), sourceCollection: "stageTrainingRecords" as const, sourceLocalId: `stage-${suffix}`, createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }));
+    remote.pendingLearningRecords = ["acknowledged", "pending"].map((suffix) => ({ mutationKind: "record_upload" as const, recordId: `record-${suffix}`, recordKind: "classifier" as const, sanitizedPayload: classifierPayload("low"), sourceCollection: "stageTrainingRecords" as const, sourceLocalId: `stage-${suffix}`, createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }));
     const local = structuredClone(remote);
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ accepted: [{ recordId: "record-acknowledged", contentDigest: "a".repeat(64) }], duplicates: [] }), { status: 200, headers: { "Content-Type": "application/json" } })));
 
@@ -141,7 +141,7 @@ describe("encrypted workspace merge", () => {
       { id: "ordinary", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "Ordinary feedback", preferredResponse: "", outcome: "", reason: "", origin: "provider_assisted", independentlyAuthoredAttested: false, eligibleForRetrieval: false, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
     ];
     remote.stageTrainingRecords = [{ id: "stage-1", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" }];
-    remote.pendingLearningRecords = [{ recordId: "record-1", recordKind: "classifier", sanitizedPayload: classifierPayload("low"), sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-1", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
+    remote.pendingLearningRecords = [{ mutationKind: "record_upload", recordId: "record-1", recordKind: "classifier", sanitizedPayload: classifierPayload("low"), sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-1", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
     remote.cloudLearningSync = [{ recordId: "record-2", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" }];
     const local = clearDisabledCloudLearningState(structuredClone(remote));
 
@@ -180,7 +180,7 @@ describe("encrypted workspace merge", () => {
     remote.cloudLearningClearedAt = "2026-08-09T04:00:00.000Z";
     remote.feedback = [{ id: "stale-offset", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "", preferredResponse: "Stale", outcome: "", reason: "", origin: "independently_user_authored", independentlyAuthoredAttested: true, eligibleForRetrieval: true, enabled: true, createdAt: "2026-08-09T05:00:00+02:00", updatedAt: "2026-08-09T05:00:00+02:00" }];
     remote.stageTrainingRecords = [{ id: "stale-stage-offset", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T05:00:00+02:00" }];
-    remote.pendingLearningRecords = [{ recordId: "stale-pending-offset", recordKind: "classifier", sanitizedPayload: classifierPayload("low"), sourceCollection: "stageTrainingRecords", sourceLocalId: "stale-stage-offset", createdAt: "2026-08-09T05:00:00+02:00", expiresAt: "2027-08-09T05:00:00+02:00" }];
+    remote.pendingLearningRecords = [{ mutationKind: "record_upload", recordId: "stale-pending-offset", recordKind: "classifier", sanitizedPayload: classifierPayload("low"), sourceCollection: "stageTrainingRecords", sourceLocalId: "stale-stage-offset", createdAt: "2026-08-09T05:00:00+02:00", expiresAt: "2027-08-09T05:00:00+02:00" }];
     remote.cloudLearningSync = [{ recordId: "stale-sync-offset", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T05:00:00+02:00" }];
 
     const merged = await mergeCloudWorkspaces(local, remote);

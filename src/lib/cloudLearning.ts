@@ -1,4 +1,4 @@
-import type { CloudLearningDeletionMarker, CloudLearningSyncEntry, PendingLearningRecord, WorkspaceData } from "./workspaceTypes";
+import type { CloudLearningDeletionMarker, CloudLearningSyncEntry, PendingLearningUploadRecord, WorkspaceData } from "./workspaceTypes";
 
 const MAX_COUNT = 1_000_000;
 const MAX_PAGE_RECORDS = 25;
@@ -86,7 +86,7 @@ export interface CloudLearningKnownIdentifiers {
   profileHandle: string;
 }
 
-type UploadablePendingLearningRecord = PendingLearningRecord & { knownIdentifiers?: CloudLearningKnownIdentifiers };
+type UploadablePendingLearningRecord = PendingLearningUploadRecord & { knownIdentifiers?: CloudLearningKnownIdentifiers };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -300,6 +300,14 @@ export function clearDisabledCloudLearningState(workspace: WorkspaceData, now = 
     ...workspace,
     personalLearning: { enabled: false },
     feedback: workspace.feedback.filter((item) => !item.eligibleForRetrieval),
+    contacts: workspace.contacts.map((contact) => ({
+      ...contact,
+      draftHistory: contact.draftHistory?.map((draft) => {
+        const withoutDecision = { ...draft };
+        delete withoutDecision.learningDecision;
+        return withoutDecision;
+      }),
+    })),
     stageTrainingRecords: [],
     pendingLearningRecords: [],
     cloudLearningSync: [],
@@ -426,8 +434,9 @@ export function applyCloudLearningSyncDelta(latest: WorkspaceData, baseline: Wor
 
 export async function syncPendingLearningRecords(workspace: WorkspaceData, now = new Date()): Promise<WorkspaceData> {
   let next = workspace;
-  for (let index = 0; index < workspace.pendingLearningRecords.length; index += MAX_UPLOAD_RECORDS) {
-    const batch = next.pendingLearningRecords.slice(0, MAX_UPLOAD_RECORDS);
+  const uploads = next.pendingLearningRecords.filter((record): record is PendingLearningUploadRecord => record.mutationKind === "record_upload");
+  for (let index = 0; index < uploads.length; index += MAX_UPLOAD_RECORDS) {
+    const batch = uploads.slice(index, index + MAX_UPLOAD_RECORDS);
     if (!batch.length) break;
     let result: CloudLearningUploadResult;
     try {

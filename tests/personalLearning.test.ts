@@ -133,7 +133,7 @@ describe("encrypted personal learning", () => {
       confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z",
     }];
     workspace.pendingLearningRecords = [{
-      recordId: "pending-a", recordKind: "classifier", sanitizedPayload: {}, sourceCollection: "stageTrainingRecords",
+      mutationKind: "record_upload", recordId: "pending-a", recordKind: "classifier", sanitizedPayload: {}, sourceCollection: "stageTrainingRecords",
       sourceLocalId: "stage-a", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z",
     }];
     workspace.cloudLearningSync = [{ recordId: "synced-a", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" }];
