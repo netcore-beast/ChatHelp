@@ -6,9 +6,11 @@ ChatHelp is a local-first, encrypted web application that helps a person write t
 
 - Cloudflare Access email verification and MFA protect the deployed application.
 - AES-256-GCM encrypted IndexedDB vault with a non-exportable, browser-held device key and no additional passphrase prompt.
-- One stage-aware draft through an authenticated Cloudflare Worker. Claude Opus 4.6 Thinking is primary; Llama 3.1 8B Fast plus GPT-OSS 120B remain the permanent Workers AI fallback.
+- Optional encrypted recovery stores only ciphertext and integrity metadata for at most 90 days; raw conversations and ordinary drafts never enter the server-readable learning or usage tables.
+- One stage-aware draft through an authenticated Cloudflare Worker. Anthropic Claude Opus 4.6 Thinking is primary; `@cf/meta/llama-3.1-8b-instruct-fast` and `@cf/openai/gpt-oss-120b` remain the permanent Workers AI fallbacks.
 - Local relevance ranking for imported context; no embedding service.
-- Disabled-by-default encrypted personal learning with deterministic retrieval of at most three independently authored, user-approved examples.
+- Approved cloud learning stores only server-readable, de-identified, purpose-limited records for 365 days and retrieves at most three separately authored, attested examples for bounded context. Saving a record does not train a model.
+- A server-authoritative, per-signed-in-account numeric/model-only usage ledger is retained for 365 days and reports estimated ChatHelp app allowance, never provider credit or billing balance.
 - A narrow offline relationship-stage classifier trained only from explicit human confirmations; suggestions never change a stage without a separate user action.
 - Self-hosted Tesseract worker, WebAssembly engine, and English OCR data.
 - Desktop-first, opt-in Chrome synchronization for only the LinkedIn conversation the user manually opens. Unknown contacts are created locally; mobile uses manual paste/import, and one-time extension capture plus screen/OCR remain fallbacks.
@@ -16,7 +18,7 @@ ChatHelp is a local-first, encrypted web application that helps a person write t
 - Per-contact retention and complete local erasure, including the browser-held device key.
 - Restrictive CSP and browser permission policy.
 
-Read SECURITY.md and PRIVACY.md before using real conversation data.
+Read [SECURITY.md](SECURITY.md), [PRIVACY.md](PRIVACY.md), and the [cloud learning and usage release guide](docs/cloud-learning-usage-release.md) before using real conversation data or promoting a release.
 
 ## Use in GitHub Codespaces
 
@@ -62,7 +64,7 @@ ChatHelp supports selected LinkedIn, Gmail, Outlook, and other HTTPS conversatio
 
 See [docs/NATIVE_PACKAGING.md](docs/NATIVE_PACKAGING.md) for artifact and signing details. Cloud inference remains explicitly consented to inside the application.
 
-Personal learning and export remain separate opt-ins. See [docs/TRAINING_AND_LORA.md](docs/TRAINING_AND_LORA.md) for the classifier, dataset-provenance, and no-upload boundaries.
+Approved retrieval and any future training/export project remain separate operations. See the [cloud learning and usage release guide](docs/cloud-learning-usage-release.md) for current storage, migration, smoke, rollback, provider, and LoRA boundaries, and [docs/TRAINING_AND_LORA.md](docs/TRAINING_AND_LORA.md) for classifier and dataset-provenance constraints.
 
 ## Important product boundary
 

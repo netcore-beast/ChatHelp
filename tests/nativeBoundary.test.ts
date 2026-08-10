@@ -28,8 +28,19 @@ describe("installable client boundaries", () => {
     const worker = read("public/sw.js");
     expect(worker).toContain('url.origin !== self.location.origin');
     expect(worker).toContain('request.method !== "GET"');
+    expect(worker).toContain('url.pathname === "/health"');
+    expect(worker).toContain('url.pathname.startsWith("/api/")');
     expect(worker).not.toContain("indexedDB");
     expect(worker).not.toContain("localStorage");
+  });
+
+  it("documents network-only API smoke and application-only rollback", () => {
+    const releaseDoc = read("docs/cloud-learning-usage-release.md");
+
+    expect(releaseDoc).toContain("The service worker must bypass `/api/*` and `/health`");
+    expect(releaseDoc).toContain("Application-only rollback");
+    expect(releaseDoc).toContain("does not revert the Neon schema or data");
+    expect(releaseDoc).toContain("post-rollback compatibility checks");
   });
 
   it("routes static assets through the selected Worker version before serving them", () => {
