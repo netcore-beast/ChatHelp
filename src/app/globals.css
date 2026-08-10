@@ -242,6 +242,21 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
 .shortcut-dialog dt { font-weight: 900; }
 .shortcut-dialog dd { margin: 0; color: var(--muted); }
 .dialog-close { position: absolute; right: 0; top: 0; border: 0; font-size: 1.4rem; }
+.improvement-dialog-backdrop { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 1rem; background: rgba(12, 28, 20, .62); }
+.improvement-dialog { position: relative; width: min(560px, 100%); max-height: calc(100vh - 2rem); overflow-y: auto; display: grid; gap: .8rem; padding: 1.25rem; border: 1px solid var(--line); border-radius: 18px; background: var(--surface-raised, #fff); box-shadow: 0 24px 90px rgba(0,0,0,.24); }
+.improvement-dialog h2 { margin: 0; font-family: Georgia, serif; }
+.improvement-dialog .dialog-close { right: .7rem; top: .7rem; }
+.improvement-paths { display: grid; grid-template-columns: 1fr 1fr; gap: .65rem; }
+.improvement-rating-actions, .improvement-dialog-actions { display: flex; justify-content: flex-end; gap: .55rem; flex-wrap: wrap; }
+.improvement-editor-label { display: grid; gap: .4rem; }
+.improvement-editor-label textarea { min-height: 120px; }
+.sanitized-preview { display: grid; gap: .45rem; padding: .75rem; border: 1px solid #bddbd2; border-radius: 12px; background: var(--mint); }
+.sanitized-preview output { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); line-height: 1.5; }
+.improvement-validation { margin: 0; padding: .7rem; border-radius: 8px; color: #7d231c; background: #fde6e3; }
+:root:not([data-theme="light"]) .improvement-dialog .consent-check,
+:root:not([data-theme="light"]) .sanitized-preview { border-color: var(--line); background: var(--surface-soft); color: var(--ink); }
+:root:not([data-theme="light"]) .improvement-validation { border-color: #693d3b; background: #321c1d; color: #ffaaa3; }
+@media (max-width: 560px) { .improvement-paths { grid-template-columns: 1fr; } }
 @media (max-width: 1100px) {
   .workspace-grid { grid-template-columns: 210px 1fr; }
   .draft-panel { grid-column: 1 / -1; border-top: 1px solid var(--line); display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }

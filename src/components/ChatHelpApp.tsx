@@ -10,6 +10,7 @@ import { extractRelationshipStageFeatures, predictRelationshipStage, trainStageC
 import { buildTrainingExportBundle } from "@/lib/trainingExport";
 import { type DraftPipelineStage, type DraftProgressUpdate, type DraftStageStatus } from "@/lib/draftProgress";
 import { DraftProgressPanel } from "@/components/DraftProgressPanel";
+import { SaveImprovementDialog } from "@/components/SaveImprovementDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { deriveConversationState, sortPinnedThenRecent } from "@/lib/conversationState";
 import { PLATFORM_OPTIONS, safePlatformUrl } from "@/lib/platforms";
@@ -17,7 +18,8 @@ import { createRulesDocumentDownload, mergeRulesDocument } from "@/lib/rulesDocu
 import { createCloudSafeWorkspace, createRecoveryBundle, decryptCloudWorkspace, encryptCloudWorkspace, importRecoveryKey, parseRecoveryBundle, serializeRecoveryBundle, summarizeCloudBackup, type CloudEnvironment } from "@/lib/cloudRecovery";
 import { deleteCloudVault, readCloudVault } from "@/lib/cloudRecoveryClient";
 import { synchronizeCloudWorkspace, type CloudSyncState } from "@/lib/cloudRecoverySync";
-import { applyCloudLearningSyncDelta, clearDeletedCloudLearningSyncMetadata, clearDisabledCloudLearningState, deleteCloudLearningRecord, disableAndDeleteCloudLearning, syncPendingLearningRecords } from "@/lib/cloudLearning";
+import { applyCloudLearningSyncDelta, clearDeletedCloudLearningSyncMetadata, clearDisabledCloudLearningState, deleteCloudLearningRecord, disableAndDeleteCloudLearning, syncPendingLearningRecords, uploadCloudLearningRecords, type CloudLearningKnownIdentifiers, type CloudLearningUploadResult } from "@/lib/cloudLearning";
+import { GOAL_CATEGORY_BY_STAGE } from "@/lib/learningSanitizer";
 import { formatMicroUsd, readCloudUsage, type CloudUsageSummary } from "@/lib/cloudUsage";
 import { deleteContactEverywhere, mergeCloudWorkspaces } from "@/lib/cloudWorkspaceMerge";
 import {
@@ -79,6 +81,7 @@ import {
   type Feedback,
   type MessagingRole,
   type MessageRole,
+  type PendingLearningRecord,
   type PipelineStage,
   type RelationshipStage,
   type WorkspaceData,
@@ -107,6 +110,14 @@ const INBOX_FILTERS: ReadonlyArray<{ value: InboxFilter; label: string }> = [
   { value: "new-contacts", label: "New contacts" },
   { value: "archived", label: "Archived" },
 ];
+const ROLE_ID_BY_MESSAGING_ROLE = {
+  "Human Resource": "human_resource",
+  "Network Marketing": "network_marketing",
+  "Job Seeker": "job_seeker",
+  "Socializing/Networking": "socializing_networking",
+} as const;
+const LEARNING_RETENTION_MS = 365 * 86_400_000;
+const MAX_LOCAL_LEARNING_METADATA = 1_000;
 
 function browserCloudEnvironment(): CloudEnvironment {
   const configured = process.env.NEXT_PUBLIC_CHATHELP_CLOUD_AI_URL ?? "";
@@ -356,6 +367,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [draftProgressExpanded, setDraftProgressExpanded] = useState(false);
   const [draftStageStatuses, setDraftStageStatuses] = useState<Record<DraftPipelineStage, DraftStageStatus>>({ analyzing: "pending", drafting: "pending", reviewing: "pending", finalizing: "pending" });
   const [draftError, setDraftError] = useState("");
+  const [improvementDraft, setImprovementDraft] = useState<{ contactId: string; draftIndex: number } | null>(null);
   const [appError, setAppError] = useState("");
   const [playbookStatus, setPlaybookStatus] = useState("");
   const [chatPaste, setChatPaste] = useState("");
@@ -378,6 +390,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const labelsRef = useRef<HTMLInputElement>(null);
   const shortcutDialogRef = useRef<HTMLDialogElement>(null);
   const workspaceRef = useRef(workspace);
+  const pendingLearningRecordIdsRef = useRef(new Set(workspace.pendingLearningRecords.map((record) => record.recordId)));
   const extensionConnectedRef = useRef(false);
   const extensionVersionRef = useRef("");
   const shortcutSequenceRef = useRef("");
@@ -387,7 +400,10 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const contactContextAvailable = Boolean(contact && inboxView !== "settings" && inboxView !== "pipeline");
   const contactContextOpen = contactContextExpanded && contactContextAvailable;
 
-  useEffect(() => { workspaceRef.current = workspace; }, [workspace]);
+  useEffect(() => {
+    workspaceRef.current = workspace;
+    pendingLearningRecordIdsRef.current = new Set(workspace.pendingLearningRecords.map((record) => record.recordId));
+  }, [workspace]);
 
   useEffect(() => () => draftAbortController?.abort(), [draftAbortController]);
 
@@ -459,6 +475,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         });
       }
       const syncedContact = preview.contacts.find((item) => item.id === preview.contactId);
+      setImprovementDraft(null);
       setSelectedId(preview.contactId);
       setMobileConversationOpen(true);
       setDrafts(latestDraftsForRole(syncedContact, workspaceRef.current.inboxRole));
@@ -547,7 +564,11 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   function updateWorkspace(updater: (current: WorkspaceData) => WorkspaceData) {
     setSaveStatus("Unsaved changes");
     if (workspace.cloudRecovery.enabled) setCloudSyncState(baseCloudSyncState("pending", workspace.cloudRecovery.revision));
-    setWorkspace(updater);
+    setWorkspace((current) => {
+      const next = updater(current);
+      pendingLearningRecordIdsRef.current = new Set(next.pendingLearningRecords.map((record) => record.recordId));
+      return next;
+    });
   }
 
   async function retryPendingCloudLearningSync() {
@@ -558,6 +579,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     }
     setCloudLearningSyncStatus("Syncing approved cloud learning records…");
     const synced = await syncPendingLearningRecords(current);
+    if (!current.pendingLearningRecords.some((record) => pendingLearningRecordIdsRef.current.has(record.recordId))) return;
     const reconciled = applyCloudLearningSyncDelta(workspaceRef.current, current, synced);
     if (reconciled !== workspaceRef.current) updateWorkspace((latest) => applyCloudLearningSyncDelta(latest, current, synced));
     if (reconciled.pendingLearningRecords.length) {
@@ -565,6 +587,106 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       return;
     }
     setCloudLearningSyncStatus("Cloud learning sync complete");
+  }
+
+  function applyImprovementAcknowledgement(current: WorkspaceData, pending: PendingLearningRecord, result: CloudLearningUploadResult, updatedAt: string): WorkspaceData {
+    if (!current.pendingLearningRecords.some((item) => item.recordId === pending.recordId)) return current;
+    const acknowledgement = [...result.accepted, ...result.duplicates].find((item) => item.recordId === pending.recordId);
+    if (!acknowledgement) return current;
+    return {
+      ...current,
+      pendingLearningRecords: current.pendingLearningRecords.filter((item) => item.recordId !== pending.recordId),
+      cloudLearningSync: [
+        ...current.cloudLearningSync.filter((item) => item.recordId !== pending.recordId),
+        { ...acknowledgement, status: "synced" as const, updatedAt },
+      ].slice(-MAX_LOCAL_LEARNING_METADATA),
+      cloudLearningDeletionMarkers: [
+        ...current.cloudLearningDeletionMarkers.filter((item) => item.recordId !== pending.recordId),
+        { recordId: pending.recordId, disposition: "acknowledged" as const, sourceCollection: pending.sourceCollection, sourceLocalId: pending.sourceLocalId, deletedAt: updatedAt },
+      ].slice(-MAX_LOCAL_LEARNING_METADATA),
+    };
+  }
+
+  async function stageAndUploadImprovement(pending: PendingLearningRecord, knownIdentifiers?: CloudLearningKnownIdentifiers) {
+    pendingLearningRecordIdsRef.current.add(pending.recordId);
+    updateWorkspace((current) => ({
+      ...current,
+      pendingLearningRecords: [...current.pendingLearningRecords.filter((item) => item.recordId !== pending.recordId), pending].slice(-MAX_LOCAL_LEARNING_METADATA),
+    }));
+    setCloudLearningSyncStatus("Syncing approved cloud learning records\u2026");
+    try {
+      const result = await uploadCloudLearningRecords([{ ...pending, ...(knownIdentifiers ? { knownIdentifiers } : {}) }]);
+      if (!pendingLearningRecordIdsRef.current.has(pending.recordId)) return;
+      const acknowledged = [...result.accepted, ...result.duplicates].some((item) => item.recordId === pending.recordId);
+      if (!acknowledged) {
+        setCloudLearningSyncStatus("Cloud learning sync pending");
+        setExtensionStatus("Cloud learning sync pending");
+        return;
+      }
+      const updatedAt = new Date().toISOString();
+      pendingLearningRecordIdsRef.current.delete(pending.recordId);
+      updateWorkspace((current) => applyImprovementAcknowledgement(current, pending, result, updatedAt));
+      setCloudLearningSyncStatus("Cloud learning sync complete");
+      setExtensionStatus("Approved improvement saved to cloud learning. Nothing was sent to LinkedIn.");
+    } catch {
+      if (!pendingLearningRecordIdsRef.current.has(pending.recordId)) return;
+      setCloudLearningSyncStatus("Cloud learning sync pending");
+      setExtensionStatus("Cloud learning sync pending");
+    }
+  }
+
+  async function rateDraftForLearning(action: "useful" | "not_useful" | "accepted" | "edited" | "rejected") {
+    if (!contact) return;
+    const timestamp = new Date();
+    const relationshipStage = normalizeRelationshipStage(contact.relationshipStage);
+    const recordId = newId("learning");
+    await stageAndUploadImprovement({
+      recordId,
+      recordKind: "evaluation",
+      sanitizedPayload: {
+        recordKind: "evaluation",
+        roleId: ROLE_ID_BY_MESSAGING_ROLE[workspace.inboxRole],
+        relationshipStage,
+        goalCategory: GOAL_CATEGORY_BY_STAGE[relationshipStage],
+        provenance: "human_confirmed",
+        evaluationAction: action,
+      },
+      sourceCollection: "feedback",
+      sourceLocalId: recordId,
+      createdAt: timestamp.toISOString(),
+      expiresAt: new Date(timestamp.getTime() + LEARNING_RETENTION_MS).toISOString(),
+    });
+  }
+
+  async function saveIndependentLearningTarget(input: { kind: "generative"; sanitizedTarget: string; rightsAttested: true; privacyAttested: true }) {
+    if (!contact) return;
+    const timestamp = new Date();
+    const relationshipStage = normalizeRelationshipStage(contact.relationshipStage);
+    const recordId = newId("learning");
+    const knownIdentifiers = {
+      contactName: contact.name,
+      company: contact.company ?? "",
+      profileUrl: contact.profileUrl ?? "",
+      profileHandle: contact.profileUrl?.split("/").filter(Boolean).at(-1) ?? "",
+    };
+    await stageAndUploadImprovement({
+      recordId,
+      recordKind: "generative",
+      sanitizedPayload: {
+        recordKind: "generative",
+        roleId: ROLE_ID_BY_MESSAGING_ROLE[workspace.inboxRole],
+        relationshipStage,
+        goalCategory: GOAL_CATEGORY_BY_STAGE[relationshipStage],
+        provenance: "independently_user_authored",
+        target: input.sanitizedTarget,
+        rightsAttested: input.rightsAttested,
+        privacyAttested: input.privacyAttested,
+      },
+      sourceCollection: "feedback",
+      sourceLocalId: recordId,
+      createdAt: timestamp.toISOString(),
+      expiresAt: new Date(timestamp.getTime() + LEARNING_RETENTION_MS).toISOString(),
+    }, knownIdentifiers);
   }
 
   async function deleteSyncedCloudLearningRecord(recordId: string) {
@@ -587,6 +709,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setCloudLearningSyncStatus("Disabling and deleting cloud learning…");
     try {
       await disableAndDeleteCloudLearning();
+      pendingLearningRecordIdsRef.current.clear();
       updateWorkspace(clearDisabledCloudLearningState);
       setCloudLearningSyncStatus("Cloud learning disabled and deleted");
     } catch {
@@ -595,6 +718,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   }
 
   const setActiveContactId = useCallback((contactId: string) => {
+    setImprovementDraft(null);
     setSelectedId(contactId);
     const selected = workspace.contacts.find((item) => item.id === contactId);
     const latestIncoming = selected?.chat.findLast((message) => message.role === "them");
@@ -937,6 +1061,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       setWorkspace(next);
       setSaveStatus("Unsaved changes");
       setCloudSyncState(matchesRemote ? { status: "synced", contactCount: remoteSummary.contactCount, messageCount: remoteSummary.messageCount, revision: remote.revision, logicalDigest: remoteSummary.logicalDigest } : baseCloudSyncState("pending", remote.revision));
+      setImprovementDraft(null);
       setSelectedId(next.contacts[0]?.id ?? "");
       setInboxView("inbox");
       setInboxFilter("main");
@@ -1646,7 +1771,8 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                   {draftError && <div className="notice error inline-draft-error" role="alert"><span><strong>Draft was not generated.</strong> {draftError}</span><button aria-label="Dismiss draft generation error" onClick={() => setDraftError("")}>×</button></div>}
                 </section>
 
-                <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={contact.id + "-" + index}><div><span>DRAFT {index + 1}</span><div><button onClick={() => void navigator.clipboard.writeText(draft).then(() => setExtensionStatus("Draft copied. Review and send it yourself."), () => setAppError("Clipboard access was blocked."))}>Copy</button><button onClick={() => markDraftManuallySent(draft)}>Mark manually sent</button><button aria-label={"Dismiss draft " + (index + 1)} onClick={() => { const nextDrafts = drafts.filter((_item, draftIndex) => draftIndex !== index); setDrafts(nextDrafts); persistDrafts(nextDrafts); }}>Dismiss</button>{workspace.personalLearning.enabled ? <><button aria-label={"Accept draft " + (index + 1)} onClick={() => recordDraftFeedback(draft, "accepted")}>Accept</button><button aria-label={"Save edited draft " + (index + 1) + " as feedback"} onClick={() => recordDraftFeedback(draft, "edited")}>Save edit</button><button aria-label={"Reject draft " + (index + 1)} onClick={() => recordDraftFeedback(draft, "rejected")}>Reject</button></> : <small title="Enable encrypted personal learning in Settings">Learning off</small>}</div></div><textarea aria-label={"Edit draft " + (index + 1)} value={draft} onChange={(event) => setDrafts((current) => current.map((item, draftIndex) => draftIndex === index ? event.target.value.slice(0, 5_000) : item))} onBlur={() => persistDrafts()} /></article>)}</div>
+                {cloudLearningSyncStatus && <p className="status draft-learning-status" role="status" aria-live="polite">{cloudLearningSyncStatus}</p>}
+                <div className="draft-stack">{drafts.map((draft, index) => <article className="draft-card" key={contact.id + "-" + index}><div><span>DRAFT {index + 1}</span><div><button onClick={() => void navigator.clipboard.writeText(draft).then(() => setExtensionStatus("Draft copied. Review and send it yourself."), () => setAppError("Clipboard access was blocked."))}>Copy</button><button onClick={() => markDraftManuallySent(draft)}>Mark manually sent</button><button type="button" onClick={() => setImprovementDraft({ contactId: contact.id, draftIndex: index })}>Save improvement</button><button aria-label={"Dismiss draft " + (index + 1)} onClick={() => { const nextDrafts = drafts.filter((_item, draftIndex) => draftIndex !== index); setDrafts(nextDrafts); persistDrafts(nextDrafts); }}>Dismiss</button>{workspace.personalLearning.enabled ? <><button aria-label={"Accept draft " + (index + 1)} onClick={() => recordDraftFeedback(draft, "accepted")}>Accept</button><button aria-label={"Save edited draft " + (index + 1) + " as feedback"} onClick={() => recordDraftFeedback(draft, "edited")}>Save edit</button><button aria-label={"Reject draft " + (index + 1)} onClick={() => recordDraftFeedback(draft, "rejected")}>Reject</button></> : <small title="Enable encrypted personal learning in Settings">Learning off</small>}</div></div><textarea aria-label={"Edit draft " + (index + 1)} value={draft} onChange={(event) => setDrafts((current) => current.map((item, draftIndex) => draftIndex === index ? event.target.value.slice(0, 5_000) : item))} onBlur={() => persistDrafts()} /></article>)}</div>
                 {handoffUrl && <a className="platform-link" href={handoffUrl} target="_blank" rel="noreferrer">Open LinkedIn to review and paste ↗</a>}
                 </div>
               </div>
@@ -1680,6 +1806,12 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         <footer><span>DialogMint never sends platform messages or email automatically.</span><button className="danger-link" onClick={() => void eraseEverything()}>Erase all local data</button></footer>
         {wizardOpen && <LinkedInTestWizard initialContact={contact} guidance={resolveRoleGuidance(workspace.guidance, workspace.inboxRole)} drafts={drafts} aiStatus={draftError ? "Draft was not generated. " + draftError : aiStatus} onClose={() => setWizardOpen(false)} onSaveProfile={saveWizardProfile} onCapture={captureContextFor} onImportChat={importChatFor} onGuidanceChange={(field, value) => { if (field === "role") changeInboxRole(value as MessagingRole); else if (field === "voice") updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: value.slice(0, PLAYBOOK_VOICE_MAX_CHARS) } })); else updateRolePlaybook(workspace.inboxRole, field, value); }} onGenerate={async (contactId, nextAgenda) => { setActiveContactId(contactId); setAgenda(nextAgenda); await generate(nextAgenda, contactId); }} />}
         {cropRequest && <ScreenRegionSelector image={cropRequest.image} contactName={cropRequest.contactName} purpose={cropRequest.purpose} onCancel={() => { const request = cropRequest; setCropRequest(null); request.resolve(null); }} onConfirm={(region) => { const request = cropRequest; setCropRequest(null); request.resolve(region); }} />}
+        {contact && improvementDraft?.contactId === contact.id && drafts[improvementDraft.draftIndex] !== undefined && <SaveImprovementDialog
+          knownIdentifiers={{ contactName: contact.name, company: contact.company ?? "", profileUrl: contact.profileUrl ?? "", profileHandle: contact.profileUrl?.split("/").filter(Boolean).at(-1) ?? "" }}
+          onClose={() => setImprovementDraft(null)}
+          onRate={rateDraftForLearning}
+          onSaveIndependent={saveIndependentLearningTarget}
+        />}
         <dialog ref={shortcutDialogRef} className="privacy-dialog shortcut-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">KEYBOARD-FIRST INBOX</p><h2>Shortcuts</h2><dl><div><dt>J / K</dt><dd>Next / previous conversation</dd></div><div><dt>E</dt><dd>Archive or restore</dd></div><div><dt>R</dt><dd>Focus reply objective</dd></div><div><dt>S</dt><dd>Focus snooze</dd></div><div><dt>L</dt><dd>Focus labels</dd></div><div><dt>Ctrl/⌘ + J</dt><dd>Focus draft composer</dd></div><div><dt>G then I</dt><dd>Go to inbox</dd></div><div><dt>?</dt><dd>Show help</dd></div></dl><button className="primary">Done</button></form></dialog>
         <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Automatic sync:</strong> after explicit optional host permission, an isolated content script reads only the visible central LinkedIn conversation you manually open. It never reads cookies, scans the inbox, opens chats, clicks, types, scrolls, or sends.</li><li><strong>Local handoff:</strong> synchronized snapshots pass through the existing extension bridge into this authenticated app and are encrypted in the local vault. Automatic snapshots are not retained in extension storage.</li><li><strong>One-time fallback:</strong> a manual toolbar capture may remain only in extension session storage until this app acknowledges it.</li><li><strong>Encrypted recovery:</strong> only after you enable it, DialogMint uploads an AES-256-GCM encrypted, 90-day workspace snapshot to the authenticated vault endpoint. The recovery key stays with you and is never sent to Cloudflare or Neon.</li><li><strong>Cloud AI:</strong> relevant recent conversation text, guidance, and your objective are sent to the authenticated same-origin /api/drafts endpoint only when you click Generate.</li><li><strong>Never uploaded:</strong> plaintext vault data, screenshots, cookies, session tokens, access credentials, navigation, job cards, side panels, and unrelated conversations are excluded.</li><li><strong>Sending:</strong> every draft requires manual review, copy, paste, and sending.</li></ul><button className="primary">Understood</button></form></dialog>
       </main>

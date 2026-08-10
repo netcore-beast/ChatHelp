@@ -468,6 +468,40 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.getByRole("button", { name: "Generate Precise Draft" })).toBeTruthy();
   });
 
+  it("never sends or starts LinkedIn automation from Save improvement", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.contacts = [{
+      id: "manual-send-boundary",
+      name: "Taylor Lee",
+      headline: "",
+      profileNotes: "",
+      platform: "linkedin",
+      platformUrl: "https://www.linkedin.com/messaging/thread/taylor-lee/",
+      chat: [{ id: "incoming", role: "them", body: "Happy to connect.", createdAt: "2026-08-02T11:59:00.000Z" }],
+      documents: [],
+      outcomes: [],
+      retentionDays: 90,
+      draftHistory: [{ id: "manual-send-draft", agenda: "", drafts: ["Thanks for connecting."], createdAt: "2026-08-02T12:00:00.000Z", role: workspace.inboxRole }],
+    }];
+    await createDeviceVault(workspace);
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const recordId = JSON.parse(init?.body as string).records[0].recordId;
+      return new Response(JSON.stringify({ accepted: [{ recordId, contentDigest: "e".repeat(64) }], duplicates: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const postMessage = vi.spyOn(window, "postMessage");
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+
+    await user.click(screen.getByRole("button", { name: "Save improvement" }));
+    await user.click(screen.getByRole("button", { name: "Rate this draft" }));
+    await user.click(screen.getByRole("button", { name: "Useful" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Help improve future drafts" })).toBeNull());
+
+    expect(postMessage.mock.calls.some(([message]) => (message as { type?: string }).type === LINKEDIN_SYNC_COMMAND_EVENT)).toBe(false);
+    expect((screen.getByLabelText("Edit draft 1") as HTMLTextAreaElement).value).toBe("Thanks for connecting.");
+  });
+
   it("sends neither stored feedback summaries nor learning examples from the browser", async () => {
     const workspace = createEmptyWorkspace();
     workspace.cloudInference.consentedAt = "2026-08-01T00:00:00.000Z";
