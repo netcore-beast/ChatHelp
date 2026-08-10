@@ -460,21 +460,16 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
     await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
-    const generated = await screen.findByLabelText("Edit draft 1") as HTMLTextAreaElement;
+    await screen.findByLabelText("Edit draft 1");
     const draftCall = request.mock.calls.find(([path]) => path === "/api/drafts");
     expect(JSON.parse(draftCall?.[1]?.body as string)).not.toHaveProperty("learningExamples");
 
-    await user.clear(generated);
-    await user.type(generated, "What part of the role would help you decide whether it is relevant?");
     const draftCard = screen.getByLabelText("Edit draft 1").closest("article");
     expect(draftCard).toBeTruthy();
-    await user.click(within(draftCard as HTMLElement).getByText("More"));
-    await user.click(within(draftCard as HTMLElement).getByRole("button", { name: "Save edited draft 1 as feedback" }));
-    expect((await screen.findAllByText(/Saved encrypted feedback locally/)).length).toBeGreaterThan(0);
-    await waitFor(async () => {
-      const saved = (await openDeviceVault()).workspace.feedback.at(-1);
-      expect(saved).toMatchObject({ origin: "provider_assisted", eligibleForRetrieval: false });
-    });
+    for (const label of ["Copy", "Useful", "Not useful"]) expect(within(draftCard as HTMLElement).getByRole("button", { name: label })).toBeTruthy();
+    for (const label of ["Save improvement", "Mark sent", "More", "Save edit", "Reject"]) {
+      expect(within(draftCard as HTMLElement).queryByRole("button", { name: label })).toBeNull();
+    }
     await user.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.queryByText("Provider-assisted by default")).toBeNull();
     expect(screen.queryByRole("textbox", { name: "Preferred response for learning" })).toBeNull();
@@ -512,7 +507,7 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.getByRole("button", { name: "Generate Precise Draft" })).toBeTruthy();
   });
 
-  it("never sends or starts LinkedIn automation from Save improvement", async () => {
+  it("keeps direct draft actions free of legacy controls and LinkedIn commands", async () => {
     const workspace = createEmptyWorkspace();
     workspace.contacts = [{
       id: "manual-send-boundary",
@@ -528,20 +523,14 @@ describe("secure conversation workspace interaction", () => {
       draftHistory: [{ id: "manual-send-draft", agenda: "", drafts: ["Thanks for connecting."], createdAt: "2026-08-02T12:00:00.000Z", role: workspace.inboxRole }],
     }];
     await createDeviceVault(workspace);
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const recordId = JSON.parse(init?.body as string).records[0].recordId;
-      return new Response(JSON.stringify({ accepted: [{ recordId, contentDigest: "e".repeat(64) }], duplicates: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
-    }));
     const postMessage = vi.spyOn(window, "postMessage");
-    const user = userEvent.setup();
     render(<ChatHelpApp />);
     await screen.findByRole("heading", { name: /private conversation studio/i });
 
-    await user.click(screen.getByRole("button", { name: "Save improvement" }));
-    await user.click(screen.getByRole("button", { name: "Rate this draft" }));
-    await user.click(screen.getByRole("button", { name: "Useful" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Help improve future drafts" })).toBeNull());
-
+    for (const label of ["Copy", "Useful", "Not useful"]) expect(screen.getByRole("button", { name: label })).toBeTruthy();
+    for (const label of ["Save improvement", "Rate this draft", "Mark sent", "More", "Dismiss", "Accept", "Save edit", "Reject"]) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
     expect(postMessage.mock.calls.some(([message]) => (message as { type?: string }).type === LINKEDIN_SYNC_COMMAND_EVENT)).toBe(false);
     expect((screen.getByLabelText("Edit draft 1") as HTMLTextAreaElement).value).toBe("Thanks for connecting.");
   });

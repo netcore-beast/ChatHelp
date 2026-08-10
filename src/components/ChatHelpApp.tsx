@@ -13,7 +13,7 @@ import { DraftComposer } from "@/components/DraftComposer";
 import { CompletedDraftCard } from "@/components/CompletedDraftCard";
 import { LearningSettingsCard } from "@/components/LearningSettingsCard";
 import { UsageSettingsCard } from "@/components/UsageSettingsCard";
-import { SaveImprovementDialog } from "@/components/SaveImprovementDialog";
+import { AddOwnVersionDialog } from "@/components/AddOwnVersionDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { deriveConversationState, sortPinnedThenRecent } from "@/lib/conversationState";
 import { PLATFORM_OPTIONS, safePlatformUrl } from "@/lib/platforms";
@@ -1838,16 +1838,13 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                   model={activeStrictDraftResult?.model ?? activeDraftHistory?.modelId}
                   usageAccounting={activeStrictDraftResult?.usageAccounting}
                   fallbackReason={activeStrictDraftResult ? activeStrictDraftResult.fallbackReason : undefined}
-                  learningEnabled={workspace.personalLearning.enabled}
+                  learningStatus={{ kind: "idle" }}
                   onDraftChange={(value) => setDrafts([value])}
                   onDraftBlur={() => persistDrafts()}
                   onCopy={() => void navigator.clipboard.writeText(drafts[0]).then(() => setExtensionStatus("Draft copied. Review and send it yourself."), () => setAppError("Clipboard access was blocked."))}
-                  onMarkSent={() => markDraftManuallySent(drafts[0])}
-                  onSaveImprovement={() => setImprovementDraft({ contactId: contact.id, draftIndex: 0 })}
-                  onDismiss={() => { setDrafts([]); setLatestDraftResult(null); persistDrafts([]); }}
-                  onAccept={() => recordDraftFeedback(drafts[0], "accepted")}
-                  onSaveEdit={() => recordDraftFeedback(drafts[0], "edited")}
-                  onReject={() => recordDraftFeedback(drafts[0], "rejected")}
+                  onUseful={() => undefined}
+                  onNotUseful={() => undefined}
+                  onAddOwnVersion={() => undefined}
                 /> : null}</div>
                 {handoffUrl && <a className="platform-link" href={handoffUrl} target="_blank" rel="noreferrer">Open LinkedIn to review and paste ↗</a>}
                 </div>
@@ -1882,11 +1879,10 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         <footer><span>DialogMint never sends platform messages or email automatically.</span><button className="danger-link" onClick={() => void eraseEverything()}>Erase all local data</button></footer>
         {wizardOpen && <LinkedInTestWizard initialContact={contact} guidance={resolveRoleGuidance(workspace.guidance, workspace.inboxRole)} drafts={drafts} aiStatus={draftError ? "Draft was not generated. " + draftError : aiStatus} onClose={() => setWizardOpen(false)} onSaveProfile={saveWizardProfile} onCapture={captureContextFor} onImportChat={importChatFor} onGuidanceChange={(field, value) => { if (field === "role") changeInboxRole(value as MessagingRole); else if (field === "voice") updateWorkspace((current) => ({ ...current, guidance: { ...current.guidance, voice: value.slice(0, PLAYBOOK_VOICE_MAX_CHARS) } })); else updateRolePlaybook(workspace.inboxRole, field, value); }} onGenerate={handleWizardDraftGeneration} />}
         {cropRequest && <ScreenRegionSelector image={cropRequest.image} contactName={cropRequest.contactName} purpose={cropRequest.purpose} onCancel={() => { const request = cropRequest; setCropRequest(null); request.resolve(null); }} onConfirm={(region) => { const request = cropRequest; setCropRequest(null); request.resolve(region); }} />}
-        {contact && improvementDraft?.contactId === contact.id && drafts[improvementDraft.draftIndex] !== undefined && <SaveImprovementDialog
+        {contact && improvementDraft?.contactId === contact.id && drafts[improvementDraft.draftIndex] !== undefined && <AddOwnVersionDialog
           knownIdentifiers={{ contactName: contact.name, company: contact.company ?? "", profileUrl: contact.profileUrl ?? "", profileHandle: contact.profileUrl?.split("/").filter(Boolean).at(-1) ?? "" }}
           onClose={() => setImprovementDraft(null)}
-          onRate={rateDraftForLearning}
-          onSaveIndependent={saveIndependentLearningTarget}
+          onSaveIndependent={(input) => saveIndependentLearningTarget({ kind: "generative", ...input })}
         />}
         <dialog ref={shortcutDialogRef} className="privacy-dialog shortcut-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">KEYBOARD-FIRST INBOX</p><h2>Shortcuts</h2><dl><div><dt>J / K</dt><dd>Next / previous conversation</dd></div><div><dt>E</dt><dd>Archive or restore</dd></div><div><dt>R</dt><dd>Focus reply objective</dd></div><div><dt>S</dt><dd>Focus snooze</dd></div><div><dt>L</dt><dd>Focus labels</dd></div><div><dt>Ctrl/⌘ + J</dt><dd>Focus draft composer</dd></div><div><dt>G then I</dt><dd>Go to inbox</dd></div><div><dt>?</dt><dd>Show help</dd></div></dl><button className="primary">Done</button></form></dialog>
         <dialog id="privacy-details" className="privacy-dialog"><form method="dialog"><button className="dialog-close" aria-label="Close">×</button><p className="eyebrow">PRIVACY BOUNDARY</p><h2>What leaves this device?</h2><ul><li><strong>Automatic sync:</strong> after explicit optional host permission, an isolated content script reads only the visible central LinkedIn conversation you manually open. It never reads cookies, scans the inbox, opens chats, clicks, types, scrolls, or sends.</li><li><strong>Local handoff:</strong> synchronized snapshots pass through the existing extension bridge into this authenticated app and are encrypted in the local vault. Automatic snapshots are not retained in extension storage.</li><li><strong>One-time fallback:</strong> a manual toolbar capture may remain only in extension session storage until this app acknowledges it.</li><li><strong>Encrypted recovery:</strong> only after you enable it, DialogMint uploads an AES-256-GCM encrypted, 90-day workspace snapshot to the authenticated vault endpoint. The recovery key stays with you and is never sent to Cloudflare or Neon.</li><li><strong>Cloud AI:</strong> relevant recent conversation text, guidance, and your objective are sent to the authenticated same-origin /api/drafts endpoint only when you click Generate.</li><li><strong>Never uploaded:</strong> plaintext vault data, screenshots, cookies, session tokens, access credentials, navigation, job cards, side panels, and unrelated conversations are excluded.</li><li><strong>Sending:</strong> every draft requires manual review, copy, paste, and sending.</li></ul><button className="primary">Understood</button></form></dialog>

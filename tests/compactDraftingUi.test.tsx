@@ -251,7 +251,7 @@ describe("compact drafting interface", () => {
     expect(screen.getByText("Analyzing conversation stage").closest("li")?.dataset.status).toBe("error");
   }, 20_000);
 
-  it("shows one fallback draft with exact provider metadata and keeps rare local actions in More", async () => {
+  it("shows one fallback draft with exact provider metadata and direct learning actions", async () => {
     installRequest({
       draft: "Would it help to compare the priorities that matter most to you?",
       provider: "cloudflare",
@@ -273,23 +273,13 @@ describe("compact drafting interface", () => {
     expect(within(card).getByText("Claude pipeline failed")).toBeTruthy();
     expect(within(card).getByText("Usage accounting pending")).toBeTruthy();
     expect(within(card).queryByText(/Claude Opus/i)).toBeNull();
-    for (const name of ["Copy", "Mark sent", "Save improvement"]) {
+    for (const name of ["Copy", "Useful", "Not useful"]) {
       expect(within(card).getByRole("button", { name })).toBeTruthy();
     }
-    for (const name of ["Dismiss draft 1", "Accept draft 1 as feedback", "Save edited draft 1 as feedback", "Reject draft 1 as feedback"]) {
+    for (const name of ["Mark sent", "Save improvement", "More", "Dismiss draft 1", "Accept draft 1 as feedback", "Save edited draft 1 as feedback", "Reject draft 1 as feedback"]) {
       expect(within(card).queryByRole("button", { name })).toBeNull();
     }
     expect(screen.getByRole("button", { name: "Show AI steps" }).getAttribute("aria-expanded")).toBe("false");
-
-    const more = within(card).getByText("More");
-    expect(more.tagName).toBe("SUMMARY");
-    more.focus();
-    expect(document.activeElement).toBe(more);
-    await user.click(more);
-    expect(more.parentElement?.hasAttribute("open")).toBe(true);
-    for (const name of ["Dismiss draft 1", "Accept draft 1 as feedback", "Save edited draft 1 as feedback", "Reject draft 1 as feedback"]) {
-      expect(within(card).getByRole("button", { name })).toBeTruthy();
-    }
   }, 20_000);
 
   it("discards an in-flight result after the user switches contacts", async () => {

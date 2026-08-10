@@ -1,5 +1,7 @@
-import { useId, useState } from "react";
+import { useId } from "react";
 import type { CloudDraftResult } from "@/lib/privateAi";
+import type { DraftLearningDecision } from "@/lib/workspaceTypes";
+import { DraftLearningStatus, type DraftLearningUiStatus } from "@/components/DraftLearningStatus";
 
 type DraftProvider = CloudDraftResult["provider"] | "local";
 
@@ -9,16 +11,14 @@ export interface CompletedDraftCardProps {
   model?: string;
   usageAccounting?: CloudDraftResult["usageAccounting"];
   fallbackReason?: CloudDraftResult["fallbackReason"];
-  learningEnabled: boolean;
-  onDraftChange: (value: string) => void;
-  onDraftBlur: () => void;
-  onCopy: () => void;
-  onMarkSent: () => void;
-  onSaveImprovement: () => void;
-  onDismiss: () => void;
-  onAccept: () => void;
-  onSaveEdit: () => void;
-  onReject: () => void;
+  learningDecision?: DraftLearningDecision;
+  learningStatus: DraftLearningUiStatus;
+  onDraftChange(value: string): void;
+  onDraftBlur(): void;
+  onCopy(): void;
+  onUseful(): void;
+  onNotUseful(): void;
+  onAddOwnVersion(): void;
 }
 
 function providerLabel(provider: DraftProvider | undefined, fallbackReason: CloudDraftResult["fallbackReason"] | undefined): string {
@@ -43,20 +43,20 @@ export function CompletedDraftCard({
   model,
   usageAccounting,
   fallbackReason,
-  learningEnabled,
+  learningDecision,
+  learningStatus = { kind: "idle" },
   onDraftChange,
   onDraftBlur,
   onCopy,
-  onMarkSent,
-  onSaveImprovement,
-  onDismiss,
-  onAccept,
-  onSaveEdit,
-  onReject,
+  onUseful = () => undefined,
+  onNotUseful = () => undefined,
+  onAddOwnVersion = () => undefined,
 }: CompletedDraftCardProps) {
   const titleId = useId();
   const fallback = fallbackLabel(fallbackReason);
-  const [moreOpen, setMoreOpen] = useState(false);
+  const usefulSelected = learningDecision?.state === "useful" || learningDecision?.state === "authored";
+  const notUsefulSelected = learningDecision?.state === "not_useful";
+  const learningBusy = learningStatus.kind === "saving";
 
   return (
     <article className="draft-card completed-draft-card" aria-labelledby={titleId}>
@@ -65,10 +65,12 @@ export function CompletedDraftCard({
           <span className="draft-kicker">READY TO REVIEW</span>
           <h3 id={titleId}>Completed draft</h3>
         </div>
+        <DraftLearningStatus status={learningStatus} />
         <div className="draft-primary-actions">
           <button type="button" onClick={onCopy}>Copy</button>
-          <button type="button" onClick={onMarkSent}>Mark sent</button>
-          <button type="button" onClick={onSaveImprovement}>Save improvement</button>
+          <button type="button" className={`draft-learning-action useful${usefulSelected ? " is-selected" : ""}`} aria-pressed={usefulSelected} disabled={learningBusy} onClick={onUseful}>Useful</button>
+          <button type="button" className={`draft-learning-action not-useful${notUsefulSelected ? " is-selected" : ""}`} aria-pressed={notUsefulSelected} disabled={learningBusy || learningDecision?.state === "authored"} onClick={onNotUseful}>Not useful</button>
+          {notUsefulSelected && <button type="button" className="draft-learning-add-own" disabled={learningBusy} onClick={onAddOwnVersion}>Add my own version</button>}
         </div>
       </header>
 
@@ -86,18 +88,6 @@ export function CompletedDraftCard({
         onChange={(event) => onDraftChange(event.target.value.slice(0, 5_000))}
         onBlur={onDraftBlur}
       />
-
-      <details className="draft-more-actions">
-        <summary onClick={() => setMoreOpen((current) => !current)}>More</summary>
-        <div hidden={!moreOpen}>
-          <button type="button" aria-label="Dismiss draft 1" onClick={onDismiss}>Dismiss</button>
-          {learningEnabled ? <>
-            <button type="button" aria-label="Accept draft 1 as feedback" onClick={onAccept}>Accept</button>
-            <button type="button" aria-label="Save edited draft 1 as feedback" onClick={onSaveEdit}>Save edit</button>
-            <button type="button" aria-label="Reject draft 1 as feedback" onClick={onReject}>Reject</button>
-          </> : <small title="Enable encrypted personal learning in Settings">Learning off</small>}
-        </div>
-      </details>
     </article>
   );
 }

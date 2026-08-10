@@ -49,7 +49,11 @@ describe("desktop conversation workspace layout", () => {
     expect(composer).toContain('className="composer-card draft-composer"');
     expect(composer).toContain('aria-label="Optional instruction"');
     expect(composer).toContain("<summary onClick={() => setAdvancedOpen((current) => !current)}>Advanced</summary>");
-    expect(completedDraft).toContain("<summary onClick={() => setMoreOpen((current) => !current)}>More</summary>");
+    expect(completedDraft).toContain('className="draft-primary-actions"');
+    expect(completedDraft).toContain('aria-pressed={usefulSelected}');
+    expect(completedDraft).toContain('aria-pressed={notUsefulSelected}');
+    expect(completedDraft).toContain('Add my own version');
+    expect(completedDraft).not.toContain('draft-more-actions');
     expect(completedDraft).toContain('className="draft-primary-actions"');
     expect(completedDraft).toContain('className="draft-provider-metadata"');
     expect(progress).toContain('hidden={!expanded}');
@@ -61,6 +65,12 @@ describe("desktop conversation workspace layout", () => {
     expect(styles).toMatch(/@media \(max-width:\s*760px\)[\s\S]*?\.composer-advanced-content \.stage-goal-controls\s*\{[^}]*grid-template-columns:\s*1fr;/);
     expect(styles).toMatch(/@media \(max-width:\s*360px\)[\s\S]*?\.prompt-composer-actions \.draft-generate-button\s*\{[^}]*width:\s*100%/);
     expect(styles).toMatch(/@media \(max-width:\s*360px\)[\s\S]*?\.draft-primary-actions\s*\{[^}]*grid-template-columns:\s*1fr;/);
+    expect(styles).toContain(':root:not([data-theme="light"]) .draft-learning-action');
+    expect(styles).toContain('.draft-learning-action:focus-visible');
+    expect(styles).toMatch(/@media \(max-width:\s*720px\)[\s\S]*?\.draft-learning-status/);
+    expect(styles).toMatch(/@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.draft-learning-status/);
+    expect(styles).toMatch(/\.draft-learning-status\[data-kind="saved"\]\s*\{[^}]*animation:\s*draft-learning-saved-in\s+\.18s\s+ease-out\s+both;/);
+    expect(styles).toMatch(/@keyframes draft-learning-saved-in\s*\{[\s\S]*?from\s*\{[^}]*opacity:\s*0;[^}]*transform:\s*translateY\(4px\);[\s\S]*?to\s*\{[^}]*opacity:\s*1;[^}]*transform:\s*translateY\(0\);/);
     expect(styles).toContain(':root:not([data-theme="light"]) .composer-advanced');
     expect(styles).toContain(':root:not([data-theme="light"]) .draft-provider-metadata > div');
     expect(styles).toContain(':root:not([data-theme="light"]) :focus-visible');
