@@ -1,6 +1,8 @@
 {
+  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "chathelp-private-cloud-unconfigured",
   "main": "./cloudflare/worker/src/index.js",
+  "keep_vars": true,
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
@@ -37,7 +39,13 @@
     "testing": {
       "name": "testing-chathelp-private-cloud",
       "vars": {
-        "DEPLOYMENT_ENVIRONMENT": "testing"
+        "DEPLOYMENT_ENVIRONMENT": "testing",
+        "LEARNING_RETENTION_DAYS": "365",
+        "USAGE_RETENTION_DAYS": "365",
+        "ANTHROPIC_ALLOWANCE_MICRO_USD": "10000000",
+        "WORKERS_AI_ALLOWANCE_MICRO_USD": "2000000",
+        "AI_PRICING_VERSION": "2026-08-09-v1",
+        "AI_ESTIMATOR_VERSION": "characters-over-four-v1"
       },
       "ai": {
         "binding": "AI"
@@ -65,7 +73,13 @@
     "production": {
       "name": "chathelp-private-cloud",
       "vars": {
-        "DEPLOYMENT_ENVIRONMENT": "production"
+        "DEPLOYMENT_ENVIRONMENT": "production",
+        "LEARNING_RETENTION_DAYS": "365",
+        "USAGE_RETENTION_DAYS": "365",
+        "ANTHROPIC_ALLOWANCE_MICRO_USD": "10000000",
+        "WORKERS_AI_ALLOWANCE_MICRO_USD": "2000000",
+        "AI_PRICING_VERSION": "2026-08-09-v1",
+        "AI_ESTIMATOR_VERSION": "characters-over-four-v1"
       },
       "ai": {
         "binding": "AI"

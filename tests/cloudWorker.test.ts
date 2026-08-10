@@ -3,13 +3,13 @@ import {
   ANTHROPIC_MODEL,
   GPT_REVIEW_MODEL,
   LLAMA_CANDIDATE_MODEL,
-  PIPELINE_MODE,
   WORKERS_AI_MODEL,
   handleRequest,
 } from "../cloudflare/worker/src/index.js";
 
 const TESTING_HOST = "testing-chathelp-private-cloud.project-mission-ai.workers.dev";
 const TESTING_ORIGIN = `https://${TESTING_HOST}`;
+const PRODUCTION_HOST = "chathelp-private-cloud.project-mission-ai.workers.dev";
 const SYNTHETIC_ASSERTION = "synthetic.assertion.value";
 const REQUEST_ID = "123e4567-e89b-42d3-a456-426614174000";
 const NEXT_RESET_AT = "2026-09-01T00:00:00.000Z";
@@ -134,6 +134,25 @@ const verifyAccess = vi.fn(async (_assertion: string, options: { issuer: string;
   payload: { iss: options.issuer, aud: [options.audience], sub: "synthetic-subject", exp: 2_000_000_000 },
 }));
 
+function expectedHealth(deploymentEnvironment: "testing" | "production", configured: boolean) {
+  return {
+    ok: true,
+    service: "dialogmint-cloud",
+    deploymentEnvironment,
+    primaryProvider: "anthropic",
+    primaryModel: ANTHROPIC_MODEL,
+    fallbackModels: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
+    learning: { configured, schemaVersion: 1, retentionDays: 365 },
+    usage: {
+      configured,
+      pricingVersion: "2026-08-09-v1",
+      estimatorVersion: "characters-over-four-v1",
+      retentionDays: 365,
+    },
+    recovery: { configured, encrypted: true, retentionDays: 90 },
+  };
+}
+
 function draftRequest(body: unknown, origin = TESTING_ORIGIN, stream = false) {
   return new Request(`${TESTING_ORIGIN}/api/drafts`, {
     method: "POST",
@@ -158,26 +177,25 @@ function parseSseEvents(text: string) {
 }
 
 describe("Cloudflare private inference Worker", () => {
-  it("reports safe primary/fallback configuration without any configuration value", async () => {
-    const env = workerEnv();
+  it.each([
+    ["testing", TESTING_HOST],
+    ["production", PRODUCTION_HOST],
+  ] as const)("reports only safe health metadata for the active %s environment", async (deploymentEnvironment, hostname) => {
+    const env = { ...workerEnv(), DEPLOYMENT_ENVIRONMENT: deploymentEnvironment };
+    const response = await handleRequest(new Request(`https://${hostname}/health`), env, { verifyAccess });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(expectedHealth(deploymentEnvironment, true));
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("reports health storage as unconfigured when only the inactive environment binding exists", async () => {
+    const env = { ...workerEnv(), NEON_TESTING: undefined };
+
     const response = await handleRequest(new Request(`${TESTING_ORIGIN}/health`), env, { verifyAccess });
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      ok: true,
-      provider: "anthropic-primary-cloudflare-fallback",
-      model: ANTHROPIC_MODEL,
-      models: [ANTHROPIC_MODEL, LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
-      fallbackModel: WORKERS_AI_MODEL,
-      fallbackModels: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
-      mode: PIPELINE_MODE,
-      anthropicConfigured: true,
-      authentication: "cloudflare-access-jwt",
-      persistentStorage: "client-encrypted-neon",
-    });
-    const text = await (await handleRequest(new Request(`${TESTING_ORIGIN}/health`), env, { verifyAccess })).text();
-    expect(text).not.toContain("runtime-secret");
-    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual(expectedHealth("testing", false));
   });
 
   it("uses Claude successfully without invoking either fallback model", async () => {

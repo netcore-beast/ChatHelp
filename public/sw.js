@@ -1,5 +1,5 @@
-const SHELL_CACHE = "chathelp-shell-v2";
-const STATIC_CACHE = "chathelp-static-v2";
+const SHELL_CACHE = "chathelp-shell-v3";
+const STATIC_CACHE = "chathelp-static-v3";
 const SHELL = ["/", "/offline.html", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -15,6 +15,7 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+  if (url.pathname === "/health" || url.pathname === "/api" || url.pathname.startsWith("/api/")) return;
 
   if (request.mode === "navigate") {
     event.respondWith(fetch(request).then(async (response) => {

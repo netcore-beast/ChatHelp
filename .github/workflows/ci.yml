@@ -16,21 +16,22 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run lint
       - run: npm test
       - run: npm run verify:extension
       - run: npm run build
-      - name: Verify live CSP and hydration bootstrap
+      - name: Verify live CSP, hydration bootstrap, and browser smoke
         run: |
           npm start > /tmp/chathelp-server.log 2>&1 &
           SERVER_PID=$!
           trap 'kill $SERVER_PID' EXIT
           npm run verify:live-csp
+          npm run verify:browser
       - run: npm run build:native
       - run: npm run verify:static-csp
-      - name: Validate Cloudflare Worker bundle and bindings
-        run: npm run verify:cloudflare
+      - run: npm run verify:cloudflare
+      - run: npm run verify:cloudflare:production
       - run: npm audit --omit=dev --audit-level=high

@@ -1,4 +1,5 @@
 import { authenticateAccessRequest } from "./accessAuth.js";
+import { ESTIMATOR_VERSION, PRICING_VERSION } from "./aiPricing.js";
 import { beginUsageAttempt, cleanupExpiredUsageAttempts, finishUsageAttempt, handleUsageRequest } from "./aiUsage.js";
 import { cleanupExpiredLearningRecords, handleLearningRequest, retrieveLearningExamples } from "./neonLearning.js";
 import { cleanupExpiredVaults, handleVaultRequest } from "./neonVault.js";
@@ -387,30 +388,35 @@ export async function handleRequest(request, env, options = {}) {
   const url = new URL(request.url);
 
   if (request.method === "GET" && url.pathname === "/health") {
+    let neonContext = null;
+    try {
+      neonContext = resolveNeonContext(env, url.hostname);
+    } catch {
+      // Health remains safe and available when the active storage binding is absent.
+    }
     return json({
       ok: true,
       service: "dialogmint-cloud",
-      provider: "anthropic-primary-cloudflare-fallback",
-      model: ANTHROPIC_MODEL,
-      models: [ANTHROPIC_MODEL, LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
-      fallbackModel: WORKERS_AI_MODEL,
+      deploymentEnvironment: env.DEPLOYMENT_ENVIRONMENT,
+      primaryProvider: "anthropic",
+      primaryModel: ANTHROPIC_MODEL,
       fallbackModels: [LLAMA_CANDIDATE_MODEL, GPT_REVIEW_MODEL],
-      mode: PIPELINE_MODE,
-      anthropicConfigured: typeof env.ANTHROPIC_API_KEY === "string" && env.ANTHROPIC_API_KEY.length > 0,
-      authentication: "cloudflare-access-jwt",
-      accessBindings: {
-        teamDomain: Boolean(String(env.ACCESS_TEAM_DOMAIN ?? "").trim()),
-        testingAudience: Boolean(String(env.ACCESS_AUD_TESTING ?? "").trim()),
-        productionAudience: Boolean(String(env.ACCESS_AUD_PRODUCTION ?? "").trim()),
+      learning: {
+        configured: Boolean(neonContext),
+        schemaVersion: 1,
+        retentionDays: 365,
       },
-      persistentStorage: "client-encrypted-neon",
-      retentionDays: 90,
-      vaultBindings: {
-        testing: Boolean(env.NEON_TESTING?.connectionString),
-        production: Boolean(env.NEON_PRODUCTION?.connectionString),
+      usage: {
+        configured: Boolean(neonContext),
+        pricingVersion: PRICING_VERSION,
+        estimatorVersion: ESTIMATOR_VERSION,
+        retentionDays: 365,
       },
-      aiGateway: false,
-      observability: false,
+      recovery: {
+        configured: Boolean(neonContext),
+        encrypted: true,
+        retentionDays: 90,
+      },
     });
   }
 
