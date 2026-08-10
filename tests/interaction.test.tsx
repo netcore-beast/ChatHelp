@@ -75,6 +75,37 @@ function usageResponse(): Response {
   }), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
+function learningStatusResponse(overrides: Partial<{
+  enabled: boolean;
+  noticeVersion: string;
+  retentionDays: number;
+  counts: { classifier: number; evaluation: number; generative: number };
+}> = {}): Response {
+  return new Response(JSON.stringify({
+    enabled: true,
+    noticeVersion: "2026-08-09-v1",
+    retentionDays: 365,
+    counts: { classifier: 0, evaluation: 0, generative: 0 },
+    ...overrides,
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+function learningRecordsResponse(records: readonly unknown[] = [], nextCursor: string | null = null): Response {
+  return new Response(JSON.stringify({ records, nextCursor }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+const managementClassifierFeatures = {
+  messageCountBucket: "low",
+  hasIncomingQuestion: false,
+  hasNeedSignal: false,
+  hasPermissionSignal: false,
+  hasValueDiscussionSignal: false,
+  hasNextStepSignal: false,
+} as const;
+
 async function announceExtension() {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await act(async () => {
@@ -297,15 +328,19 @@ describe("secure conversation workspace interaction", () => {
   });
 
   it("generates exactly one editable precise draft with stage, goal, and personal guidance", async () => {
-    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      draft: "I can share the brief here. Which part would be most useful to start with?",
-      provider: "anthropic",
-      model: "claude-opus-4-6",
-      mode: "stage-aware-single-draft-v1",
-      usageAccounting: "recorded",
-      requestId: "123e4567-e89b-42d3-a456-426614174000",
-      fallbackReason: null,
-    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const request = vi.fn(async (...[path]: [RequestInfo | URL, RequestInit?]) => {
+      if (String(path) === "/api/learning/status") return learningStatusResponse();
+      if (String(path) === "/api/usage") return usageResponse();
+      return new Response(JSON.stringify({
+        draft: "I can share the brief here. Which part would be most useful to start with?",
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        mode: "stage-aware-single-draft-v1",
+        usageAccounting: "recorded",
+        requestId: "123e4567-e89b-42d3-a456-426614174000",
+        fallbackReason: null,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
     vi.stubGlobal("fetch", request);
     const user = userEvent.setup();
     render(<ChatHelpApp />);
@@ -333,8 +368,9 @@ describe("secure conversation workspace interaction", () => {
     expect(await screen.findByLabelText("Edit draft 1")).toBeTruthy();
     expect(screen.queryByLabelText("Edit draft 2")).toBeNull();
     expect(request.mock.calls.filter(([path]) => path === "/api/drafts")).toHaveLength(1);
-    expect(request.mock.calls[0][1]?.credentials).toBe("same-origin");
-    const requestBody = JSON.parse(request.mock.calls[0][1]?.body as string);
+    const draftCall = request.mock.calls.find(([path]) => path === "/api/drafts");
+    expect(draftCall?.[1]?.credentials).toBe("same-origin");
+    const requestBody = JSON.parse(draftCall?.[1]?.body as string);
     expect(requestBody.replyObjective).toBe("");
     expect(requestBody.conversationContext).toContain("Could you share the role brief?");
     expect(requestBody.playbook.rulebookFull).toBeTruthy();
@@ -362,7 +398,7 @@ describe("secure conversation workspace interaction", () => {
         workersAi: { provider: "workers_ai", consumedMicroUsd: 0, allowanceMicroUsd: 2_000_000, remainingMicroUsd: 2_000_000, quality: "unavailable", totals, models: [] },
       },
     };
-    const request = vi.fn(async (path: RequestInfo | URL) => {
+    const request = vi.fn(async (...[path]: [RequestInfo | URL, RequestInit?]) => {
       if (String(path) === "/api/usage") return new Response(JSON.stringify(usage), { status: 200, headers: { "Content-Type": "application/json" } });
       return new Response(JSON.stringify({
         draft: "A server-accounted reply.", provider: "anthropic", model: "claude-opus-4-6",
@@ -389,16 +425,20 @@ describe("secure conversation workspace interaction", () => {
     await waitFor(() => expect(request.mock.calls.filter(([path]) => path === "/api/usage")).toHaveLength(2));
   }, 20_000);
 
-  it("defaults approved learning on and still requires independent authorship before retrieval", async () => {
-    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      draft: "I can share the brief. Which part would be most useful to explore first?",
-      provider: "anthropic",
-      model: "claude-opus-4-6",
-      mode: "stage-aware-single-draft-v1",
-      usageAccounting: "recorded",
-      requestId: "123e4567-e89b-42d3-a456-426614174000",
-      fallbackReason: null,
-    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  it("shows automatic approved cloud learning while keeping provider-assisted drafts out of retrieval", async () => {
+    const request = vi.fn(async (...[path]: [RequestInfo | URL, RequestInit?]) => {
+      if (String(path) === "/api/learning/status") return learningStatusResponse();
+      if (String(path) === "/api/usage") return usageResponse();
+      return new Response(JSON.stringify({
+        draft: "I can share the brief. Which part would be most useful to explore first?",
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        mode: "stage-aware-single-draft-v1",
+        usageAccounting: "recorded",
+        requestId: "123e4567-e89b-42d3-a456-426614174000",
+        fallbackReason: null,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
     vi.stubGlobal("fetch", request);
     const user = userEvent.setup();
     render(<ChatHelpApp />);
@@ -407,32 +447,27 @@ describe("secure conversation workspace interaction", () => {
     await deliverSnapshot();
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    const learningToggle = screen.getByRole("checkbox", { name: "Enable encrypted personal learning" }) as HTMLInputElement;
-    expect(learningToggle.checked).toBe(true);
-    expect(screen.getByText(/retrieval uses your approved examples as context and does not retrain any model/i)).toBeTruthy();
+    expect(await screen.findByText("Cloud learning enabled")).toBeTruthy();
+    expect(screen.getByText(/server-readable in Neon for retrieval and future training preparation/i)).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: "Enable encrypted personal learning" })).toBeNull();
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
     await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
     const generated = await screen.findByLabelText("Edit draft 1") as HTMLTextAreaElement;
-    expect(JSON.parse(request.mock.calls[0][1]?.body as string)).not.toHaveProperty("learningExamples");
+    const draftCall = request.mock.calls.find(([path]) => path === "/api/drafts");
+    expect(JSON.parse(draftCall?.[1]?.body as string)).not.toHaveProperty("learningExamples");
 
     await user.clear(generated);
     await user.type(generated, "What part of the role would help you decide whether it is relevant?");
     await user.click(screen.getByRole("button", { name: "Save edited draft 1 as feedback" }));
     expect((await screen.findAllByText(/Saved encrypted feedback locally/)).length).toBeGreaterThan(0);
+    await waitFor(async () => {
+      const saved = (await openDeviceVault()).workspace.feedback.at(-1);
+      expect(saved).toMatchObject({ origin: "provider_assisted", eligibleForRetrieval: false });
+    });
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    expect(screen.getByText("Provider-assisted by default")).toBeTruthy();
-    const eligibility = screen.getByRole("checkbox", { name: "Use this response as a learning example" }) as HTMLInputElement;
-    expect(eligibility.checked).toBe(false);
-    expect(eligibility.disabled).toBe(true);
-    await user.click(screen.getByRole("checkbox", { name: "I independently authored or have rights to this response" }));
-    expect(eligibility.disabled).toBe(false);
-    await user.click(eligibility);
-    expect(eligibility.checked).toBe(true);
-    await user.clear(screen.getByRole("textbox", { name: "Preferred response for learning" }));
-    await user.type(screen.getByRole("textbox", { name: "Preferred response for learning" }), "Which detail would be most useful to understand first?");
-    await user.click(screen.getByRole("button", { name: "Delete learning example" }));
+    expect(screen.queryByText("Provider-assisted by default")).toBeNull();
     expect(screen.queryByRole("textbox", { name: "Preferred response for learning" })).toBeNull();
   }, 30_000);
 
@@ -657,12 +692,19 @@ describe("secure conversation workspace interaction", () => {
       expiresAt: "2027-08-09T00:00:00.000Z",
     }];
     await createDeviceVault(workspace);
-    const request = vi.fn()
-      .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        accepted: [{ recordId: "record-pending", contentDigest: "a".repeat(64) }],
-        duplicates: [],
-      }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    let uploadAttempts = 0;
+    const request = vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
+      if (String(path) === "/api/learning/status") return learningStatusResponse();
+      if (String(path) === "/api/learning/records" && init?.method === "PUT") {
+        uploadAttempts += 1;
+        if (uploadAttempts === 1) throw new Error("offline");
+        return new Response(JSON.stringify({
+          accepted: [{ recordId: "record-pending", contentDigest: "a".repeat(64) }],
+          duplicates: [],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${String(path)}`);
+    });
     vi.stubGlobal("fetch", request);
     const user = userEvent.setup();
     render(<ChatHelpApp />);
@@ -679,7 +721,7 @@ describe("secure conversation workspace interaction", () => {
       expect(reopened.pendingLearningRecords).toEqual([]);
       expect(reopened.stageTrainingRecords).toEqual([]);
     });
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls.filter(([path, init]) => path === "/api/learning/records" && init?.method === "PUT")).toHaveLength(2);
   }, 20_000);
 
   it("persists acknowledged cloud learning while another encrypted record remains pending", async () => {
@@ -723,10 +765,16 @@ describe("secure conversation workspace interaction", () => {
       expiresAt: "2027-08-09T00:00:00.000Z",
     }));
     await createDeviceVault(workspace);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      accepted: [{ recordId: "record-accepted", contentDigest: "c".repeat(64) }],
-      duplicates: [],
-    }), { status: 200, headers: { "Content-Type": "application/json" } })));
+    vi.stubGlobal("fetch", vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
+      if (String(path) === "/api/learning/status") return learningStatusResponse();
+      if (String(path) === "/api/learning/records" && init?.method === "PUT") {
+        return new Response(JSON.stringify({
+          accepted: [{ recordId: "record-accepted", contentDigest: "c".repeat(64) }],
+          duplicates: [],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${String(path)}`);
+    }));
     const user = userEvent.setup();
     render(<ChatHelpApp />);
     await screen.findByRole("heading", { name: /private conversation studio/i });
@@ -754,7 +802,13 @@ describe("secure conversation workspace interaction", () => {
     workspace.pendingLearningRecords = [{ recordId: "record-pending", recordKind: "classifier", sanitizedPayload: { recordKind: "classifier", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", provenance: "human_confirmed", classifierFeatures: { messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false } }, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-pending", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
     await createDeviceVault(workspace);
     let resolveUpload!: (response: Response) => void;
-    const request = vi.fn().mockImplementation(() => new Promise<Response>((resolve) => { resolveUpload = resolve; }));
+    const request = vi.fn((path: RequestInfo | URL, init?: RequestInit) => {
+      if (String(path) === "/api/learning/status") return Promise.resolve(learningStatusResponse());
+      if (String(path) === "/api/learning/records" && init?.method === "PUT") {
+        return new Promise<Response>((resolve) => { resolveUpload = resolve; });
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? "GET"} ${String(path)}`));
+    });
     vi.stubGlobal("fetch", request);
     const user = userEvent.setup();
     render(<ChatHelpApp />);
@@ -762,7 +816,7 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("button", { name: "Settings" }));
 
     await user.click(screen.getByRole("button", { name: "Retry cloud learning sync" }));
-    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(request.mock.calls.filter(([path, init]) => path === "/api/learning/records" && init?.method === "PUT")).toHaveLength(1));
     await user.clear(screen.getByRole("textbox", { name: "How your messages should sound" }));
     await deliverSnapshot();
     await act(async () => resolveUpload(new Response(JSON.stringify({
@@ -787,21 +841,36 @@ describe("secure conversation workspace interaction", () => {
       { recordId: "record-2", contentDigest: "b".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" },
     ];
     await createDeviceVault(workspace);
-    vi.stubGlobal("fetch", vi.fn()
-      .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ deleted: true, recordId: "record-1" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      })));
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    let deleteAttempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
+      if (String(path) === "/api/learning/status") return learningStatusResponse({ counts: { classifier: 2, evaluation: 0, generative: 0 } });
+      if (String(path) === "/api/learning/records" && init?.method === "GET") return learningRecordsResponse([
+        { recordId: "record-1", recordKind: "classifier", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", classifierFeatures: managementClassifierFeatures, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" },
+        { recordId: "record-2", recordKind: "classifier", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", classifierFeatures: managementClassifierFeatures, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" },
+      ]);
+      if (String(path) === "/api/learning/records/record-1" && init?.method === "DELETE") {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) throw new Error("offline");
+        return new Response(JSON.stringify({ deleted: true, recordId: "record-1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${String(path)}`);
+    }));
     const user = userEvent.setup();
     render(<ChatHelpApp />);
     await screen.findByRole("heading", { name: /private conversation studio/i });
     await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByText("Advanced"));
+    expect(await screen.findByText("2 loaded")).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: "Delete cloud learning record record-1" }));
+    await user.click(screen.getAllByRole("button", { name: "Delete classifier learning record" })[0]);
     await waitFor(async () => expect((await openDeviceVault()).workspace.cloudLearningSync.map((entry) => entry.recordId)).toEqual(["record-1", "record-2"]));
+    expect(screen.getByText("Cloud learning deletion pending")).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: "Delete cloud learning record record-1" }));
+    await user.click(screen.getAllByRole("button", { name: "Delete classifier learning record" })[0]);
     await waitFor(async () => expect((await openDeviceVault()).workspace.cloudLearningSync.map((entry) => entry.recordId)).toEqual(["record-2"]));
   }, 20_000);
 
@@ -822,12 +891,19 @@ describe("secure conversation workspace interaction", () => {
     workspace.cloudLearningSync = [{ recordId: "record-2", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" }];
     await createDeviceVault(workspace);
     vi.stubGlobal("confirm", vi.fn(() => true));
-    vi.stubGlobal("fetch", vi.fn()
-      .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ enabled: false, deleted: 2 }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      })));
+    let deleteAttempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
+      if (String(path) === "/api/learning/status") return learningStatusResponse({ counts: { classifier: 1, evaluation: 0, generative: 1 } });
+      if (String(path) === "/api/learning" && init?.method === "DELETE") {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) throw new Error("offline");
+        return new Response(JSON.stringify({ enabled: false, deleted: 2 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${String(path)}`);
+    }));
     const user = userEvent.setup();
     render(<ChatHelpApp />);
     await screen.findByRole("heading", { name: /private conversation studio/i });
@@ -877,6 +953,10 @@ describe("secure conversation workspace interaction", () => {
     vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path === "/api/vault") return new Promise<Response>(() => undefined);
+      if (path === "/api/learning/status" && init?.method === "GET") return learningStatusResponse({ counts: { classifier: 2, evaluation: 0, generative: 0 } });
+      if (path === "/api/learning/records" && init?.method === "GET") return learningRecordsResponse([
+        { recordId: "record-delete", recordKind: "classifier", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", classifierFeatures: managementClassifierFeatures, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" },
+      ]);
       if (path === "/api/learning/records" && init?.method === "PUT") return new Response(JSON.stringify({ accepted: [{ recordId: "record-acknowledged", contentDigest: "a".repeat(64) }], duplicates: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
       if (path === "/api/learning/records/record-delete" && init?.method === "DELETE") return new Response(JSON.stringify({ deleted: true, recordId: "record-delete" }), { status: 200, headers: { "Content-Type": "application/json" } });
       if (path === "/api/learning" && init?.method === "DELETE") return new Response(JSON.stringify({ enabled: false, deleted: 2 }), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -894,7 +974,9 @@ describe("secure conversation workspace interaction", () => {
       expect(reopened.cloudLearningDeletionMarkers).toEqual([expect.objectContaining({ recordId: "record-acknowledged", disposition: "acknowledged", sourceLocalId: "stage-acknowledged" })]);
     });
 
-    await user.click(screen.getByRole("button", { name: "Delete cloud learning record record-delete" }));
+    await user.click(await screen.findByText("Advanced"));
+    expect(await screen.findByText("1 loaded")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Delete classifier learning record" }));
     await waitFor(async () => expect((await openDeviceVault()).workspace.cloudLearningDeletionMarkers).toEqual(expect.arrayContaining([expect.objectContaining({ recordId: "record-delete", disposition: "deleted" })])));
 
     await user.click(screen.getByRole("button", { name: "Disable and delete cloud learning" }));
@@ -912,54 +994,34 @@ describe("secure conversation workspace interaction", () => {
   }, 20_000);
 
   it("previews and downloads approved training exports without a LoRA upload action", async () => {
-    const workspace = createEmptyWorkspace();
-    workspace.stageTrainingRecords = [{
-      id: "confirmed-stage",
-      featureSchemaVersion: 1,
-      role: "Network Marketing",
-      messageCountBucket: "medium",
-      hasIncomingQuestion: true,
-      hasNeedSignal: true,
-      hasPermissionSignal: false,
-      hasValueDiscussionSignal: false,
-      hasNextStepSignal: false,
-      semanticTokens: ["career"],
-      confirmedStage: "learn_interests",
-      humanConfirmed: true,
-      createdAt: "2026-08-01T00:00:00.000Z",
-    }];
-    workspace.feedback = [{
-      id: "approved-response",
-      contactId: "contact-a",
-      role: "Network Marketing",
-      relationshipStage: "learn_interests",
-      conversationGoal: "Learn priorities",
-      provider: "local",
-      modelId: "independent-user-example",
-      action: "edited",
-      draft: "",
-      preferredResponse: "Which priority would be most useful to explore?",
-      outcome: "",
-      reason: "",
-      origin: "independently_user_authored",
-      independentlyAuthoredAttested: true,
-      eligibleForRetrieval: true,
-      enabled: true,
-      createdAt: "2026-08-01T00:00:00.000Z",
-      updatedAt: "2026-08-01T00:00:00.000Z",
-    }];
-    await createDeviceVault(workspace);
+    await createDeviceVault(createEmptyWorkspace());
+    vi.stubGlobal("fetch", vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
+      if (String(path) === "/api/learning/status") {
+        return learningStatusResponse({ counts: { classifier: 1, evaluation: 0, generative: 1 } });
+      }
+      if (String(path) === "/api/learning/records" && init?.method === "GET") {
+        return learningRecordsResponse([
+          { recordId: "classifier-safe-metadata", recordKind: "classifier", roleId: "network_marketing", relationshipStage: "learn_interests", goalCategory: "discover_interests", classifierFeatures: { messageCountBucket: "medium", hasIncomingQuestion: true, hasNeedSignal: true, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false }, enabled: true, createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z", expiresAt: "2027-08-01T00:00:00.000Z" },
+          { recordId: "authored-safe-target", recordKind: "generative", roleId: "network_marketing", relationshipStage: "learn_interests", goalCategory: "discover_interests", enabled: true, target: "Which priority would be most useful to explore?", createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z", expiresAt: "2027-08-01T00:00:00.000Z" },
+        ]);
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${String(path)}`);
+    }));
     const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     const user = userEvent.setup();
     render(<ChatHelpApp />);
     await screen.findByRole("heading", { name: /private conversation studio/i });
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    expect(screen.getByText("1 classifier confirmations")).toBeTruthy();
-    expect(screen.getByText("1 independently authored generative examples")).toBeTruthy();
-    expect(screen.getByText(/Cloudflare adapter upload is disabled in this release/)).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Download training manifest" }));
+    expect(await screen.findByText("1 classifier / 0 evaluation / 1 authored examples")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Download manifest" })).toBeNull();
+    await user.click(await screen.findByText("Advanced"));
+    expect(await screen.findByText("2 loaded")).toBeTruthy();
+    expect(await screen.findByText("1 exportable classifier records loaded")).toBeTruthy();
+    expect(await screen.findByText("1 sanitized authored examples loaded")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Download classifier JSONL" }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Download manifest" }));
     await user.click(screen.getByRole("button", { name: "Download classifier JSONL" }));
-    await user.click(screen.getByRole("button", { name: "Download independently authored generative JSONL" }));
+    await user.click(screen.getByRole("button", { name: "Download user-authored JSONL" }));
     expect(anchorClick).toHaveBeenCalledTimes(3);
     expect(screen.queryByRole("button", { name: /upload.*LoRA/i })).toBeNull();
   }, 20_000);
@@ -1094,8 +1156,9 @@ describe("secure conversation workspace interaction", () => {
       { draft: "Network draft one", provider: "cloudflare", model: "@cf/meta/llama-3.1-8b-instruct-fast + @cf/openai/gpt-oss-120b", fallbackReason: "anthropic-pipeline-failed" },
       { draft: "HR draft one", provider: "anthropic", model: "claude-opus-4-6", fallbackReason: null },
     ];
-    const request = vi.fn(async (path: RequestInfo | URL) => {
+    const request = vi.fn(async (...[path]: [RequestInfo | URL, RequestInit?]) => {
       if (String(path) === "/api/usage") return usageResponse();
+      if (String(path) === "/api/learning/status") return learningStatusResponse();
       const next = drafts.shift();
       if (!next) throw new Error("Unexpected draft request");
       return new Response(JSON.stringify({ ...next, mode: "stage-aware-single-draft-v1", usageAccounting: "recorded", requestId: "123e4567-e89b-42d3-a456-426614174000" }), {
@@ -1150,7 +1213,7 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
     expect(await screen.findByDisplayValue("Network draft one")).toBeTruthy();
     expect(screen.getByText(/independently reviewed against the full Network Marketing rulebook/)).toBeTruthy();
-    const networkRequest = JSON.parse(request.mock.calls[0][1]?.body as string);
+    const networkRequest = JSON.parse(request.mock.calls.filter(([path]) => path === "/api/drafts")[0][1]?.body as string);
     expect(networkRequest.playbook.role).toBe("Network Marketing");
     expect(networkRequest.playbook.relationshipGoal).toBe("NETWORK-ONLY-GOAL");
     expect(networkRequest.playbook.rulebookFull).toContain("NETWORK-ONLY-RULES");

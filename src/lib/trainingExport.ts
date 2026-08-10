@@ -1,5 +1,6 @@
 import { isGenerativeTrainingEligible, normalizeFeedback } from "./personalLearning";
 import { normalizeStageTrainingRecord } from "./relationshipStageClassifier";
+import type { CloudClassifierFeatures, CloudLearningRecord } from "./cloudLearning";
 import {
   RELATIONSHIP_STAGES,
   type RelationshipStage,
@@ -8,6 +9,97 @@ import {
 
 const EXPORT_SCHEMA_VERSION = 1 as const;
 const MAX_ADAPTER_BYTES = 300 * 1024 * 1024;
+
+const GOAL_CATEGORY_BY_STAGE = {
+  new_connection: "connect",
+  genuine_rapport: "build_rapport",
+  learn_interests: "discover_interests",
+  identify_need: "identify_need",
+  ask_permission: "request_permission",
+  introduce_value: "present_value",
+  answer_without_pressure: "answer_questions",
+  voluntary_next_step: "agree_next_step",
+} as const;
+
+const CLOUD_ROLE_IDS = new Set(["human_resource", "network_marketing", "job_seeker", "socializing_networking"]);
+const CLASSIFIER_FEATURE_KEYS = [
+  "messageCountBucket",
+  "hasIncomingQuestion",
+  "hasNeedSignal",
+  "hasPermissionSignal",
+  "hasValueDiscussionSignal",
+  "hasNextStepSignal",
+] as const;
+
+export interface CloudTrainingExports {
+  classifier: Array<{
+    roleId: string;
+    relationshipStage: RelationshipStage;
+    goalCategory: string;
+    classifierFeatures: CloudClassifierFeatures;
+  }>;
+  generative: Array<{
+    roleId: string;
+    relationshipStage: RelationshipStage;
+    goalCategory: string;
+    target: string;
+  }>;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isCloudRecordBase(value: Record<string, unknown>): boolean {
+  return value.enabled === true
+    && typeof value.roleId === "string" && CLOUD_ROLE_IDS.has(value.roleId)
+    && typeof value.relationshipStage === "string" && Object.hasOwn(GOAL_CATEGORY_BY_STAGE, value.relationshipStage)
+    && value.goalCategory === GOAL_CATEGORY_BY_STAGE[value.relationshipStage as RelationshipStage];
+}
+
+function classifierFeatures(value: unknown): CloudClassifierFeatures | null {
+  if (!isPlainObject(value)) return null;
+  const keys = Object.keys(value).sort();
+  if (keys.length !== CLASSIFIER_FEATURE_KEYS.length
+      || !keys.every((key, index) => key === [...CLASSIFIER_FEATURE_KEYS].sort()[index])
+      || !["unknown", "low", "medium", "high"].includes(String(value.messageCountBucket))
+      || !CLASSIFIER_FEATURE_KEYS.slice(1).every((key) => typeof value[key] === "boolean")) return null;
+  return {
+    messageCountBucket: value.messageCountBucket as CloudClassifierFeatures["messageCountBucket"],
+    hasIncomingQuestion: value.hasIncomingQuestion as boolean,
+    hasNeedSignal: value.hasNeedSignal as boolean,
+    hasPermissionSignal: value.hasPermissionSignal as boolean,
+    hasValueDiscussionSignal: value.hasValueDiscussionSignal as boolean,
+    hasNextStepSignal: value.hasNextStepSignal as boolean,
+  };
+}
+
+export function buildCloudTrainingExports(records: readonly CloudLearningRecord[]): CloudTrainingExports {
+  const classifier: CloudTrainingExports["classifier"] = [];
+  const generative: CloudTrainingExports["generative"] = [];
+  for (const record of records as readonly unknown[]) {
+    if (!isPlainObject(record) || !isCloudRecordBase(record)) continue;
+    const relationshipStage = record.relationshipStage as RelationshipStage;
+    if (record.recordKind === "classifier") {
+      const features = classifierFeatures(record.classifierFeatures);
+      if (features) classifier.push({
+        roleId: record.roleId as string,
+        relationshipStage,
+        goalCategory: record.goalCategory as string,
+        classifierFeatures: features,
+      });
+    } else if (record.recordKind === "generative" && typeof record.target === "string" && record.target.trim() && record.target.length <= 2_000) {
+      generative.push({
+        roleId: record.roleId as string,
+        relationshipStage,
+        goalCategory: record.goalCategory as string,
+        target: record.target,
+      });
+    }
+  }
+  const stable = (left: unknown, right: unknown) => JSON.stringify(left).localeCompare(JSON.stringify(right));
+  return { classifier: classifier.sort(stable), generative: generative.sort(stable) };
+}
 
 export interface TrainingExportManifest {
   schemaVersion: 1;

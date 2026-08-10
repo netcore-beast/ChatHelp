@@ -17,6 +17,15 @@ const GOAL_CATEGORY_BY_STAGE = {
   voluntary_next_step: "agree_next_step",
 } as const;
 const ROLE_IDS = new Set(["human_resource", "network_marketing", "job_seeker", "socializing_networking"]);
+const MESSAGE_COUNT_BUCKETS = new Set(["unknown", "low", "medium", "high"]);
+const CLASSIFIER_FEATURE_KEYS = [
+  "messageCountBucket",
+  "hasIncomingQuestion",
+  "hasNeedSignal",
+  "hasPermissionSignal",
+  "hasValueDiscussionSignal",
+  "hasNextStepSignal",
+] as const;
 const EMPTY_KNOWN_IDENTIFIERS: CloudLearningKnownIdentifiers = Object.freeze({ contactName: "", company: "", profileUrl: "", profileHandle: "" });
 
 export interface CloudLearningStatus {
@@ -41,8 +50,17 @@ interface CloudLearningRecordBase {
   expiresAt: string;
 }
 
+export interface CloudClassifierFeatures {
+  messageCountBucket: "unknown" | "low" | "medium" | "high";
+  hasIncomingQuestion: boolean;
+  hasNeedSignal: boolean;
+  hasPermissionSignal: boolean;
+  hasValueDiscussionSignal: boolean;
+  hasNextStepSignal: boolean;
+}
+
 export type CloudLearningRecord =
-  | (CloudLearningRecordBase & { recordKind: "classifier" })
+  | (CloudLearningRecordBase & { recordKind: "classifier"; classifierFeatures: CloudClassifierFeatures })
   | (CloudLearningRecordBase & { recordKind: "evaluation"; evaluationAction: "useful" | "not_useful" | "accepted" | "edited" | "rejected" })
   | (CloudLearningRecordBase & { recordKind: "generative"; target: string });
 
@@ -92,6 +110,20 @@ function isKnownIdentifiers(value: unknown): value is CloudLearningKnownIdentifi
   if (!isPlainObject(value) || !hasExactKeys(value, ["contactName", "company", "profileUrl", "profileHandle"])) return false;
   return [value.contactName, value.company, value.profileUrl, value.profileHandle]
     .every((item) => typeof item === "string" && item.length <= 2_000);
+}
+
+function parseClassifierFeatures(value: unknown): CloudClassifierFeatures {
+  if (!isPlainObject(value) || !hasExactKeys(value, CLASSIFIER_FEATURE_KEYS)
+      || !MESSAGE_COUNT_BUCKETS.has(String(value.messageCountBucket))
+      || !CLASSIFIER_FEATURE_KEYS.slice(1).every((key) => typeof value[key] === "boolean")) return invalidResponse();
+  return {
+    messageCountBucket: value.messageCountBucket as CloudClassifierFeatures["messageCountBucket"],
+    hasIncomingQuestion: value.hasIncomingQuestion as boolean,
+    hasNeedSignal: value.hasNeedSignal as boolean,
+    hasPermissionSignal: value.hasPermissionSignal as boolean,
+    hasValueDiscussionSignal: value.hasValueDiscussionSignal as boolean,
+    hasNextStepSignal: value.hasNextStepSignal as boolean,
+  };
 }
 
 function invalidResponse(): never {
@@ -174,7 +206,9 @@ function parseRecord(value: unknown): CloudLearningRecord {
     updatedAt: value.updatedAt,
     expiresAt: value.expiresAt,
   };
-  if (value.recordKind === "classifier" && hasExactKeys(value, [...Object.keys(base), "recordKind"])) return { ...base, recordKind: "classifier" };
+  if (value.recordKind === "classifier" && hasExactKeys(value, [...Object.keys(base), "recordKind", "classifierFeatures"])) {
+    return { ...base, recordKind: "classifier", classifierFeatures: parseClassifierFeatures(value.classifierFeatures) };
+  }
   if (value.recordKind === "evaluation" && hasExactKeys(value, [...Object.keys(base), "recordKind", "evaluationAction"])
       && ["useful", "not_useful", "accepted", "edited", "rejected"].includes(String(value.evaluationAction))) {
     return { ...base, recordKind: "evaluation", evaluationAction: value.evaluationAction as "useful" | "not_useful" | "accepted" | "edited" | "rejected" };
@@ -277,11 +311,25 @@ export function clearDisabledCloudLearningState(workspace: WorkspaceData, now = 
 
 export function clearDeletedCloudLearningSyncMetadata(workspace: WorkspaceData, recordId: string, now = new Date()): WorkspaceData {
   if (!isRecordId(recordId)) return workspace;
-  return withLearningDeletionMarkers({ ...workspace, cloudLearningSync: workspace.cloudLearningSync.filter((item) => item.recordId !== recordId) }, [{
+  const pending = workspace.pendingLearningRecords.find((item) => item.recordId === recordId);
+  const pendingLearningRecords = workspace.pendingLearningRecords.filter((item) => item.recordId !== recordId);
+  const sourceStillReferenced = Boolean(pending && pendingLearningRecords.some((item) => item.sourceCollection === pending.sourceCollection
+    && item.sourceLocalId === pending.sourceLocalId));
+  return withLearningDeletionMarkers({
+    ...workspace,
+    feedback: pending?.sourceCollection === "feedback" && !sourceStillReferenced
+      ? workspace.feedback.filter((item) => item.id !== pending.sourceLocalId)
+      : workspace.feedback,
+    stageTrainingRecords: pending?.sourceCollection === "stageTrainingRecords" && !sourceStillReferenced
+      ? workspace.stageTrainingRecords.filter((item) => item.id !== pending.sourceLocalId)
+      : workspace.stageTrainingRecords,
+    pendingLearningRecords,
+    cloudLearningSync: workspace.cloudLearningSync.filter((item) => item.recordId !== recordId),
+  }, [{
     recordId,
     disposition: "deleted",
-    sourceCollection: "",
-    sourceLocalId: "",
+    sourceCollection: pending?.sourceCollection ?? "",
+    sourceLocalId: pending?.sourceLocalId ?? "",
     deletedAt: now.toISOString(),
   }]);
 }

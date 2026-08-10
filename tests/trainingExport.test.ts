@@ -1,8 +1,89 @@
 import { describe, expect, it } from "vitest";
 import { buildTrainingExportBundle, validateCloudflareLoraManifest } from "../src/lib/trainingExport";
+import * as trainingExport from "../src/lib/trainingExport";
 import { createEmptyWorkspace } from "../src/lib/workspaceTypes";
 
 describe("safe training export and offline LoRA validation", () => {
+  it("builds cloud exports from only allowed classifier features and sanitized independent targets", () => {
+    const records = [{
+      recordId: "classifier-1",
+      recordKind: "classifier",
+      roleId: "network_marketing",
+      relationshipStage: "learn_interests",
+      goalCategory: "discover_interests",
+      classifierFeatures: {
+        messageCountBucket: "medium",
+        hasIncomingQuestion: true,
+        hasNeedSignal: true,
+        hasPermissionSignal: false,
+        hasValueDiscussionSignal: false,
+        hasNextStepSignal: false,
+      },
+      enabled: true,
+      createdAt: "2026-08-09T00:00:00.000Z",
+      updatedAt: "2026-08-09T00:00:00.000Z",
+      expiresAt: "2027-08-09T00:00:00.000Z",
+      accountId: "FORBIDDEN-ACCOUNT",
+      semanticTokens: ["FORBIDDEN-TOKEN"],
+      provider: "FORBIDDEN-PROVIDER",
+      rawGoal: "FORBIDDEN-GOAL",
+    }, {
+      recordId: "generative-1",
+      recordKind: "generative",
+      roleId: "network_marketing",
+      relationshipStage: "learn_interests",
+      goalCategory: "discover_interests",
+      target: "Thanks [contact], what area interests you?",
+      enabled: true,
+      createdAt: "2026-08-09T00:00:00.000Z",
+      updatedAt: "2026-08-09T00:00:00.000Z",
+      expiresAt: "2027-08-09T00:00:00.000Z",
+      modelId: "FORBIDDEN-MODEL",
+      originalDraft: "FORBIDDEN-DRAFT",
+      reason: "FORBIDDEN-REASON",
+      outcome: "FORBIDDEN-OUTCOME",
+    }, {
+      recordId: "evaluation-1",
+      recordKind: "evaluation",
+      roleId: "network_marketing",
+      relationshipStage: "learn_interests",
+      goalCategory: "discover_interests",
+      evaluationAction: "useful",
+      enabled: true,
+      createdAt: "2026-08-09T00:00:00.000Z",
+      updatedAt: "2026-08-09T00:00:00.000Z",
+      expiresAt: "2027-08-09T00:00:00.000Z",
+    }];
+    const buildCloudTrainingExports = (trainingExport as unknown as Record<string, unknown>).buildCloudTrainingExports;
+
+    expect(typeof buildCloudTrainingExports).toBe("function");
+    if (typeof buildCloudTrainingExports !== "function") return;
+    const result = buildCloudTrainingExports(records);
+
+    expect(result).toEqual({
+      classifier: [{
+        roleId: "network_marketing",
+        relationshipStage: "learn_interests",
+        goalCategory: "discover_interests",
+        classifierFeatures: {
+          messageCountBucket: "medium",
+          hasIncomingQuestion: true,
+          hasNeedSignal: true,
+          hasPermissionSignal: false,
+          hasValueDiscussionSignal: false,
+          hasNextStepSignal: false,
+        },
+      }],
+      generative: [{
+        roleId: "network_marketing",
+        relationshipStage: "learn_interests",
+        goalCategory: "discover_interests",
+        target: "Thanks [contact], what area interests you?",
+      }],
+    });
+    expect(JSON.stringify(result)).not.toMatch(/FORBIDDEN|accountId|semanticTokens|provider|modelId|rawGoal|originalDraft|reason|outcome/u);
+  });
+
   it("exports deterministic approved data without identifiers, raw conversations, secrets, or provider-assisted targets", () => {
     const workspace = createEmptyWorkspace();
     workspace.contacts = [{

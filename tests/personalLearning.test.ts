@@ -4,9 +4,10 @@ import {
   normalizeFeedback,
   selectLearningExamples,
 } from "../src/lib/personalLearning";
-import { createEmptyWorkspace } from "../src/lib/workspaceTypes";
+import { clearDisabledCloudLearningState } from "../src/lib/cloudLearning";
+import { createEmptyWorkspace, type Feedback } from "../src/lib/workspaceTypes";
 
-function learningRecord(overrides: Record<string, unknown> = {}) {
+function learningRecord(overrides: Partial<Feedback> = {}): Feedback {
   return {
     id: "feedback-a",
     contactId: "contact-a",
@@ -111,5 +112,40 @@ describe("encrypted personal learning", () => {
     expect(isGenerativeTrainingEligible(learningRecord({ independentlyAuthoredAttested: false }))).toBe(false);
     expect(isGenerativeTrainingEligible(learningRecord({ eligibleForRetrieval: false }))).toBe(false);
     expect(isGenerativeTrainingEligible(learningRecord({ enabled: false }))).toBe(false);
+  });
+
+  it("clears only cloud-eligible learning metadata after atomic server confirmation", () => {
+    const workspace = createEmptyWorkspace();
+    workspace.contacts = [{
+      id: "contact-a", name: "Alex", headline: "", profileNotes: "", platform: "linkedin", platformUrl: "",
+      chat: [{ id: "message-a", role: "them", body: "Keep ordinary history", createdAt: "2026-08-09T00:00:00.000Z" }],
+      documents: [], outcomes: [], retentionDays: 90,
+      draftHistory: [{ id: "draft-a", agenda: "", drafts: ["Keep ordinary draft"], createdAt: "2026-08-09T00:00:00.000Z" }],
+    }];
+    workspace.feedback = [
+      learningRecord({ id: "eligible" }),
+      learningRecord({ id: "ordinary", eligibleForRetrieval: false, origin: "provider_assisted", independentlyAuthoredAttested: false }),
+    ];
+    workspace.stageTrainingRecords = [{
+      id: "stage-a", featureSchemaVersion: 1, role: "Network Marketing", messageCountBucket: "low",
+      hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false,
+      hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [],
+      confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z",
+    }];
+    workspace.pendingLearningRecords = [{
+      recordId: "pending-a", recordKind: "classifier", sanitizedPayload: {}, sourceCollection: "stageTrainingRecords",
+      sourceLocalId: "stage-a", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z",
+    }];
+    workspace.cloudLearningSync = [{ recordId: "synced-a", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" }];
+
+    const cleared = clearDisabledCloudLearningState(workspace, new Date("2026-08-09T12:00:00.000Z"));
+
+    expect(cleared.personalLearning.enabled).toBe(false);
+    expect(cleared.feedback.map((record) => record.id)).toEqual(["ordinary"]);
+    expect(cleared.stageTrainingRecords).toEqual([]);
+    expect(cleared.pendingLearningRecords).toEqual([]);
+    expect(cleared.cloudLearningSync).toEqual([]);
+    expect(cleared.contacts[0].chat[0].body).toBe("Keep ordinary history");
+    expect(cleared.contacts[0].draftHistory?.[0].drafts).toEqual(["Keep ordinary draft"]);
   });
 });

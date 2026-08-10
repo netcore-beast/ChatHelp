@@ -7,9 +7,9 @@ import { captureVisibleScreen, cropImageToRegion, extractTextFromImage, type Nor
 import { buildDraftContextSummary, CLOUDFLARE_MODEL_NAME, generatePrivateDraft, type PrivateAiInput } from "@/lib/privateAi";
 import { selectLearningExamples } from "@/lib/personalLearning";
 import { extractRelationshipStageFeatures, predictRelationshipStage, trainStageClassifier } from "@/lib/relationshipStageClassifier";
-import { buildTrainingExportBundle } from "@/lib/trainingExport";
 import { type DraftPipelineStage, type DraftProgressUpdate, type DraftStageStatus } from "@/lib/draftProgress";
 import { DraftProgressPanel } from "@/components/DraftProgressPanel";
+import { LearningSettingsCard } from "@/components/LearningSettingsCard";
 import { SaveImprovementDialog } from "@/components/SaveImprovementDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { deriveConversationState, sortPinnedThenRecent } from "@/lib/conversationState";
@@ -18,7 +18,7 @@ import { createRulesDocumentDownload, mergeRulesDocument } from "@/lib/rulesDocu
 import { createCloudSafeWorkspace, createRecoveryBundle, decryptCloudWorkspace, encryptCloudWorkspace, importRecoveryKey, parseRecoveryBundle, serializeRecoveryBundle, summarizeCloudBackup, type CloudEnvironment } from "@/lib/cloudRecovery";
 import { deleteCloudVault, readCloudVault } from "@/lib/cloudRecoveryClient";
 import { synchronizeCloudWorkspace, type CloudSyncState } from "@/lib/cloudRecoverySync";
-import { applyCloudLearningSyncDelta, clearDeletedCloudLearningSyncMetadata, clearDisabledCloudLearningState, deleteCloudLearningRecord, disableAndDeleteCloudLearning, syncPendingLearningRecords, uploadCloudLearningRecords, type CloudLearningKnownIdentifiers, type CloudLearningUploadResult } from "@/lib/cloudLearning";
+import { applyCloudLearningSyncDelta, clearDeletedCloudLearningSyncMetadata, clearDisabledCloudLearningState, deleteCloudLearningRecord, disableAndDeleteCloudLearning, readCloudLearningStatus, syncPendingLearningRecords, updateCloudLearningPreference, uploadCloudLearningRecords, type CloudLearningKnownIdentifiers, type CloudLearningRecord, type CloudLearningStatus, type CloudLearningUploadResult } from "@/lib/cloudLearning";
 import { GOAL_CATEGORY_BY_STAGE } from "@/lib/learningSanitizer";
 import { formatMicroUsd, readCloudUsage, type CloudUsageSummary } from "@/lib/cloudUsage";
 import { deleteContactEverywhere, mergeCloudWorkspaces } from "@/lib/cloudWorkspaceMerge";
@@ -352,6 +352,8 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const [saveStatus, setSaveStatus] = useState("Encrypted");
   const [cloudSyncState, setCloudSyncState] = useState<CloudSyncState>(() => baseCloudSyncState(initial.cloudRecovery.enabled ? "preparing" : "off", initial.cloudRecovery.revision));
   const [cloudLearningSyncStatus, setCloudLearningSyncStatus] = useState("");
+  const [cloudLearningStatus, setCloudLearningStatus] = useState<CloudLearningStatus | null>(null);
+  const [cloudLearningStatusMessage, setCloudLearningStatusMessage] = useState("");
   const [cloudUsage, setCloudUsage] = useState<CloudUsageSummary | null>(null);
   const [cloudUsageStatus, setCloudUsageStatus] = useState("");
   const [localSaveSequence, setLocalSaveSequence] = useState(0);
@@ -391,6 +393,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   const shortcutDialogRef = useRef<HTMLDialogElement>(null);
   const workspaceRef = useRef(workspace);
   const pendingLearningRecordIdsRef = useRef(new Set(workspace.pendingLearningRecords.map((record) => record.recordId)));
+  const cloudLearningStatusRequestRef = useRef(0);
   const extensionConnectedRef = useRef(false);
   const extensionVersionRef = useRef("");
   const shortcutSequenceRef = useRef("");
@@ -689,31 +692,59 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     }, knownIdentifiers);
   }
 
-  async function deleteSyncedCloudLearningRecord(recordId: string) {
-    setCloudLearningSyncStatus("Deleting cloud learning record…");
+  async function deleteSyncedCloudLearningRecord(recordId: string, recordKind: CloudLearningRecord["recordKind"]): Promise<boolean> {
     try {
       const result = await deleteCloudLearningRecord(recordId);
-      if (!result.deleted) {
-        setCloudLearningSyncStatus("Cloud learning deletion pending");
-        return;
-      }
+      if (!result.deleted) return false;
+      cloudLearningStatusRequestRef.current += 1;
+      pendingLearningRecordIdsRef.current.delete(recordId);
       updateWorkspace((current) => clearDeletedCloudLearningSyncMetadata(current, recordId));
-      setCloudLearningSyncStatus("Cloud learning record deleted");
+      setCloudLearningStatus((current) => current ? {
+        ...current,
+        counts: { ...current.counts, [recordKind]: Math.max(0, current.counts[recordKind] - 1) },
+      } : current);
+      return true;
     } catch {
-      setCloudLearningSyncStatus("Cloud learning deletion pending");
+      return false;
     }
   }
 
-  async function disableAndDeleteSyncedCloudLearning() {
-    if (!window.confirm("Disable cloud learning and permanently delete every approved cloud learning record? Ordinary messages and drafts will remain in this encrypted workspace.")) return;
+  async function disableAndDeleteSyncedCloudLearning(): Promise<boolean> {
+    if (!window.confirm("Disable cloud learning and permanently delete every approved cloud learning record? Ordinary messages and drafts will remain in this encrypted workspace.")) return false;
+    cloudLearningStatusRequestRef.current += 1;
     setCloudLearningSyncStatus("Disabling and deleting cloud learning…");
     try {
       await disableAndDeleteCloudLearning();
+      cloudLearningStatusRequestRef.current += 1;
       pendingLearningRecordIdsRef.current.clear();
       updateWorkspace(clearDisabledCloudLearningState);
+      setCloudLearningStatus((current) => current
+        ? { ...current, enabled: false, counts: { classifier: 0, evaluation: 0, generative: 0 } }
+        : { enabled: false, noticeVersion: "2026-08-09-v1", retentionDays: 365, counts: { classifier: 0, evaluation: 0, generative: 0 } });
       setCloudLearningSyncStatus("Cloud learning disabled and deleted");
+      return true;
     } catch {
       setCloudLearningSyncStatus("Cloud learning deletion pending");
+      return false;
+    }
+  }
+
+  async function enableSyncedCloudLearning(): Promise<boolean> {
+    cloudLearningStatusRequestRef.current += 1;
+    setCloudLearningSyncStatus("Enabling cloud learning...");
+    try {
+      const result = await updateCloudLearningPreference(true);
+      if (!result.enabled) throw new Error("Cloud learning preference was not enabled.");
+      cloudLearningStatusRequestRef.current += 1;
+      updateWorkspace((current) => ({ ...current, personalLearning: { enabled: true } }));
+      setCloudLearningStatus((current) => current
+        ? { ...current, enabled: true }
+        : { enabled: true, noticeVersion: "2026-08-09-v1", retentionDays: 365, counts: { classifier: 0, evaluation: 0, generative: 0 } });
+      setCloudLearningSyncStatus("Cloud learning enabled");
+      return true;
+    } catch {
+      setCloudLearningSyncStatus("Cloud learning preference update pending");
+      return false;
     }
   }
 
@@ -734,7 +765,10 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
   function changeInboxView(view: InboxView) {
     setInboxView(view);
     setMobileConversationOpen(false);
-    if (view === "settings" && workspaceRef.current.cloudInference.consentedAt) void refreshCloudUsage();
+    if (view === "settings") {
+      void refreshCloudLearningStatus();
+      if (workspaceRef.current.cloudInference.consentedAt) void refreshCloudUsage();
+    }
     if (view === "archived") setInboxFilter("archived");
     else if (view === "reminders") setInboxFilter("follow-up-due");
     else if (view === "inbox") setInboxFilter("main");
@@ -748,6 +782,24 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     } catch {
       // An unavailable allowance must not modify encrypted conversation state or discard a prior summary.
       setCloudUsageStatus("ChatHelp app allowance is temporarily unavailable.");
+    }
+  }
+
+  async function refreshCloudLearningStatus() {
+    const requestId = ++cloudLearningStatusRequestRef.current;
+    setCloudLearningStatus(null);
+    setCloudLearningStatusMessage("");
+    try {
+      const status = await readCloudLearningStatus();
+      if (requestId !== cloudLearningStatusRequestRef.current) return;
+      setCloudLearningStatus(status);
+      if (workspaceRef.current.personalLearning.enabled !== status.enabled) {
+        updateWorkspace((current) => ({ ...current, personalLearning: { enabled: status.enabled } }));
+      }
+    } catch {
+      if (requestId !== cloudLearningStatusRequestRef.current) return;
+      setCloudLearningStatus(null);
+      setCloudLearningStatusMessage("Cloud learning status is temporarily unavailable.");
     }
   }
 
@@ -873,28 +925,6 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
       setPlaybookStatus(`Downloaded the current ${workspace.guidance.selectedRole} reply rules as text.`);
-    } catch (error) {
-      setAppError(formatError(error));
-    }
-  }
-
-  function downloadTrainingArtifact(kind: "manifest" | "classifier" | "generative") {
-    try {
-      const bundle = buildTrainingExportBundle(workspaceRef.current);
-      const artifact = kind === "manifest"
-        ? { filename: "dialogmint-training-manifest.json", text: JSON.stringify(bundle.manifest, null, 2) + "\n", type: "application/json;charset=utf-8" }
-        : kind === "classifier"
-          ? { filename: "dialogmint-stage-classifier.jsonl", text: bundle.classifierJsonl, type: "application/x-ndjson;charset=utf-8" }
-          : { filename: "dialogmint-user-authored-generative.jsonl", text: bundle.userAuthoredGenerativeJsonl, type: "application/x-ndjson;charset=utf-8" };
-      const url = URL.createObjectURL(new Blob([artifact.text], { type: artifact.type }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = artifact.filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 0);
-      setPlaybookStatus(`Downloaded ${artifact.filename}. No upload or training was started.`);
     } catch (error) {
       setAppError(formatError(error));
     }
@@ -1300,17 +1330,6 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     setExtensionStatus("Saved encrypted feedback locally. It will not affect future drafts unless you separately approve it as a learning example.");
   }
 
-  function updateLearningFeedback(feedbackId: string, updater: (feedback: Feedback) => Feedback) {
-    updateWorkspace((current) => ({
-      ...current,
-      feedback: current.feedback.map((item) => item.id === feedbackId ? updater(item) : item),
-    }));
-  }
-
-  function deleteLearningFeedback(feedbackId: string) {
-    updateWorkspace((current) => ({ ...current, feedback: current.feedback.filter((item) => item.id !== feedbackId) }));
-  }
-
   function confirmRelationshipStage(stage: RelationshipStage) {
     if (!contact) return;
     const features = extractRelationshipStageFeatures({
@@ -1438,7 +1457,6 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
     });
     return predictRelationshipStage(trainStageClassifier(workspace.stageTrainingRecords), features, currentStage, 0.30);
   }, [contact, workspace.inboxRole, workspace.personalLearning.enabled, workspace.stageTrainingRecords]);
-  const trainingExportPreview = useMemo(() => buildTrainingExportBundle(workspace, "preview"), [workspace]);
   const draftContextSummary = useMemo(() => contact
     ? buildDraftContextSummary(createDraftInput(contact, resolveRoleGuidance(workspace.guidance, workspace.inboxRole), agenda.trim(), workspace))
     : null, [agenda, contact, workspace]);
@@ -1625,53 +1643,17 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
                 <p className="section-explainer">Type rules above, upload a plain-text or Markdown document, or use both. Uploaded text is appended to existing rules for the selected role and saved in the encrypted local vault. Download exports the current combined rules field as a text file.</p>
                 {playbookStatus && <p className="status" role="status" aria-live="polite">{playbookStatus}</p>}
               </section>
-              <section className="panel-card learning-card">
-                <p className="eyebrow">ENCRYPTED PERSONAL LEARNING</p>
-                <h3>Learn only from examples you approve</h3>
-                <label className="consent-check"><input type="checkbox" aria-label="Enable encrypted personal learning" checked={workspace.personalLearning.enabled} onChange={(event) => updateWorkspace((current) => ({ ...current, personalLearning: { enabled: event.target.checked } }))} /><span>Enable encrypted personal learning for this workspace.</span></label>
-                <p className="section-explainer">Retrieval uses your approved examples as context and does not retrain any model. Feedback and examples stay in the encrypted workspace and its opaque encrypted recovery copy. Turning this off immediately excludes every example from generation.</p>
-                <div className="learning-summary"><strong>{workspace.feedback.filter((item) => item.eligibleForRetrieval && item.enabled).length} approved learning examples</strong><span>{workspace.feedback.length} feedback records stored locally</span></div>
-                {workspace.pendingLearningRecords.length > 0 && <div className="learning-summary" role="status" aria-live="polite"><strong>{cloudLearningSyncStatus || "Cloud learning sync pending"}</strong><button type="button" onClick={() => void retryPendingCloudLearningSync()}>Retry cloud learning sync</button></div>}
-                {workspace.pendingLearningRecords.length === 0 && cloudLearningSyncStatus && <p className="status" role="status" aria-live="polite">{cloudLearningSyncStatus}</p>}
-                {workspace.cloudLearningSync.length > 0 && <div className="learning-example-list" aria-label="Synced cloud learning records">{workspace.cloudLearningSync.map((entry) => <article className="learning-example" key={entry.recordId}><span>{entry.recordId}</span><button type="button" className="danger-link" aria-label={`Delete cloud learning record ${entry.recordId}`} onClick={() => void deleteSyncedCloudLearningRecord(entry.recordId)}>Delete cloud record</button></article>)}</div>}
-                <div className="learning-example-actions"><button type="button" className="danger-link" aria-label="Disable and delete cloud learning" onClick={() => void disableAndDeleteSyncedCloudLearning()}>Disable &amp; delete cloud learning</button></div>
-                {workspace.feedback.length === 0 ? <p className="section-explainer">No feedback has been saved. Enable learning, generate a reply, then accept, edit, or reject it from the draft card.</p> : <div className="learning-example-list">
-                  {workspace.feedback.slice().reverse().map((item) => {
-                    const independentlyAuthored = item.origin === "independently_user_authored" && item.independentlyAuthoredAttested;
-                    const canRetrieve = independentlyAuthored && item.enabled && Boolean(item.preferredResponse.trim()) && item.action !== "rejected";
-                    return <article className="learning-example" key={item.id}>
-                      <header><div><strong>{item.action === "accepted" ? "Accepted reply" : item.action === "edited" ? "Edited reply" : "Rejected reply"}</strong><small>{item.role} · {RELATIONSHIP_STAGE_LABELS[item.relationshipStage]}</small></div><span className={independentlyAuthored ? "origin-independent" : "origin-provider"}>{independentlyAuthored ? "Independently authored / licensed" : "Provider-assisted by default"}</span></header>
-                      <label>Preferred response<textarea aria-label="Preferred response for learning" maxLength={5_000} value={item.preferredResponse} onChange={(event) => {
-                        const preferredResponse = event.target.value.slice(0, 5_000);
-                        updateLearningFeedback(item.id, (current) => ({ ...current, preferredResponse, eligibleForRetrieval: preferredResponse.trim() ? current.eligibleForRetrieval : false, updatedAt: new Date().toISOString() }));
-                      }} /></label>
-                      <div className="learning-notes-grid">
-                        <label>Reason <span className="field-optional">Optional</span><input aria-label={`Feedback reason ${item.id}`} maxLength={1_000} value={item.reason} onChange={(event) => updateLearningFeedback(item.id, (current) => ({ ...current, reason: event.target.value.slice(0, 1_000), updatedAt: new Date().toISOString() }))} /></label>
-                        <label>Outcome <span className="field-optional">Optional</span><input aria-label={`Feedback outcome ${item.id}`} maxLength={1_000} value={item.outcome} onChange={(event) => updateLearningFeedback(item.id, (current) => ({ ...current, outcome: event.target.value.slice(0, 1_000), updatedAt: new Date().toISOString() }))} /></label>
-                      </div>
-                      <label className="consent-check"><input type="checkbox" aria-label="I independently authored or have rights to this response" checked={independentlyAuthored} onChange={(event) => updateLearningFeedback(item.id, (current) => ({ ...current, origin: event.target.checked ? "independently_user_authored" : "provider_assisted", independentlyAuthoredAttested: event.target.checked, eligibleForRetrieval: false, updatedAt: new Date().toISOString() }))} /><span>I independently authored this response or have the rights needed to use it.</span></label>
-                      <label className="consent-check"><input type="checkbox" aria-label="Use this response as a learning example" disabled={!canRetrieve} checked={item.eligibleForRetrieval} onChange={(event) => updateLearningFeedback(item.id, (current) => ({ ...current, eligibleForRetrieval: canRetrieve && event.target.checked, updatedAt: new Date().toISOString() }))} /><span>Use this response as a learning example for future drafts.</span></label>
-                      <div className="learning-example-actions"><label><input type="checkbox" checked={item.enabled} onChange={(event) => updateLearningFeedback(item.id, (current) => ({ ...current, enabled: event.target.checked, eligibleForRetrieval: event.target.checked ? current.eligibleForRetrieval : false, updatedAt: new Date().toISOString() }))} /> Example enabled</label><button type="button" className="danger-link" aria-label="Delete learning example" onClick={() => deleteLearningFeedback(item.id)}>Delete</button></div>
-                    </article>;
-                  })}
-                </div>}
-              </section>
-              <section className="panel-card training-export-card">
-                <p className="eyebrow">LOCAL TRAINING READINESS</p>
-                <h3>Preview approved training data</h3>
-                <p className="section-explainer">Exports are built locally only when you click Download. They exclude contact identifiers, raw conversations, provider reasoning, Claude drafts, provider-assisted text, secrets, and unapproved records.</p>
-                <div className="training-counts">
-                  <strong>{trainingExportPreview.manifest.counts.classifierRecords} classifier confirmations</strong>
-                  <strong>{trainingExportPreview.manifest.counts.userAuthoredGenerativeRecords} independently authored generative examples</strong>
-                  <span>{trainingExportPreview.manifest.counts.excludedStageRecords + trainingExportPreview.manifest.counts.excludedGenerativeRecords} records excluded by provenance or approval gates</span>
-                </div>
-                <div className="training-stage-counts">{RELATIONSHIP_STAGES.map((stage) => {
-                  const counts = trainingExportPreview.manifest.byStage[stage];
-                  return counts.classifier || counts.generative ? <span key={stage}><strong>{RELATIONSHIP_STAGE_LABELS[stage]}</strong> {counts.classifier} classifier · {counts.generative} generative</span> : null;
-                })}</div>
-                <div className="playbook-actions"><button type="button" aria-label="Download training manifest" onClick={() => downloadTrainingArtifact("manifest")}>Download manifest</button><button type="button" aria-label="Download classifier JSONL" disabled={!trainingExportPreview.classifierJsonl} onClick={() => downloadTrainingArtifact("classifier")}>Download classifier JSONL</button><button type="button" aria-label="Download independently authored generative JSONL" disabled={!trainingExportPreview.userAuthoredGenerativeJsonl} onClick={() => downloadTrainingArtifact("generative")}>Download user-authored JSONL</button></div>
-                <p className="section-explainer"><strong>Cloudflare adapter upload is disabled in this release.</strong> Compatibility validation is offline and informational; no download starts training or sends data anywhere.</p>
-              </section>
+              <LearningSettingsCard
+                key={cloudLearningStatus ? (cloudLearningStatus.enabled ? "enabled" : "disabled") : "unknown"}
+                status={cloudLearningStatus}
+                statusMessage={cloudLearningStatusMessage}
+                syncStatus={cloudLearningSyncStatus}
+                pendingCount={workspace.pendingLearningRecords.length}
+                onRetrySync={retryPendingCloudLearningSync}
+                onDeleteRecord={deleteSyncedCloudLearningRecord}
+                onDisableAndDelete={disableAndDeleteSyncedCloudLearning}
+                onEnable={enableSyncedCloudLearning}
+              />
               <section className="panel-card cloud-backup-card">
                 <p className="eyebrow">ENCRYPTED RECOVERY</p>
                 <h3>Encrypted 90-day backup</h3>

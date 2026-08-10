@@ -42,6 +42,14 @@ describe("cloud learning client", () => {
         roleId: "human_resource",
         relationshipStage: "new_connection",
         goalCategory: "connect",
+        classifierFeatures: {
+          messageCountBucket: "low",
+          hasIncomingQuestion: false,
+          hasNeedSignal: false,
+          hasPermissionSignal: false,
+          hasValueDiscussionSignal: false,
+          hasNextStepSignal: false,
+        },
         enabled: true,
         createdAt: "2026-08-09T00:00:00.000Z",
         updatedAt: "2026-08-09T00:00:00.000Z",
@@ -58,6 +66,14 @@ describe("cloud learning client", () => {
         roleId: "human_resource",
         relationshipStage: "new_connection",
         goalCategory: "connect",
+        classifierFeatures: {
+          messageCountBucket: "low",
+          hasIncomingQuestion: false,
+          hasNeedSignal: false,
+          hasPermissionSignal: false,
+          hasValueDiscussionSignal: false,
+          hasNextStepSignal: false,
+        },
         enabled: true,
         createdAt: "2026-08-09T00:00:00.000Z",
         updatedAt: "2026-08-09T00:00:00.000Z",
@@ -72,6 +88,34 @@ describe("cloud learning client", () => {
       cache: "no-store",
       headers: { Accept: "application/json" },
     });
+  });
+
+  it("rejects classifier management metadata beyond the strict six-field allowlist", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okJson({
+      records: [{
+        recordId: "record-private-extra",
+        recordKind: "classifier",
+        roleId: "human_resource",
+        relationshipStage: "new_connection",
+        goalCategory: "connect",
+        classifierFeatures: {
+          messageCountBucket: "low",
+          hasIncomingQuestion: false,
+          hasNeedSignal: false,
+          hasPermissionSignal: false,
+          hasValueDiscussionSignal: false,
+          hasNextStepSignal: false,
+          semanticTokens: ["must-not-cross-client-boundary"],
+        },
+        enabled: true,
+        createdAt: "2026-08-09T00:00:00.000Z",
+        updatedAt: "2026-08-09T00:00:00.000Z",
+        expiresAt: "2027-08-09T00:00:00.000Z",
+      }],
+      nextCursor: null,
+    })));
+
+    await expect(readCloudLearningRecords()).rejects.toThrow("invalid cloud learning response");
   });
 
   it("removes pending content only after a matching server acknowledgement", async () => {
@@ -230,8 +274,12 @@ describe("cloud learning client", () => {
     expect(cleared.contacts[0].draftHistory).toEqual(workspace.contacts[0].draftHistory);
   });
 
-  it("removes only matching local sync metadata after individual deletion", () => {
+  it("removes matching pending and sync metadata after individual deletion so retries cannot recreate it", () => {
     const workspace = createEmptyWorkspace();
+    workspace.stageTrainingRecords = [
+      { id: "stage-1", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" },
+      { id: "stage-keep", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" },
+    ];
     workspace.pendingLearningRecords = [{ recordId: "record-1", recordKind: "classifier", sanitizedPayload: { recordKind: "classifier" }, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-1", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
     workspace.cloudLearningSync = [
       { recordId: "record-1", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" },
@@ -240,7 +288,39 @@ describe("cloud learning client", () => {
 
     const updated = clearDeletedCloudLearningSyncMetadata(workspace, "record-1");
     expect(updated.cloudLearningSync.map((item) => item.recordId)).toEqual(["record-2"]);
-    expect(updated.pendingLearningRecords).toEqual(workspace.pendingLearningRecords);
+    expect(updated.pendingLearningRecords).toEqual([]);
+    expect(updated.stageTrainingRecords.map((item) => item.id)).toEqual(["stage-keep"]);
+    expect(updated.cloudLearningDeletionMarkers).toEqual([
+      expect.objectContaining({ recordId: "record-1", disposition: "deleted", sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-1" }),
+    ]);
+  });
+
+  it("removes only the eligible feedback source captured by a deleted pending record", () => {
+    const workspace = createEmptyWorkspace();
+    workspace.feedback = [
+      { id: "feedback-delete", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "", preferredResponse: "Delete", outcome: "", reason: "", origin: "independently_user_authored", independentlyAuthoredAttested: true, eligibleForRetrieval: true, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
+      { id: "feedback-keep", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "Ordinary", preferredResponse: "", outcome: "", reason: "", origin: "provider_assisted", independentlyAuthoredAttested: false, eligibleForRetrieval: false, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
+    ];
+    workspace.pendingLearningRecords = [{ recordId: "record-feedback", recordKind: "evaluation", sanitizedPayload: { recordKind: "evaluation" }, sourceCollection: "feedback", sourceLocalId: "feedback-delete", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
+
+    const updated = clearDeletedCloudLearningSyncMetadata(workspace, "record-feedback");
+
+    expect(updated.feedback.map((item) => item.id)).toEqual(["feedback-keep"]);
+    expect(updated.pendingLearningRecords).toEqual([]);
+  });
+
+  it("retains shared source metadata until its final pending record is deleted", () => {
+    const workspace = createEmptyWorkspace();
+    workspace.stageTrainingRecords = [{ id: "shared-stage", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" }];
+    workspace.pendingLearningRecords = ["record-first", "record-last"].map((recordId) => ({ recordId, recordKind: "classifier" as const, sanitizedPayload: { recordKind: "classifier" }, sourceCollection: "stageTrainingRecords" as const, sourceLocalId: "shared-stage", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }));
+
+    const afterFirst = clearDeletedCloudLearningSyncMetadata(workspace, "record-first");
+    expect(afterFirst.stageTrainingRecords.map((item) => item.id)).toEqual(["shared-stage"]);
+    expect(afterFirst.pendingLearningRecords.map((item) => item.recordId)).toEqual(["record-last"]);
+
+    const afterLast = clearDeletedCloudLearningSyncMetadata(afterFirst, "record-last");
+    expect(afterLast.stageTrainingRecords).toEqual([]);
+    expect(afterLast.pendingLearningRecords).toEqual([]);
   });
 
   it("bounds local deletion markers by newest deletion time rather than insertion order", () => {

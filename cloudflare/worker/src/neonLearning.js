@@ -11,6 +11,15 @@ const RECORD_ID = /^[a-z0-9-]{1,64}$/u;
 const ACCOUNT_ID = /^[0-9a-f]{64}$/u;
 const LOWER_HEX_DIGEST = /^[0-9a-f]{64}$/u;
 const ROLE_IDS = new Set(["human_resource", "network_marketing", "job_seeker", "socializing_networking"]);
+const MESSAGE_COUNT_BUCKETS = new Set(["unknown", "low", "medium", "high"]);
+const CLASSIFIER_FEATURE_KEYS = [
+  "messageCountBucket",
+  "hasIncomingQuestion",
+  "hasNeedSignal",
+  "hasPermissionSignal",
+  "hasValueDiscussionSignal",
+  "hasNextStepSignal",
+];
 
 const LEARNING_HEADERS = {
   "Cache-Control": "no-store",
@@ -107,6 +116,22 @@ function safeCount(value) {
   return Number.isSafeInteger(count) && count >= 0 ? count : 0;
 }
 
+function storedClassifierFeatures(value) {
+  if (!exactKeys(value, CLASSIFIER_FEATURE_KEYS)
+      || !MESSAGE_COUNT_BUCKETS.has(value.messageCountBucket)
+      || !CLASSIFIER_FEATURE_KEYS.slice(1).every((key) => typeof value[key] === "boolean")) {
+    throw new Error("invalid_stored_record");
+  }
+  return {
+    messageCountBucket: value.messageCountBucket,
+    hasIncomingQuestion: value.hasIncomingQuestion,
+    hasNeedSignal: value.hasNeedSignal,
+    hasPermissionSignal: value.hasPermissionSignal,
+    hasValueDiscussionSignal: value.hasValueDiscussionSignal,
+    hasNextStepSignal: value.hasNextStepSignal,
+  };
+}
+
 function isoTimestamp(value) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) throw new Error("invalid_stored_timestamp");
@@ -184,7 +209,7 @@ async function listLearningRecords(binding, accountId, searchParams, options) {
   const now = requestNow(options).toISOString();
   const result = await queryDatabase(binding, `
     SELECT record_id, record_kind, role_id, relationship_stage, goal_category,
-           evaluation_action, target_text, enabled, created_at, updated_at, expires_at
+           classifier_features, evaluation_action, target_text, enabled, created_at, updated_at, expires_at
     FROM dialogmint_learning_records
     WHERE account_id = $1
       AND expires_at > $5
@@ -217,7 +242,7 @@ async function listLearningRecords(binding, accountId, searchParams, options) {
       if (typeof row.target_text !== "string" || !row.target_text) throw new Error("invalid_stored_record");
       return { ...record, target: row.target_text };
     }
-    return record;
+    return { ...record, classifierFeatures: storedClassifierFeatures(row.classifier_features) };
   });
   const last = page.at(-1);
   return {

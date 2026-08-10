@@ -243,21 +243,27 @@ describe("current-account Neon learning boundary", () => {
     expect(query.mock.calls[1][1]).toMatch(/\(record_id = \$2\) AS id_match[\s\S]+ORDER BY preference_enabled DESC, inserted DESC, id_match DESC/iu);
   });
 
-  it("lists a bounded account-scoped cursor page and exposes target text only for generative rows", async () => {
+  it("lists a bounded account-scoped cursor page with only sanitized target text and strict classifier metadata", async () => {
     const query = vi.fn().mockResolvedValue({ rows: [
       {
         record_id: "generative-1", record_kind: "generative", role_id: "human_resource",
         relationship_stage: "learn_interests", goal_category: "discover_interests", evaluation_action: null,
-        target_text: "A sanitized response", enabled: true, created_at: NOW.toISOString(), updated_at: NOW.toISOString(),
+        classifier_features: null, target_text: "A sanitized response", enabled: true, created_at: NOW.toISOString(), updated_at: NOW.toISOString(),
         expires_at: "2027-08-09T12:00:00.000Z",
       },
       {
         record_id: "evaluation-1", record_kind: "evaluation", role_id: "human_resource",
         relationship_stage: "learn_interests", goal_category: "discover_interests", evaluation_action: "useful",
-        target_text: null, enabled: true, created_at: NOW.toISOString(), updated_at: "2026-08-09T11:00:00.000Z",
+        classifier_features: null, target_text: null, enabled: true, created_at: NOW.toISOString(), updated_at: "2026-08-09T11:00:00.000Z",
         expires_at: "2027-08-09T11:00:00.000Z",
       },
-    ], rowCount: 2 });
+      {
+        record_id: "classifier-1", record_kind: "classifier", role_id: "human_resource",
+        relationship_stage: "learn_interests", goal_category: "discover_interests", evaluation_action: null,
+        classifier_features: classifier().record.classifierFeatures, target_text: null, enabled: true,
+        created_at: NOW.toISOString(), updated_at: "2026-08-09T10:00:00.000Z", expires_at: "2027-08-09T10:00:00.000Z",
+      },
+    ], rowCount: 3 });
     const { response } = await directCall("/api/learning/records", { query });
 
     expect(response.status).toBe(200);
@@ -265,9 +271,38 @@ describe("current-account Neon learning boundary", () => {
     expect(payload.records[0]).toMatchObject({ recordId: "generative-1", recordKind: "generative", target: "A sanitized response" });
     expect(payload.records[1]).toMatchObject({ recordId: "evaluation-1", recordKind: "evaluation", evaluationAction: "useful" });
     expect(payload.records[1]).not.toHaveProperty("target");
+    expect(payload.records[2]).toMatchObject({
+      recordId: "classifier-1",
+      recordKind: "classifier",
+      classifierFeatures: classifier().record.classifierFeatures,
+    });
+    expect(Object.keys(payload.records[2]).sort()).toEqual([
+      "classifierFeatures", "createdAt", "enabled", "expiresAt", "goalCategory", "recordId", "recordKind",
+      "relationshipStage", "roleId", "updatedAt",
+    ].sort());
+    expect(Object.keys(payload.records[2].classifierFeatures as Record<string, unknown>).sort()).toEqual([
+      "messageCountBucket", "hasIncomingQuestion", "hasNeedSignal", "hasPermissionSignal",
+      "hasValueDiscussionSignal", "hasNextStepSignal",
+    ].sort());
     expect(payload.nextCursor).toBeNull();
+    expect(query.mock.calls[0][1]).toMatch(/classifier_features/iu);
     expect(query.mock.calls[0][1]).toMatch(/WHERE account_id = \$1[\s\S]+LIMIT \$4/iu);
     expect(query.mock.calls[0][2]).toEqual([ACCOUNT_A, null, null, 26, NOW.toISOString()]);
+  });
+
+  it("fails closed when stored classifier metadata contains any field beyond the strict six", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [{
+      record_id: "classifier-1", record_kind: "classifier", role_id: "human_resource",
+      relationship_stage: "learn_interests", goal_category: "discover_interests", evaluation_action: null,
+      classifier_features: { ...classifier().record.classifierFeatures, semanticTokens: ["private"] },
+      target_text: null, enabled: true, created_at: NOW.toISOString(), updated_at: NOW.toISOString(),
+      expires_at: "2027-08-09T12:00:00.000Z",
+    }], rowCount: 1 });
+
+    const { response } = await directCall("/api/learning/records", { query });
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "Cloud learning is temporarily unavailable." });
   });
 
   it("returns a non-null cursor for 26 rows and uses it for the next account-scoped page", async () => {
