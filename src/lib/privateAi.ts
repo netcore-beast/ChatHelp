@@ -1,7 +1,8 @@
-import { CLOUDFLARE_MODEL_ID, PLAYBOOK_GOAL_MAX_CHARS, PLAYBOOK_RULES_MAX_CHARS, PLAYBOOK_VOICE_MAX_CHARS, type CloudInferenceSettings, type Contact, type Guidance } from "./workspaceTypes";
+import { CLOUDFLARE_MODEL_ID, CONVERSATION_GOAL_MAX_CHARS, PLAYBOOK_GOAL_MAX_CHARS, PLAYBOOK_RULES_MAX_CHARS, PLAYBOOK_VOICE_MAX_CHARS, normalizePersonalGuidelines, normalizeRelationshipStage, type CloudInferenceSettings, type Contact, type Guidance, type RelationshipStage } from "./workspaceTypes";
 import { isLikelyFullLinkedInPageCapture, selectRecentConversationCaptures, type RankedContext } from "./retrieval";
 import { repairLegacyLinkedInMessages } from "./messageDedup";
 import { RULEBOOK_DIGEST_MAX_CHARS, buildRulebookDigest } from "./rulebookDigest";
+import { parseDraftProgressStream, type DraftProgressUpdate } from "./draftProgress";
 
 export interface PrivateAiInput {
   contact: Contact;
@@ -10,6 +11,17 @@ export interface PrivateAiInput {
   retrievedContext: RankedContext[];
   feedbackSummary: string;
   outcomeSummary: string;
+  personalGuidelines?: string;
+  conversationGoal?: string;
+  relationshipStage?: RelationshipStage;
+  knownFacts?: string[];
+  unansweredQuestions?: string[];
+  learningExamples?: Array<{
+    role: string;
+    relationshipStage: RelationshipStage;
+    conversationGoal: string;
+    preferredResponse: string;
+  }>;
 }
 
 export interface WebGpuLike {
@@ -18,6 +30,20 @@ export interface WebGpuLike {
 
 export interface CloudDraftRequest {
   conversationContext: string;
+  latestActualMessage: {
+    id: string;
+    sender: "USER" | "CONTACT";
+    speaker: string;
+    text: string;
+    timestamp: string;
+  } | null;
+  latestMeaningfulIncoming: {
+    id: string;
+    sender: "CONTACT";
+    speaker: string;
+    text: string;
+    timestamp: string;
+  } | null;
   playbook: {
     role: string;
     relationshipGoal: string;
@@ -25,7 +51,26 @@ export interface CloudDraftRequest {
     rulebookFull: string;
     rulebookDigest: string;
   };
+  personalGuidelines: string;
+  conversationGoal: string;
+  relationshipStage: RelationshipStage;
+  knownFacts: string[];
+  unansweredQuestions: string[];
   replyObjective: string;
+}
+
+export interface CloudDraftResult {
+  draft: string;
+  provider: "anthropic" | "cloudflare";
+  model: string;
+  mode: "stage-aware-single-draft-v1";
+  requestId: string;
+  usageAccounting: "recorded" | "pending";
+  fallbackReason: null
+    | "anthropic-allowance-exhausted"
+    | "anthropic-accounting-unavailable"
+    | "anthropic-pipeline-failed"
+    | "provider-override";
 }
 
 export interface DraftContextSummary {
@@ -41,7 +86,7 @@ export interface DraftContextSummary {
 
 export const CPU_FALLBACK_MODEL_ID = "cpu:qwen2.5-0.5b-instruct-q4";
 export const CPU_FALLBACK_MODEL_NAME = "Qwen 2.5 0.5B · private CPU/WASM";
-export const CLOUDFLARE_MODEL_NAME = "Auto · Llama 3.1 8B + GPT-OSS 120B";
+export const CLOUDFLARE_MODEL_NAME = "Claude Opus 4.6 Thinking · Llama 3.1 8B + GPT-OSS 120B fallback";
 export const MAX_CLOUD_PROMPT_CHARS = 180_000;
 export const REPLY_OBJECTIVE_MAX_CHARS = 5_000;
 
@@ -198,14 +243,23 @@ export function buildConversationContext(input: PrivateAiInput): string {
     })),
     rejectedRecentDraftSuggestions: previousDrafts,
     outcomeNotes: clipForPrompt(input.outcomeSummary, 600),
-    draftFeedback: clipForPrompt(input.feedbackSummary, 600),
   };
   return `<conversation_context>\n${safeJsonForPrompt(context)}\n</conversation_context>`;
 }
 
 export function buildCloudDraftRequest(input: PrivateAiInput): CloudDraftRequest {
+  const { latestMessage, latestMeaningfulIncoming } = selectPromptContext(input);
+  const serializeCloudMessage = <TSender extends "USER" | "CONTACT">(message: Contact["chat"][number], sender: TSender) => ({
+    id: message.id.slice(0, 200),
+    sender,
+    speaker: clipForPrompt(message.speaker || (sender === "USER" ? "You" : input.contact.name), 200),
+    text: clipForPrompt(message.body || (message.attachments ?? []).map((attachment) => `[${attachment.kind}: ${attachment.label}]`).join(" "), 900),
+    timestamp: message.createdAt.slice(0, 100),
+  });
   return {
     conversationContext: buildConversationContext(input).slice(0, MAX_CLOUD_PROMPT_CHARS),
+    latestActualMessage: latestMessage ? serializeCloudMessage(latestMessage, latestMessage.role === "me" ? "USER" : "CONTACT") : null,
+    latestMeaningfulIncoming: latestMeaningfulIncoming ? serializeCloudMessage(latestMeaningfulIncoming, "CONTACT") : null,
     playbook: {
       role: input.guidance.role,
       relationshipGoal: input.guidance.objective.slice(0, PLAYBOOK_GOAL_MAX_CHARS),
@@ -213,6 +267,11 @@ export function buildCloudDraftRequest(input: PrivateAiInput): CloudDraftRequest
       rulebookFull: input.guidance.boundaries.slice(0, PLAYBOOK_RULES_MAX_CHARS),
       rulebookDigest: (input.guidance.rulebookDigest || buildRulebookDigest(input.guidance.boundaries)).slice(0, RULEBOOK_DIGEST_MAX_CHARS),
     },
+    personalGuidelines: normalizePersonalGuidelines(input.personalGuidelines),
+    conversationGoal: clipForPrompt(input.conversationGoal ?? input.contact.conversationGoal ?? "", CONVERSATION_GOAL_MAX_CHARS),
+    relationshipStage: normalizeRelationshipStage(input.relationshipStage ?? input.contact.relationshipStage),
+    knownFacts: (input.knownFacts ?? []).filter((item): item is string => typeof item === "string").map((item) => clipForPrompt(item, 500)).filter(Boolean).slice(0, 12),
+    unansweredQuestions: (input.unansweredQuestions ?? []).filter((item): item is string => typeof item === "string").map((item) => clipForPrompt(item, 500)).filter(Boolean).slice(0, 12),
     replyObjective: input.latestQuestion.trim().slice(0, REPLY_OBJECTIVE_MAX_CHARS),
   };
 }
@@ -265,6 +324,36 @@ export function parseDrafts(raw: string): string[] {
   throw new Error("The local model did not return three usable drafts. Please try again.");
 }
 
+export function parseCloudDraftResult(value: unknown): CloudDraftResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Cloudflare AI returned an invalid response.");
+  const candidate = value as Record<string, unknown>;
+  const keys = Object.keys(candidate).sort();
+  if (keys.join("|") !== ["draft", "fallbackReason", "mode", "model", "provider", "requestId", "usageAccounting"].sort().join("|")) throw new Error("Cloudflare AI returned an invalid response.");
+  const draft = typeof candidate.draft === "string" ? sanitizeDraft(candidate.draft).slice(0, 5_000) : "";
+  const provider = candidate.provider === "anthropic" || candidate.provider === "cloudflare" ? candidate.provider : null;
+  const model = typeof candidate.model === "string" ? candidate.model.trim().slice(0, 300) : "";
+  const requestId = typeof candidate.requestId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(candidate.requestId)
+    ? candidate.requestId
+    : "";
+  const usageAccounting = candidate.usageAccounting === "recorded" || candidate.usageAccounting === "pending" ? candidate.usageAccounting : null;
+  const fallbackReasons = new Set([
+    "anthropic-allowance-exhausted",
+    "anthropic-accounting-unavailable",
+    "anthropic-pipeline-failed",
+    "provider-override",
+  ]);
+  const fallbackReason = candidate.fallbackReason === null || (typeof candidate.fallbackReason === "string" && fallbackReasons.has(candidate.fallbackReason))
+    ? candidate.fallbackReason as CloudDraftResult["fallbackReason"]
+    : undefined;
+  if (!draft || !provider || !model || !requestId || !usageAccounting || fallbackReason === undefined
+      || candidate.mode !== "stage-aware-single-draft-v1"
+      || (provider === "anthropic" && fallbackReason !== null)
+      || (provider === "cloudflare" && fallbackReason === null)) {
+    throw new Error("Cloudflare AI returned an invalid response.");
+  }
+  return { draft, provider, model, mode: "stage-aware-single-draft-v1", requestId, usageAccounting, fallbackReason };
+}
+
 function cloudDraftEndpoint(): string {
   const configured = process.env.NEXT_PUBLIC_CHATHELP_CLOUD_AI_URL?.trim().replace(new RegExp("/+$"), "");
   return configured ? configured + "/api/drafts" : "/api/drafts";
@@ -273,14 +362,14 @@ function cloudDraftEndpoint(): string {
 export async function generateWithCloud(
   input: PrivateAiInput,
   config: CloudInferenceSettings | undefined,
-  onProgress?: (message: string) => void,
+  onProgress?: (update: DraftProgressUpdate) => void,
   request: typeof fetch = fetch,
-): Promise<string[]> {
+  signal?: AbortSignal,
+): Promise<CloudDraftResult> {
   if (!config?.consentedAt) {
     throw new Error("Confirm the cloud privacy notice before using Cloudflare AI.");
   }
 
-  onProgress?.("Llama is planning from the rulebook digest. GPT-OSS will write three replies, then independently review each one against the full rulebook...");
   const response = await request(cloudDraftEndpoint(), {
     method: "POST",
     cache: "no-store",
@@ -289,14 +378,19 @@ export async function generateWithCloud(
     // credentials to any third-party origin.
     credentials: "same-origin",
     referrerPolicy: "no-referrer",
+    signal,
     headers: {
-      Accept: "application/json",
+      Accept: "text/event-stream, application/json",
       "Content-Type": "application/json",
     },
     body: JSON.stringify(buildCloudDraftRequest(input)),
   });
 
   const contentType = response.headers.get("Content-Type")?.toLowerCase() ?? "";
+  if (contentType.includes("text/event-stream")) {
+    const payload = await parseDraftProgressStream(response, onProgress);
+    return parseCloudDraftResult(payload);
+  }
   if (!contentType.includes("application/json")) {
     throw new Error("Your Cloudflare sign-in session could not be verified. Refresh DialogMint, sign in again if asked, then retry.");
   }
@@ -314,9 +408,7 @@ export async function generateWithCloud(
     throw new Error(message);
   }
 
-  const drafts = (payload as { drafts?: unknown }).drafts;
-  if (!Array.isArray(drafts)) throw new Error("Cloudflare AI returned an invalid response.");
-  return parseDrafts(JSON.stringify(drafts));
+  return parseCloudDraftResult(payload);
 }
 async function unloadWebGpuModel(): Promise<void> {
   if (engine) {
@@ -328,18 +420,18 @@ async function unloadWebGpuModel(): Promise<void> {
   loadedModelId = "";
 }
 
-async function generateWithWebGpu(modelId: string, input: PrivateAiInput, onProgress?: (message: string) => void): Promise<string[]> {
+async function generateWithWebGpu(modelId: string, input: PrivateAiInput, onProgress?: (update: DraftProgressUpdate) => void): Promise<string[]> {
   if (!engine || loadedModelId !== modelId) {
     await unloadWebGpuModel();
-    onProgress?.("Starting the private WebGPU model…");
+    onProgress?.({ kind: "message", message: "Starting the private WebGPU model…" });
     const webllm = await import("@mlc-ai/web-llm");
     webGpuWorker = new Worker(new URL("../workers/webllm.worker.ts", import.meta.url), { type: "module" });
     engine = await webllm.CreateWebWorkerMLCEngine(webGpuWorker, modelId, {
-      initProgressCallback: (progress) => onProgress?.(progress.text),
+      initProgressCallback: (progress) => onProgress?.({ kind: "message", message: progress.text }),
     });
     loadedModelId = modelId;
   }
-  onProgress?.("Generating locally with WebGPU…");
+  onProgress?.({ kind: "message", message: "Generating locally with WebGPU…" });
   const result = await engine.chat.completions.create({
     messages: [
       { role: "system", content: "Follow the privacy and safety rules in the user prompt. Output JSON only." },
@@ -357,7 +449,7 @@ type CpuWorkerMessage =
   | { requestId: number; type: "complete"; output: string }
   | { requestId: number; type: "error"; message: string };
 
-function generateWithCpu(input: PrivateAiInput, onProgress?: (message: string) => void): Promise<string[]> {
+function generateWithCpu(input: PrivateAiInput, onProgress?: (update: DraftProgressUpdate) => void): Promise<string[]> {
   if (!cpuWorker) cpuWorker = new Worker(new URL("../workers/transformers.worker.ts", import.meta.url), { type: "module" });
   const activeWorker = cpuWorker;
   const requestId = ++cpuRequestId;
@@ -375,7 +467,7 @@ function generateWithCpu(input: PrivateAiInput, onProgress?: (message: string) =
     const handleMessage = (event: MessageEvent<CpuWorkerMessage>) => {
       if (event.data.requestId !== requestId) return;
       if (event.data.type === "progress") {
-        onProgress?.(event.data.message);
+        onProgress?.({ kind: "message", message: event.data.message });
         return;
       }
       cleanup();
@@ -398,11 +490,12 @@ function generateWithCpu(input: PrivateAiInput, onProgress?: (message: string) =
 export async function generatePrivateDrafts(
   modelId: string,
   input: PrivateAiInput,
-  onProgress?: (message: string) => void,
+  onProgress?: (update: DraftProgressUpdate) => void,
   cloudConfig?: CloudInferenceSettings,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   if (modelId === CLOUDFLARE_MODEL_ID) {
-    return generateWithCloud(input, cloudConfig, onProgress);
+    return [ (await generateWithCloud(input, cloudConfig, onProgress, fetch, signal)).draft ];
   }
 
   const forceCpu = modelId.startsWith("cpu:");
@@ -411,14 +504,35 @@ export async function generatePrivateDrafts(
       return await generateWithWebGpu(modelId, input, onProgress);
     } catch {
       await unloadWebGpuModel();
-      onProgress?.("WebGPU could not start. Switching to the private CPU model…");
+      onProgress?.({ kind: "message", message: "WebGPU could not start. Switching to the private CPU model…" });
     }
   } else if (forceCpu) {
-    onProgress?.("Using the private CPU/WASM model you selected…");
+    onProgress?.({ kind: "message", message: "Using the private CPU/WASM model you selected…" });
   } else {
-    onProgress?.("WebGPU is unavailable. Using the private CPU model…");
+    onProgress?.({ kind: "message", message: "WebGPU is unavailable. Using the private CPU model…" });
   }
   return generateWithCpu(input, onProgress);
+}
+
+export async function generatePrivateDraft(
+  modelId: string,
+  input: PrivateAiInput,
+  onProgress?: (update: DraftProgressUpdate) => void,
+  cloudConfig?: CloudInferenceSettings,
+  signal?: AbortSignal,
+): Promise<CloudDraftResult> {
+  if (modelId === CLOUDFLARE_MODEL_ID) return generateWithCloud(input, cloudConfig, onProgress, fetch, signal);
+  const [draft] = await generatePrivateDrafts(modelId, input, onProgress, cloudConfig, signal);
+  if (!draft) throw new Error("The local model did not return a usable draft. Please try again.");
+  return {
+    draft,
+    provider: "cloudflare",
+    model: modelId,
+    mode: "stage-aware-single-draft-v1",
+    requestId: crypto.randomUUID(),
+    usageAccounting: "recorded",
+    fallbackReason: "provider-override",
+  };
 }
 
 export async function unloadPrivateModel(): Promise<void> {

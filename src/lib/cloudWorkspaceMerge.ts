@@ -1,6 +1,6 @@
 import { normalizeLinkedInConversationUrl, normalizeLinkedInProfileUrl } from "./linkedinExtension";
 import { normalizeWorkspace } from "./secureVault";
-import { createDefaultMessagingGuidance, type Contact, type Message, type WorkspaceData } from "./workspaceTypes";
+import { createDefaultMessagingGuidance, type CloudLearningDeletionMarker, type CloudLearningSyncEntry, type Contact, type DraftHistoryEntry, type DraftLearningDecision, type Message, type PendingLearningRecord, type WorkspaceData } from "./workspaceTypes";
 
 function normalizedText(value: string): string {
   return value.trim().replace(/\s+/g, " ").normalize("NFKC").toLocaleLowerCase();
@@ -56,6 +56,93 @@ function mergeById<T extends { id: string }>(local: T[] = [], remote: T[] = []):
   return result;
 }
 
+function mergePendingLearningRecords(local: PendingLearningRecord[], remote: PendingLearningRecord[]): PendingLearningRecord[] {
+  const merged = new Map<string, PendingLearningRecord>();
+  for (const item of [...local, ...remote]) {
+    const current = merged.get(item.recordId);
+    if (!current) {
+      merged.set(item.recordId, item);
+      continue;
+    }
+    if (item.mutationKind === "draft_decision" && current.mutationKind === "draft_decision"
+        && (timestampMillis(item.createdAt) > timestampMillis(current.createdAt)
+          || timestampMillis(item.createdAt) === timestampMillis(current.createdAt)
+            && decisionRank(item.decision.kind === "generative" ? "authored" : item.decision.action) > decisionRank(current.decision.kind === "generative" ? "authored" : current.decision.action))) merged.set(item.recordId, item);
+  }
+  return [...merged.values()];
+}
+
+function decisionRank(state: DraftLearningDecision["state"]): number {
+  return state === "authored" ? 3 : state === "not_useful" ? 2 : 1;
+}
+
+function newerDecision(local?: DraftLearningDecision, remote?: DraftLearningDecision): DraftLearningDecision | undefined {
+  if (!local) return remote;
+  if (!remote) return local;
+  const compared = timestampMillis(remote.updatedAt) - timestampMillis(local.updatedAt);
+  return compared > 0 || compared === 0 && decisionRank(remote.state) > decisionRank(local.state) ? remote : local;
+}
+
+function mergeDraftHistory(local: DraftHistoryEntry[] = [], remote: DraftHistoryEntry[] = []): DraftHistoryEntry[] {
+  const merged = new Map(local.map((draft) => [draft.id, draft]));
+  for (const remoteDraft of remote) {
+    const current = merged.get(remoteDraft.id);
+    if (!current) {
+      merged.set(remoteDraft.id, remoteDraft);
+      continue;
+    }
+    const learningDecision = newerDecision(current.learningDecision, remoteDraft.learningDecision);
+    const editableCurrent = { ...current };
+    delete editableCurrent.learningDecision;
+    merged.set(remoteDraft.id, learningDecision ? { ...editableCurrent, learningDecision } : editableCurrent);
+  }
+  return [...merged.values()];
+}
+
+function mergeCloudLearningSync(local: CloudLearningSyncEntry[], remote: CloudLearningSyncEntry[]): CloudLearningSyncEntry[] {
+  const merged = new Map<string, CloudLearningSyncEntry>();
+  for (const entry of [...local, ...remote]) {
+    const current = merged.get(entry.recordId);
+    if (!current || timestampMillis(entry.updatedAt) > timestampMillis(current.updatedAt)) merged.set(entry.recordId, entry);
+  }
+  return [...merged.values()];
+}
+
+function mergeCloudLearningDeletionMarkers(local: CloudLearningDeletionMarker[], remote: CloudLearningDeletionMarker[]): CloudLearningDeletionMarker[] {
+  const merged = new Map<string, CloudLearningDeletionMarker>();
+  for (const marker of [...local, ...remote]) {
+    const current = merged.get(marker.recordId);
+    if (!current
+        || current.disposition === "deleted" && marker.disposition === "deleted" && timestampMillis(marker.deletedAt) > timestampMillis(current.deletedAt)
+        || current.disposition !== "deleted" && (marker.disposition === "deleted" || timestampMillis(marker.deletedAt) > timestampMillis(current.deletedAt))) merged.set(marker.recordId, marker);
+  }
+  return [...merged.values()].sort(compareLearningDeletionMarkers).slice(-1_000);
+}
+
+function timestampMillis(timestamp: string): number {
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
+function compareLearningDeletionMarkers(left: CloudLearningDeletionMarker, right: CloudLearningDeletionMarker): number {
+  return timestampMillis(left.deletedAt) - timestampMillis(right.deletedAt)
+    || left.recordId.localeCompare(right.recordId)
+    || left.disposition.localeCompare(right.disposition)
+    || left.sourceCollection.localeCompare(right.sourceCollection)
+    || left.sourceLocalId.localeCompare(right.sourceLocalId);
+}
+
+function atOrBefore(timestamp: string, cutoff: string): boolean {
+  const timestampTime = timestampMillis(timestamp);
+  const cutoffTime = timestampMillis(cutoff);
+  return Number.isFinite(timestampTime) && Number.isFinite(cutoffTime) && timestampTime <= cutoffTime;
+}
+
+function laterTimestamp(left: string, right: string): string {
+  const later = Math.max(timestampMillis(left), timestampMillis(right));
+  return Number.isFinite(later) ? new Date(later).toISOString() : "";
+}
+
 function laterRemote(local: Contact, remote: Contact): boolean {
   const localTime = Date.parse(local.lastSyncedAt ?? "");
   const remoteTime = Date.parse(remote.lastSyncedAt ?? "");
@@ -88,11 +175,12 @@ function mergeContact(local: Contact, remote: Contact): Contact {
     archivedAt: nonblank(preferred.archivedAt, fallback.archivedAt),
     firstSyncedAt: nonblank(local.firstSyncedAt, remote.firstSyncedAt),
     lastSyncedAt: nonblank(preferred.lastSyncedAt, fallback.lastSyncedAt),
+    lastReadIncomingMessageId: nonblank(preferred.lastReadIncomingMessageId, fallback.lastReadIncomingMessageId),
     labels: Array.from(new Set([...(local.labels ?? []), ...(remote.labels ?? [])])),
     chat: mergeMessages(local.chat, remote.chat),
     documents: mergeById(local.documents, remote.documents),
     outcomes: mergeById(local.outcomes, remote.outcomes),
-    draftHistory: mergeById(local.draftHistory ?? [], remote.draftHistory ?? []),
+    draftHistory: mergeDraftHistory(local.draftHistory, remote.draftHistory),
   };
 }
 
@@ -179,12 +267,39 @@ export async function mergeCloudWorkspaces(localValue: WorkspaceData, remoteValu
 
   const remappedFeedback = remote.feedback.map((item) => ({ ...item, contactId: remoteToLocal.get(item.contactId) ?? item.contactId }));
   const remappedUsage = remote.aiUsage.map((item) => ({ ...item, contactId: remoteToLocal.get(item.contactId) ?? item.contactId }));
+  const learningDeletionMarkers = mergeCloudLearningDeletionMarkers(local.cloudLearningDeletionMarkers, remote.cloudLearningDeletionMarkers);
+  const deletedRecordIds = new Set(learningDeletionMarkers.filter((marker) => marker.disposition === "deleted").map((marker) => marker.recordId));
+  const removedSources = new Set(learningDeletionMarkers
+    .filter((marker) => marker.sourceCollection && marker.sourceLocalId)
+    .map((marker) => `${marker.sourceCollection}\u0000${marker.sourceLocalId}`));
+  const learningClearedAt = laterTimestamp(local.cloudLearningClearedAt, remote.cloudLearningClearedAt);
+  const feedback = mergeById(local.feedback, remappedFeedback).filter((item) => !removedSources.has(`feedback\u0000${item.id}`)
+    && !(item.eligibleForRetrieval && atOrBefore(item.updatedAt, learningClearedAt)));
+  const stageTrainingRecords = mergeById(local.stageTrainingRecords, remote.stageTrainingRecords).filter((item) => !removedSources.has(`stageTrainingRecords\u0000${item.id}`)
+    && !atOrBefore(item.createdAt, learningClearedAt));
+  const pendingLearningRecords = mergePendingLearningRecords(local.pendingLearningRecords, remote.pendingLearningRecords).filter((item) => !learningDeletionMarkers.some((marker) => marker.recordId === item.recordId)
+    && !atOrBefore(item.createdAt, learningClearedAt));
+  const cloudLearningSync = mergeCloudLearningSync(local.cloudLearningSync, remote.cloudLearningSync).filter((item) => !deletedRecordIds.has(item.recordId)
+    && !atOrBefore(item.updatedAt, learningClearedAt));
+  const contacts = merged.map((contact) => ({
+    ...contact,
+    draftHistory: contact.draftHistory?.map((draft) => draft.learningDecision
+      && (learningDeletionMarkers.some((marker) => marker.recordId === draft.learningDecision?.recordId)
+        || atOrBefore(draft.learningDecision.updatedAt, learningClearedAt))
+      ? (() => { const withoutDecision = { ...draft }; delete withoutDecision.learningDecision; return withoutDecision; })()
+      : draft),
+  }));
   return normalizeWorkspace({
     ...local,
-    contacts: merged,
+    contacts,
     guidance: mergeGuidance(local.guidance, remote.guidance),
-    feedback: mergeById(local.feedback, remappedFeedback),
+    feedback,
     aiUsage: mergeById(local.aiUsage, remappedUsage),
+    stageTrainingRecords,
+    pendingLearningRecords,
+    cloudLearningSync,
+    cloudLearningDeletionMarkers: learningDeletionMarkers,
+    cloudLearningClearedAt: learningClearedAt,
     deletionTombstones: tombstones,
   });
 }

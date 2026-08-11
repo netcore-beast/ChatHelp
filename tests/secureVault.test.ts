@@ -39,7 +39,7 @@ describe("encrypted device vault", () => {
       },
     });
 
-    expect(workspace.version).toBe(10);
+    expect(workspace.version).toBe(15);
     expect(workspace.guidance.selectedRole).toBe("Human Resource");
     expect(workspace.inboxRole).toBe("Human Resource");
     expect(workspace.guidance.playbooks["Human Resource"]).toEqual({
@@ -93,6 +93,14 @@ describe("encrypted device vault", () => {
     expect(reopened.guidance.playbooks["Network Marketing"]).toEqual({ objective: "NETWORK-ONLY-GOAL", boundaries: "NETWORK-ONLY-RULES", rulebookDigest: "- NETWORK-ONLY-RULES" });
     expect(reopened.guidance.selectedRole).toBe("Human Resource");
     expect(reopened.inboxRole).toBe("Network Marketing");
+  });
+
+  it("round-trips valid draft decision metadata through the encrypted device vault", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.contacts = [{ id: "decision-contact", name: "Decision", headline: "", profileNotes: "", platform: "linkedin", platformUrl: "", chat: [], documents: [], outcomes: [], retentionDays: 90, draftHistory: [{ id: "draft-00000000-0000-4000-8000-000000000001", agenda: "", drafts: ["Draft"], createdAt: "2026-08-10T09:00:00.000Z", learningDecision: { recordId: "learning-decision-draft-00000000-0000-4000-8000-000000000001", state: "authored", syncStatus: "synced", updatedAt: "2026-08-10T10:00:00.000Z" } }] }];
+    await createDeviceVault(workspace);
+
+    expect((await openDeviceVault()).workspace.contacts[0].draftHistory?.[0].learningDecision).toEqual({ recordId: "learning-decision-draft-00000000-0000-4000-8000-000000000001", state: "authored", syncStatus: "synced", updatedAt: "2026-08-10T10:00:00.000Z" });
   });
 
   it("encrypts and restores reply rules beyond the former 20,000-character limit", async () => {
@@ -163,6 +171,140 @@ describe("encrypted device vault", () => {
     expect(reopened.lastSyncDiagnostic).toEqual(workspace.contacts[0].lastSyncDiagnostic);
     const stored = JSON.stringify(await readVaultEnvelopeForTests());
     expect(stored).not.toContain("abc123");
+  });
+
+  it("migrates stage-aware guidance safely and round-trips it only inside ciphertext", async () => {
+    const migrated = normalizeWorkspace({
+      version: 10,
+      personalGuidelines: "  Prefer one thoughtful question.  ",
+      contacts: [{
+        id: "alex",
+        name: "Alex",
+        relationshipStage: "not-a-stage",
+        conversationGoal: "Learn what kind of support would be useful.",
+      }],
+    });
+
+    expect(migrated.version).toBe(15);
+    expect(migrated.personalGuidelines).toBe("Prefer one thoughtful question.");
+    expect(migrated.contacts[0]).toMatchObject({
+      relationshipStage: "new_connection",
+      conversationGoal: "Learn what kind of support would be useful.",
+    });
+
+    migrated.contacts[0].relationshipStage = "learn_interests";
+    await createDeviceVault(migrated);
+
+    const stored = JSON.stringify(await readVaultEnvelopeForTests());
+    expect(stored).not.toContain("Prefer one thoughtful question.");
+    expect(stored).not.toContain("learn_interests");
+
+    const reopened = (await openDeviceVault()).workspace;
+    expect(reopened.personalGuidelines).toBe("Prefer one thoughtful question.");
+    expect(reopened.contacts[0].relationshipStage).toBe("learn_interests");
+    expect(reopened.contacts[0].conversationGoal).toBe("Learn what kind of support would be useful.");
+  });
+
+  it("migrates learning disabled and keeps approved examples only inside encrypted vault data", async () => {
+    const legacy = normalizeWorkspace({
+      version: 11,
+      feedback: [{
+        id: "legacy-feedback",
+        contactId: "alex",
+        draft: "Legacy provider response",
+        rating: "useful",
+        note: "Helpful",
+        createdAt: "2026-08-01T00:00:00.000Z",
+      }],
+    });
+    expect(legacy.personalLearning).toEqual({ enabled: true });
+    expect(legacy.feedback[0]).toMatchObject({ action: "accepted", origin: "provider_assisted", eligibleForRetrieval: false });
+
+    legacy.personalLearning.enabled = true;
+    legacy.feedback[0] = {
+      ...legacy.feedback[0],
+      origin: "independently_user_authored",
+      independentlyAuthoredAttested: true,
+      preferredResponse: "What would make this opportunity useful to you?",
+      eligibleForRetrieval: true,
+    };
+    await createDeviceVault(legacy);
+
+    const stored = JSON.stringify(await readVaultEnvelopeForTests());
+    expect(stored).not.toContain("What would make this opportunity useful to you?");
+    const reopened = (await openDeviceVault()).workspace;
+    expect(reopened.personalLearning.enabled).toBe(true);
+    expect(reopened.feedback[0]).toMatchObject({ eligibleForRetrieval: true, preferredResponse: "What would make this opportunity useful to you?" });
+  });
+
+  it("migrates version 13 learning to bounded default-on version 14 metadata without copying feedback", () => {
+    const migrated = normalizeWorkspace({
+      version: 13,
+      aiUsage: [{
+        id: "legacy-usage", contactId: "alex", modelId: "legacy-model", promptCharacters: 42,
+        variants: 3, estimatedCostUsd: 9.99, createdAt: "2026-08-01T00:00:00.000Z",
+      }],
+      feedback: [{
+        id: "legacy-feedback", contactId: "alex", draft: "Provider draft", preferredResponse: "A private reply",
+        action: "accepted", origin: "independently_user_authored", independentlyAuthoredAttested: true,
+        eligibleForRetrieval: true, createdAt: "2026-08-01T00:00:00.000Z",
+      }],
+      stageTrainingRecords: [{
+        id: "eligible-stage", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "medium",
+        hasIncomingQuestion: true, hasNeedSignal: false, hasPermissionSignal: true, hasValueDiscussionSignal: false,
+        hasNextStepSignal: false, semanticTokens: ["confidential-token"], confirmedStage: "ask_permission",
+        humanConfirmed: true, createdAt: "2026-08-01T00:00:00.000Z",
+      }, {
+        id: "provider-assisted-stage", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low",
+        hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false,
+        hasNextStepSignal: false, semanticTokens: ["must-not-copy"], confirmedStage: "new_connection",
+        humanConfirmed: false, createdAt: "2026-08-01T00:00:00.000Z",
+      }],
+    });
+
+    expect(migrated.version).toBe(15);
+    expect(migrated.aiUsage).toEqual([{
+      id: "legacy-usage", contactId: "alex", modelId: "legacy-model", promptCharacters: 42,
+      variants: 3, estimatedCostUsd: 0, createdAt: "2026-08-01T00:00:00.000Z",
+    }]);
+    expect(migrated.personalLearning.enabled).toBe(true);
+    expect(migrated.cloudLearningSync).toEqual([]);
+    expect(migrated.feedback).toHaveLength(1);
+    expect(migrated.stageTrainingRecords.map((record) => record.id)).toEqual(["eligible-stage", "provider-assisted-stage"]);
+    expect(migrated.pendingLearningRecords.map((row) => row.mutationKind === "record_upload" ? row.recordKind : undefined)).toEqual(["classifier"]);
+    const serialized = JSON.stringify(migrated.pendingLearningRecords);
+    expect(serialized).not.toContain("semanticTokens");
+    expect(serialized).not.toContain("confidential-token");
+    expect(serialized).not.toContain("conversationGoal");
+    expect(serialized).not.toContain("provider_assisted");
+  });
+
+  it("bounds persisted pending, sync, and deletion metadata while retaining the newest valid records", () => {
+    const entry = (index: number) => ({
+      mutationKind: "record_upload" as const,
+      recordId: `record-${index}`,
+      recordKind: "classifier" as const,
+      sanitizedPayload: {
+        recordKind: "classifier", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", provenance: "human_confirmed",
+        classifierFeatures: { messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false },
+      },
+      sourceCollection: "stageTrainingRecords" as const,
+      sourceLocalId: `source-${index}`,
+      createdAt: "2026-08-01T00:00:00.000Z",
+      expiresAt: "2027-08-01T00:00:00.000Z",
+    });
+    const pending = Array.from({ length: 1_001 }, (_, index) => entry(index));
+    const sync = pending.map((record) => ({ recordId: record.recordId, contentDigest: "a".repeat(63) + (record.recordId.endsWith("0") ? "0" : "1"), status: "pending" as const, updatedAt: record.createdAt }));
+    const markers = pending.map((record) => ({ recordId: record.recordId, disposition: "acknowledged", sourceCollection: "stageTrainingRecords", sourceLocalId: record.sourceLocalId, deletedAt: record.createdAt }));
+    const migrated = normalizeWorkspace({ version: 14, pendingLearningRecords: pending, cloudLearningSync: sync, cloudLearningDeletionMarkers: markers, cloudLearningClearedAt: "2026-08-01T00:00:00.000Z" });
+
+    expect(migrated.pendingLearningRecords).toHaveLength(1_000);
+    expect(migrated.pendingLearningRecords[0].recordId).toBe("record-1");
+    expect(migrated.cloudLearningSync).toHaveLength(1_000);
+    expect(migrated.cloudLearningSync[0].recordId).toBe("record-1");
+    expect(migrated.cloudLearningDeletionMarkers).toHaveLength(1_000);
+    expect(migrated.cloudLearningDeletionMarkers[0].recordId).toBe("record-1");
+    expect(migrated.cloudLearningClearedAt).toBe("2026-08-01T00:00:00.000Z");
   });
 
   it("stores no readable workspace content and opens without a passphrase", async () => {

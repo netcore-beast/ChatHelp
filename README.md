@@ -6,15 +6,19 @@ ChatHelp is a local-first, encrypted web application that helps a person write t
 
 - Cloudflare Access email verification and MFA protect the deployed application.
 - AES-256-GCM encrypted IndexedDB vault with a non-exportable, browser-held device key and no additional passphrase prompt.
-- Draft generation through an authenticated Cloudflare Worker and Workers AI; no model is downloaded to the device.
+- Optional encrypted recovery stores only ciphertext and integrity metadata for at most 90 days; raw conversations and ordinary drafts never enter the server-readable learning or usage tables.
+- One stage-aware draft through an authenticated Cloudflare Worker. Anthropic Claude Opus 4.6 Thinking is primary; `@cf/meta/llama-3.1-8b-instruct-fast` and `@cf/openai/gpt-oss-120b` remain the permanent Workers AI fallbacks.
 - Local relevance ranking for imported context; no embedding service.
+- Approved cloud learning stores only server-readable, de-identified, purpose-limited records for 365 days and retrieves at most three separately authored, attested examples for bounded context. Saving a record does not train a model.
+- A server-authoritative, per-signed-in-account numeric/model-only usage ledger is retained for 365 days and reports estimated ChatHelp app allowance, never provider credit or billing balance.
+- A narrow offline relationship-stage classifier trained only from explicit human confirmations; suggestions never change a stage without a separate user action.
 - Self-hosted Tesseract worker, WebAssembly engine, and English OCR data.
 - Desktop-first, opt-in Chrome synchronization for only the LinkedIn conversation the user manually opens. Unknown contacts are created locally; mobile uses manual paste/import, and one-time extension capture plus screen/OCR remain fallbacks.
 - Local inbox, CRM pipeline stages, labels, private notes, snooze/follow-up reminders, editable draft history, and local AI usage metadata.
 - Per-contact retention and complete local erasure, including the browser-held device key.
 - Restrictive CSP and browser permission policy.
 
-Read SECURITY.md and PRIVACY.md before using real conversation data.
+Read [SECURITY.md](SECURITY.md), [PRIVACY.md](PRIVACY.md), and the [cloud learning and usage release guide](docs/cloud-learning-usage-release.md) before using real conversation data or promoting a release.
 
 ## Use in GitHub Codespaces
 
@@ -24,7 +28,7 @@ Read SECURITY.md and PRIVACY.md before using real conversation data.
 4. Open the forwarded port 3000 preview.
 5. Open ChatHelp. The browser creates and opens its encrypted workspace automatically after Cloudflare Access authentication.
 
-Draft generation runs in Cloudflare Workers AI. ChatHelp does not download or run LLM weights on the user device.
+Draft generation runs through the authenticated Cloudflare Worker. Claude is the primary provider and the earlier Workers AI models remain the fallback. ChatHelp does not download or run conversation-model weights on the user device.
 
 ## Verification
 
@@ -36,7 +40,7 @@ Run these commands inside the Codespace:
     npm run build
     npm audit --audit-level=high
 
-The test suite covers automatic device encryption, one-time migration of older passphrase vaults, tamper rejection, extension snapshot validation/deduplication, minimal Chrome permissions, manual-send boundaries, retention, retrieval, prompt-injection boundaries, response parsing, security headers, self-hosted OCR assets, and browser reopen behavior.
+The test suite covers device encryption, migration, tamper rejection, stage-aware single-draft policy, Claude/fallback routing, opt-in retrieval learning, provenance-gated training exports, the offline stage classifier, extension snapshot validation/deduplication, minimal Chrome permissions, manual-send boundaries, retention, prompt-injection boundaries, response parsing, security headers, self-hosted OCR assets, and browser reopen behavior.
 
 ## Desktop LinkedIn extension workflow
 
@@ -45,8 +49,8 @@ The test suite covers automatic device encryption, one-time migration of older p
 3. Manually open a conversation in LinkedIn Messaging. ChatHelp reads the visible central header and thread only; it never opens, scrolls, clicks, types, or scans the inbox.
 4. ChatHelp matches by normalized profile URL, then conversation URL, then guarded unique name. Unknown contacts are created in the encrypted local vault, while ambiguous identities are never merged.
 5. Manually opening another conversation synchronizes it without another toolbar click. Repeated DOM changes and captures are deduplicated.
-6. Triage the conversation with pipeline stages, labels, notes, snooze/follow-up times, and keyboard shortcuts. Generate three editable drafts only when needed.
-7. Copy the chosen draft, review it on LinkedIn, and send it yourself. The toolbar's one-time capture remains available as a fallback; ChatHelp never types or clicks Send.
+6. Triage the conversation with pipeline stages, labels, notes, snooze/follow-up times, and keyboard shortcuts. Set the relationship stage and goal, then generate one precise editable draft when needed.
+7. Review and copy the draft to LinkedIn, then send it yourself. The toolbar's one-time capture remains available as a fallback; ChatHelp never types or clicks Send.
 
 See [extension/README.md](extension/README.md) and [docs/DESKTOP_LINKEDIN_WORKFLOW.md](docs/DESKTOP_LINKEDIN_WORKFLOW.md).
 
@@ -60,6 +64,8 @@ ChatHelp supports selected LinkedIn, Gmail, Outlook, and other HTTPS conversatio
 
 See [docs/NATIVE_PACKAGING.md](docs/NATIVE_PACKAGING.md) for artifact and signing details. Cloud inference remains explicitly consented to inside the application.
 
+Approved retrieval and any future training/export project remain separate operations. See the [cloud learning and usage release guide](docs/cloud-learning-usage-release.md) for current storage, migration, smoke, rollback, provider, and LoRA boundaries, and [docs/TRAINING_AND_LORA.md](docs/TRAINING_AND_LORA.md) for classifier and dataset-provenance constraints.
+
 ## Important product boundary
 
 ChatHelp is a drafting assistant, not a messaging automation client. After explicit opt-in, its isolated DOM reader observes only the central conversation the user manually opens. It does not enumerate the inbox, use LinkedIn APIs or cookies, click controls, type, insert drafts, or send messages. This keeps the user in control.
@@ -67,9 +73,10 @@ ChatHelp is a drafting assistant, not a messaging automation client. After expli
 ## Deployment channels
 
 - Production remains `https://chathelp-private-cloud.project-mission-ai.workers.dev/` until a public custom domain is purchased and explicitly attached.
-- Testing uses the stable aliased preview `https://testing-chathelp-private-cloud.project-mission-ai.workers.dev/`.
-- The testing link is a preview version of the same Worker, not a duplicate Worker. Uploading a test version does not promote it to production.
-- GitHub remains the release source of truth: changes are reviewed through a pull request and production is promoted only after checks and testing pass.
+- Testing uses the stable Worker route `https://testing-chathelp-private-cloud.project-mission-ai.workers.dev/`.
+- GitHub remains the release source of truth. Cloudflare serves the verified static frontend assets and the private API from the Worker bundle built from that source.
+- Testing and production use explicit Wrangler environments and separate Worker/database bindings. Deploy testing with `npm run deploy:cloudflare:testing`; it updates only the stable testing URL and cannot access the production database.
+- Production deployment remains a separate, explicitly authorized action through `npm run deploy:cloudflare` after checks and testing pass.
 
 
 ## Guided LinkedIn profile test

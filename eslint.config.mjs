@@ -10,6 +10,8 @@ export default defineConfig([
     "out/**",
     "build/**",
     "coverage/**",
+    ".wrangler/**",
+    ".wrangler-*/**",
     "dist/**",
     "android/.gradle/**",
     "android/app/build/**",

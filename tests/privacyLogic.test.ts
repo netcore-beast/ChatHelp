@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyRetention } from "../src/lib/retention";
+import { applyLearningRetention, applyRetention } from "../src/lib/retention";
 import { buildPrompt, hasUsableWebGpu, parseDrafts } from "../src/lib/privateAi";
 import { containsLinkedInPageNoise, isConversationCapture, isLikelyFullLinkedInPageCapture, selectRecentConversationCaptures, selectRelevantContext, validateContextFile } from "../src/lib/retrieval";
 import { createEmptyWorkspace, resolveRoleGuidance, type Contact } from "../src/lib/workspaceTypes";
@@ -108,6 +108,42 @@ Happy to connect with you as well.`;
     expect(applyRetention(workspace, now).deletionTombstones).toEqual([
       { contactId: "current", identityHashes: ["new-hash"], deletedAt: "2026-07-01T00:00:00.000Z" },
     ]);
+  });
+
+  it("expires learning content and deletion metadata after a fixed 365 days", () => {
+    const workspace = createEmptyWorkspace();
+    const at364 = "2025-08-01T12:00:00.000Z";
+    const at366 = "2025-07-30T12:00:00.000Z";
+    workspace.feedback = [
+      { id: "feedback-364", contactId: "c", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "unknown", modelId: "", action: "accepted", draft: "d", preferredResponse: "", outcome: "", reason: "", origin: "provider_assisted", independentlyAuthoredAttested: false, eligibleForRetrieval: false, enabled: true, createdAt: at364, updatedAt: at364 },
+      { id: "feedback-366", contactId: "c", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "unknown", modelId: "", action: "accepted", draft: "d", preferredResponse: "", outcome: "", reason: "", origin: "provider_assisted", independentlyAuthoredAttested: false, eligibleForRetrieval: false, enabled: true, createdAt: at366, updatedAt: at366 },
+    ];
+    workspace.stageTrainingRecords = [
+      { id: "stage-364", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: at364 },
+      { id: "stage-366", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: at366 },
+    ];
+    workspace.pendingLearningRecords = [
+      { mutationKind: "record_upload", recordId: "pending-364", recordKind: "classifier", sanitizedPayload: {}, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-364", createdAt: at364, expiresAt: "2026-08-01T12:00:00.000Z" },
+      { mutationKind: "record_upload", recordId: "pending-366", recordKind: "classifier", sanitizedPayload: {}, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-366", createdAt: at366, expiresAt: "2026-07-30T12:00:00.000Z" },
+    ];
+    workspace.cloudLearningSync = [
+      { recordId: "pending-364", contentDigest: "a".repeat(64), status: "pending", updatedAt: at364 },
+      { recordId: "pending-366", contentDigest: "b".repeat(64), status: "failed", updatedAt: at366 },
+    ];
+    workspace.cloudLearningDeletionMarkers = [
+      { recordId: "pending-364", disposition: "deleted", sourceCollection: "", sourceLocalId: "", deletedAt: at364 },
+      { recordId: "pending-366", disposition: "deleted", sourceCollection: "", sourceLocalId: "", deletedAt: at366 },
+    ];
+    workspace.cloudLearningClearedAt = at364;
+
+    const retained = applyLearningRetention(workspace, Date.parse("2026-07-31T12:00:00.000Z"));
+    expect(retained.feedback.map((row) => row.id)).toEqual(["feedback-364"]);
+    expect(retained.stageTrainingRecords.map((row) => row.id)).toEqual(["stage-364"]);
+    expect(retained.pendingLearningRecords.map((row) => row.recordId)).toEqual(["pending-364"]);
+    expect(retained.cloudLearningSync.map((row) => row.recordId)).toEqual(["pending-364"]);
+    expect(retained.cloudLearningDeletionMarkers.map((row) => row.recordId)).toEqual(["pending-364"]);
+    expect(retained.cloudLearningClearedAt).toBe(at364);
+    expect(applyLearningRetention({ ...workspace, cloudLearningClearedAt: at366 }, Date.parse("2026-07-31T12:00:00.000Z")).cloudLearningClearedAt).toBe("");
   });
 
   it("rejects unsupported or oversized context files", () => {

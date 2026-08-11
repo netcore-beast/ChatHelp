@@ -6,14 +6,14 @@ const read = (path: string) => readFileSync(path, "utf8");
 describe("DialogMint customer-facing branding", () => {
   it("brands the web app, PWA, desktop package, and extension as DialogMint", () => {
     expect(read("src/app/layout.tsx")).toContain('title: "DialogMint — Private cloud conversation copilot"');
-    expect(read("src/components/ChatHelpApp.tsx")).toContain("<strong>DialogMint</strong>");
+    expect(read("src/components/ChatHelpApp.tsx")).toContain('<p className="eyebrow">DIALOGMINT</p>');
     expect(read("public/manifest.webmanifest")).toContain('"name": "DialogMint Private Conversation Studio"');
     expect(read("public/offline.html")).toContain("DialogMint is offline");
     expect(read("electron-builder.yml")).toContain("productName: DialogMint");
 
     const manifest = JSON.parse(read("extension/manifest.json"));
     expect(manifest.name).toBe("DialogMint LinkedIn Conversation Reader");
-    expect(manifest.version).toBe("0.5.0");
+    expect(manifest.version).toBe("0.5.1");
     expect(manifest.description).toContain("DialogMint");
     expect(read("extension/README.md")).toContain("# DialogMint LinkedIn Conversation Reader");
     expect(read("extension/background.js")).toContain("Open DialogMint to receive synchronized conversations.");

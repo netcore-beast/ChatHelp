@@ -39,7 +39,7 @@ app.whenReady().then(async () => {
       state = await window.webContents.executeJavaScript(`({
         title: document.title,
         heading: document.querySelector("h1")?.textContent ?? "",
-        checking: document.body.textContent?.includes("Checking this browser for an encrypted workspace") ?? false,
+        checking: document.body.textContent?.includes("Opening this browser's encrypted workspace") ?? false,
         indexedDb: typeof indexedDB !== "undefined",
         bodyText: document.body.innerText.slice(0, 800)
       })`);
@@ -49,7 +49,7 @@ app.whenReady().then(async () => {
     if (errors.length) throw new Error(errors.join("\n"));
     if (!state?.indexedDb) throw new Error("IndexedDB is unavailable in the rendered app.");
     if (state.checking) throw new Error(`The application remained on its startup loading screen. Body: ${state.bodyText}`);
-    if (state.heading !== "Private conversation studio") throw new Error(`Unexpected startup heading: ${state?.heading || "none"}`);
+    if (state.heading !== "Private conversation studio") throw new Error(`Unexpected startup heading: ${state?.heading || "none"}. Body: ${state?.bodyText || "empty"}`);
     console.log("Browser smoke verified: React hydrated and secure storage initialization completed.");
     clearTimeout(timeout);
     app.exit(0);

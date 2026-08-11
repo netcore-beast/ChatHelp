@@ -24,7 +24,7 @@ globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConvers
   };
   const safeLinkedInUrl = (value, prefix) => {
     try {
-      const url = new URL(value, location.origin);
+      const url = new URL(value, "https://www.linkedin.com");
       if (url.protocol !== "https:" || (url.hostname !== "linkedin.com" && url.hostname !== "www.linkedin.com") || !url.pathname.startsWith(prefix)) return "";
       url.hostname = "www.linkedin.com";
       url.pathname = `${url.pathname.replace(/\/+$/, "")}/`;
@@ -111,16 +111,18 @@ globalThis.extractOpenLinkedInConversation = function extractOpenLinkedInConvers
   if (!name) return failure("contact_name_not_found", "LinkedIn layout unsupported. DialogMint could not identify the open conversation contact.");
 
   const headline = firstText(header, [
+    "[data-anonymize='headline']",
     ".msg-entity-lockup__entity-subtitle",
     ".artdeco-entity-lockup__subtitle",
+    ".artdeco-entity-lockup__caption",
     ".msg-thread__participant-info",
     "[data-view-name='message-thread-subtitle']",
   ], 500);
   const explicitCompany = firstText(header, ["[data-view-name='message-thread-company']", "[data-anonymize='company-name']"], 500);
   const company = explicitCompany || cleanText(headline.match(/\bat\s+(.+)$/i)?.[1] || "", 500);
-  const avatar = firstElement(header, ["img.msg-entity-lockup__entity-image", "img.presence-entity__image", "img"]);
+  const avatar = firstElement(header, ["a[href*='/in/'] img", "img.msg-entity-lockup__entity-image", "img.presence-entity__image", ".artdeco-entity-lockup__image img", "img[data-delayed-url]", "img"]);
   const profileUrl = safeLinkedInUrl(profileAnchor?.getAttribute("href") || "", "/in/");
-  const avatarUrl = safeImageUrl(avatar?.getAttribute("src") || "");
+  const avatarUrl = safeImageUrl(avatar?.getAttribute("src") || avatar?.getAttribute("data-delayed-url") || avatar?.getAttribute("data-ghost-url") || "");
   const observedContact = { name, profileUrl };
   const pageUrl = safeLinkedInUrl(`${location.origin}${location.pathname}`, "/messaging/");
   const contactIdentity = profileUrl || pageUrl || normalized(name);

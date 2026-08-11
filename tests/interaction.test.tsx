@@ -59,35 +59,87 @@ const automaticSnapshot = (messages: SnapshotMessage[] = [{
   messages,
 });
 
-async function announceExtension() {
-  await act(async () => {
-    window.dispatchEvent(new MessageEvent("message", {
-      source: window,
-      origin: window.location.origin,
-      data: { source: LINKEDIN_EXTENSION_SOURCE, type: "CHATHELP_EXTENSION_READY", version: "0.5.0" },
-    }));
-    window.dispatchEvent(new MessageEvent("message", {
-      source: window,
-      origin: window.location.origin,
-      data: {
-        source: LINKEDIN_EXTENSION_SOURCE,
-        type: LINKEDIN_SYNC_STATE_EVENT,
-        payload: {
-          source: LINKEDIN_EXTENSION_SOURCE,
-          version: 1,
-          stateId: "state-ui-1",
-          occurredAt: "2026-08-02T12:00:00.000Z",
-          enabled: true,
-          paused: false,
-          permissionGranted: true,
-          code: "waiting_for_conversation",
-          message: "Waiting for a LinkedIn conversation.",
-          lastContactName: "",
-          lastMessageCount: 0,
-        },
-      },
-    }));
+function usageResponse(): Response {
+  const totals = {
+    uncachedInputTokens: 0, cacheWriteTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0,
+    cacheReadTokens: 0, outputTokens: 0, thinkingTokens: 0, promptTokens: 0, completionTokens: 0,
+    totalTokens: 0, estimatedNeurons: 0,
+  };
+  return new Response(JSON.stringify({
+    periodStart: "2026-08-01T00:00:00.000Z",
+    nextResetAt: "2026-09-01T00:00:00.000Z",
+    providers: {
+      anthropic: { provider: "anthropic", consumedMicroUsd: 0, allowanceMicroUsd: 10_000_000, remainingMicroUsd: 10_000_000, quality: "unavailable", totals, models: [] },
+      workersAi: { provider: "workers_ai", consumedMicroUsd: 0, allowanceMicroUsd: 2_000_000, remainingMicroUsd: 2_000_000, quality: "unavailable", totals, models: [] },
+    },
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+function learningStatusResponse(overrides: Partial<{
+  enabled: boolean;
+  noticeVersion: string;
+  retentionDays: number;
+  counts: { classifier: number; evaluation: number; generative: number };
+}> = {}): Response {
+  return new Response(JSON.stringify({
+    enabled: true,
+    noticeVersion: "2026-08-09-v1",
+    retentionDays: 365,
+    counts: { classifier: 0, evaluation: 0, generative: 0 },
+    ...overrides,
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+function learningRecordsResponse(records: readonly unknown[] = [], nextCursor: string | null = null): Response {
+  return new Response(JSON.stringify({ records, nextCursor }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
   });
+}
+
+const managementClassifierFeatures = {
+  messageCountBucket: "low",
+  hasIncomingQuestion: false,
+  hasNeedSignal: false,
+  hasPermissionSignal: false,
+  hasValueDiscussionSignal: false,
+  hasNextStepSignal: false,
+} as const;
+
+async function announceExtension() {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent("message", {
+        source: window,
+        origin: window.location.origin,
+        data: { source: LINKEDIN_EXTENSION_SOURCE, type: "CHATHELP_EXTENSION_READY", version: "0.5.1" },
+      }));
+      window.dispatchEvent(new MessageEvent("message", {
+        source: window,
+        origin: window.location.origin,
+        data: {
+          source: LINKEDIN_EXTENSION_SOURCE,
+          type: LINKEDIN_SYNC_STATE_EVENT,
+          payload: {
+            source: LINKEDIN_EXTENSION_SOURCE,
+            version: 1,
+            stateId: "state-ui-1",
+            occurredAt: "2026-08-02T12:00:00.000Z",
+            enabled: true,
+            paused: false,
+            permissionGranted: true,
+            code: "waiting_for_conversation",
+            message: "Waiting for a LinkedIn conversation.",
+            lastContactName: "",
+            lastMessageCount: 0,
+          },
+        },
+      }));
+    });
+    if (screen.queryByRole("switch", { name: "Pause automatic sync" })) return;
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
+  }
+  await waitFor(() => expect(screen.getByRole("switch", { name: "Pause automatic sync" })).toBeTruthy());
 }
 
 async function deliverSnapshot(snapshot = automaticSnapshot()) {
@@ -125,6 +177,7 @@ describe("secure conversation workspace interaction", () => {
     const firstRender = render(<ChatHelpApp />);
     expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
     expect(screen.getByRole("complementary", { name: "Workspace navigation" })).toBeTruthy();
+    expect(screen.queryByRole("complementary", { name: "Contact context" })).toBeNull();
     expect(screen.getByLabelText("Conversation inbox")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.type(screen.getByLabelText("New contact name"), "Alex Morgan");
@@ -132,6 +185,14 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     expect(await within(screen.getByRole("navigation", { name: "Conversations" })).findByRole("button", { name: "Open conversation with Alex Morgan" })).toBeTruthy();
     expect(screen.getByLabelText("Conversation with Alex Morgan")).toBeTruthy();
+    const contextToggle = screen.getByRole("button", { name: "Show contact details" });
+    expect(contextToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("complementary", { name: "Contact context" })).toBeNull();
+    await user.click(contextToggle);
+    expect(screen.getByRole("complementary", { name: "Contact context" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Hide contact details" }).getAttribute("aria-expanded")).toBe("true");
+    await user.click(screen.getByRole("button", { name: "Hide contact details" }));
+    expect(screen.queryByRole("complementary", { name: "Contact context" })).toBeNull();
     await waitFor(async () => expect((await openDeviceVault()).workspace.contacts.some((contact) => contact.name === "Alex Morgan")).toBe(true), { timeout: 3000 });
 
     firstRender.unmount();
@@ -184,15 +245,42 @@ describe("secure conversation workspace interaction", () => {
     expect(await screen.findAllByText("Encrypted backup pending")).not.toHaveLength(0);
   }, 15_000);
 
-  it("persists local pin and read-later choices and exposes the derived conversation state", async () => {
+  it("keeps only user labels on tiles and persists pin, read-later, and unread state", async () => {
     const user = userEvent.setup();
+    const seeded = createEmptyWorkspace();
+    seeded.contacts = [{
+      id: "taylor-local",
+      name: "Taylor Lee",
+      headline: "",
+      profileNotes: "",
+      platform: "linkedin",
+      platformUrl: "https://www.linkedin.com/messaging/thread/taylor-lee/",
+      profileUrl: "https://www.linkedin.com/in/taylor-lee/",
+      conversationUrl: "https://www.linkedin.com/messaging/thread/taylor-lee/",
+      company: "",
+      avatarUrl: "",
+      source: "linkedin-extension",
+      labels: ["priority"],
+      pipelineStage: "inbox",
+      chat: [],
+      documents: [],
+      outcomes: [],
+      retentionDays: 90,
+    }];
+    await createDeviceVault(seeded);
     const firstRender = render(<ChatHelpApp />);
     expect(await screen.findByRole("heading", { name: /private conversation studio/i })).toBeTruthy();
     await announceExtension();
     await deliverSnapshot();
 
     const inbox = screen.getByRole("navigation", { name: "Conversations" });
-    expect(within(inbox).getByText("To respond", { selector: ".conversation-state-badge" })).toBeTruthy();
+    expect(within(inbox).getByText("priority", { selector: ".label-chip" })).toBeTruthy();
+    for (const systemTag of ["Synced", "Inbox", "Awaiting reply", "To respond", "Read later"]) {
+      expect(within(inbox).queryByText(systemTag)).toBeNull();
+    }
+    expect(within(inbox).getByLabelText("Unread message from Taylor Lee")).toBeTruthy();
+    await user.click(within(inbox).getByRole("button", { name: "Open conversation with Taylor Lee" }));
+    expect(within(inbox).queryByLabelText("Unread message from Taylor Lee")).toBeNull();
     const pin = within(inbox).getByRole("button", { name: "Pin Taylor Lee" });
     const readLater = within(inbox).getByRole("button", { name: "Read Taylor Lee later" });
     expect(pin.getAttribute("aria-pressed")).toBe("false");
@@ -200,7 +288,7 @@ describe("secure conversation workspace interaction", () => {
 
     await user.click(pin);
     await user.click(readLater);
-    expect(within(inbox).getByText("Read later", { selector: ".conversation-state-badge" })).toBeTruthy();
+    expect(within(inbox).queryByText("Read later")).toBeNull();
     expect(within(inbox).getByRole("button", { name: "Unpin Taylor Lee" }).getAttribute("aria-pressed")).toBe("true");
     expect(within(inbox).getByRole("button", { name: "Clear read later for Taylor Lee" }).getAttribute("aria-pressed")).toBe("true");
     await waitFor(() => expect(document.querySelector(".save-state")?.textContent).toContain("Encrypted"), { timeout: 3_000 });
@@ -211,7 +299,7 @@ describe("secure conversation workspace interaction", () => {
     const reopenedInbox = screen.getByRole("navigation", { name: "Conversations" });
     expect(within(reopenedInbox).getByRole("button", { name: "Unpin Taylor Lee" }).getAttribute("aria-pressed")).toBe("true");
     expect(within(reopenedInbox).getByRole("button", { name: "Clear read later for Taylor Lee" }).getAttribute("aria-pressed")).toBe("true");
-    expect(within(reopenedInbox).getByText("Read later", { selector: ".conversation-state-badge" })).toBeTruthy();
+    expect(within(reopenedInbox).queryByLabelText("Unread message from Taylor Lee")).toBeNull();
   }, 20_000);
 
   it("shows message-free sync diagnostics and the prompt-aligned draft context inspector", async () => {
@@ -230,19 +318,31 @@ describe("secure conversation workspace interaction", () => {
     expect(within(syncDiagnostics).getByText("Duplicates 0")).toBeTruthy();
     expect(within(syncDiagnostics).getByText("Result Created")).toBeTruthy();
 
-    await user.click(screen.getByText("Draft context"));
+    const composer = screen.getByRole("region", { name: "Reply to Taylor Lee" });
+    await user.click(within(composer).getByText("Advanced"));
+    await user.click(within(composer).getByText("Draft context"));
     const draftContext = screen.getByRole("region", { name: "Draft context" });
     expect(within(draftContext).getByText(/Socializing\/Networking playbook/)).toBeTruthy();
     expect(within(draftContext).getByText("1 conversation message included")).toBeTruthy();
     expect(within(draftContext).getByText(/reply-rule characters/)).toBeTruthy();
-    expect(within(draftContext).getByText("No optional objective")).toBeTruthy();
+    expect(within(draftContext).getByText("No optional instruction")).toBeTruthy();
     expect(within(draftContext).getByText(/Could you share the role brief\?/)).toBeTruthy();
   });
 
-  it("generates exactly three editable drafts for a newly synchronized contact", async () => {
-    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      drafts: ["I can share the brief here.", "Happy to send the details—what would be most useful?", "I’ll send a concise overview for you to review."],
-    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  it("generates exactly one editable precise draft with stage, goal, and personal guidance", async () => {
+    const request = vi.fn(async (...[path]: [RequestInfo | URL, RequestInit?]) => {
+      if (String(path) === "/api/learning/status") return learningStatusResponse();
+      if (String(path) === "/api/usage") return usageResponse();
+      return new Response(JSON.stringify({
+        draft: "I can share the brief here. Which part would be most useful to start with?",
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        mode: "stage-aware-single-draft-v1",
+        usageAccounting: "recorded",
+        requestId: "123e4567-e89b-42d3-a456-426614174000",
+        fallbackReason: null,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
     vi.stubGlobal("fetch", request);
     const user = userEvent.setup();
     render(<ChatHelpApp />);
@@ -253,24 +353,759 @@ describe("secure conversation workspace interaction", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.queryByLabelText(/Cloud access code/)).toBeNull();
-    await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
+    expect(screen.getByText(/Claude Opus 4\.6 Thinking analyzes, writes, and independently reviews one reply/)).toBeTruthy();
+    expect(screen.getByText(/Llama 3\.1 8B and GPT-OSS 120B remain available as the permanent Cloudflare fallback/)).toBeTruthy();
+    await user.type(screen.getByRole("textbox", { name: "Personal conversation guidelines" }), "Prefer plain language and one useful question.");
+    expect(screen.getByText("46 / 2,000 characters")).toBeTruthy();
+    const consent = screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ });
+    expect(consent.closest("label")?.textContent).toMatch(/Anthropic.*Cloudflare-hosted fallback/);
+    await user.click(consent);
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
-    expect((screen.getByLabelText("What should your reply accomplish?") as HTMLTextAreaElement).value).toBe("");
-    await user.click(screen.getByRole("button", { name: "Generate 3 drafts for Taylor Lee" }));
+    expect((screen.getByLabelText("Optional instruction") as HTMLTextAreaElement).value).toBe("");
+    await user.click(within(screen.getByRole("region", { name: "Reply to Taylor Lee" })).getByText("Advanced"));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Relationship stage" }), "learn_interests");
+    await user.type(screen.getByRole("textbox", { name: "Conversation goal" }), "Learn which role detail matters most.");
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
 
     expect(await screen.findByLabelText("Edit draft 1")).toBeTruthy();
-    expect(screen.getByLabelText("Edit draft 2")).toBeTruthy();
-    expect(screen.getByLabelText("Edit draft 3")).toBeTruthy();
-    expect(request).toHaveBeenCalledTimes(1);
-    expect(request.mock.calls[0][1]?.credentials).toBe("same-origin");
-    const requestBody = JSON.parse(request.mock.calls[0][1]?.body as string);
+    expect(screen.queryByLabelText("Edit draft 2")).toBeNull();
+    expect(request.mock.calls.filter(([path]) => path === "/api/drafts")).toHaveLength(1);
+    const draftCall = request.mock.calls.find(([path]) => path === "/api/drafts");
+    expect(draftCall?.[1]?.credentials).toBe("same-origin");
+    const requestBody = JSON.parse(draftCall?.[1]?.body as string);
     expect(requestBody.replyObjective).toBe("");
     expect(requestBody.conversationContext).toContain("Could you share the role brief?");
     expect(requestBody.playbook.rulebookFull).toBeTruthy();
     expect(requestBody.playbook.rulebookDigest).toBeTruthy();
-    expect(screen.getByText(/independently reviewed against the full Socializing\/Networking rulebook/i)).toBeTruthy();
+    expect(requestBody.personalGuidelines).toBe("Prefer plain language and one useful question.");
+    expect(requestBody.relationshipStage).toBe("learn_interests");
+    expect(requestBody.conversationGoal).toBe("Learn which role detail matters most.");
+    expect(requestBody.latestMeaningfulIncoming).toMatchObject({ sender: "CONTACT", text: "Could you share the role brief?" });
+    expect(screen.getByText(/Generated one precise draft with Claude Opus 4.6/i)).toBeTruthy();
+    const progressToggle = screen.getByRole("button", { name: "Show AI steps" });
+    expect(progressToggle.getAttribute("aria-expanded")).toBe("false");
+    await user.click(progressToggle);
+    expect(screen.getByText("Finalizing precise draft").closest("li")?.dataset.status).toBe("done");
     expect(screen.getByRole("link", { name: /Open LinkedIn to review and paste/ })).toBeTruthy();
+  }, 20_000);
+
+  it("refreshes the server allowance after generation and when Settings opens without appending local usage", async () => {
+    const totals = {
+      uncachedInputTokens: 0, cacheWriteTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0,
+      cacheReadTokens: 0, outputTokens: 0, thinkingTokens: 0, promptTokens: 0, completionTokens: 0,
+      totalTokens: 0, estimatedNeurons: 0,
+    };
+    const usage = {
+      periodStart: "2026-08-01T00:00:00.000Z",
+      nextResetAt: "2026-09-01T00:00:00.000Z",
+      providers: {
+        anthropic: { provider: "anthropic", consumedMicroUsd: 0, allowanceMicroUsd: 10_000_000, remainingMicroUsd: 10_000_000, quality: "unavailable", totals, models: [] },
+        workersAi: { provider: "workers_ai", consumedMicroUsd: 0, allowanceMicroUsd: 2_000_000, remainingMicroUsd: 2_000_000, quality: "unavailable", totals, models: [] },
+      },
+    };
+    const request = vi.fn(async (...[path]: [RequestInfo | URL, RequestInit?]) => {
+      if (String(path) === "/api/usage") return new Response(JSON.stringify(usage), { status: 200, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({
+        draft: "A server-accounted reply.", provider: "anthropic", model: "claude-opus-4-6",
+        mode: "stage-aware-single-draft-v1", usageAccounting: "recorded", requestId: "123e4567-e89b-42d3-a456-426614174000", fallbackReason: null,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", request);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await announceExtension();
+    await deliverSnapshot();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
+    await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
+
+    expect(await screen.findByDisplayValue("A server-accounted reply.")).toBeTruthy();
+    await waitFor(async () => expect((await openDeviceVault()).workspace.contacts[0].draftHistory?.[0]?.drafts).toEqual(["A server-accounted reply."]));
+    expect((await openDeviceVault()).workspace.aiUsage).toEqual([]);
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => path === "/api/usage")).toHaveLength(2));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => path === "/api/usage")).toHaveLength(3));
+  }, 20_000);
+
+  it("shows automatic approved cloud learning while keeping provider-assisted drafts out of retrieval", async () => {
+    const request = vi.fn(async (...[path]: [RequestInfo | URL, RequestInit?]) => {
+      if (String(path) === "/api/learning/status") return learningStatusResponse();
+      if (String(path) === "/api/usage") return usageResponse();
+      return new Response(JSON.stringify({
+        draft: "I can share the brief. Which part would be most useful to explore first?",
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        mode: "stage-aware-single-draft-v1",
+        usageAccounting: "recorded",
+        requestId: "123e4567-e89b-42d3-a456-426614174000",
+        fallbackReason: null,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", request);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await announceExtension();
+    await deliverSnapshot();
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByText("Cloud learning enabled")).toBeTruthy();
+    expect(screen.getByText(/server-readable in Neon for retrieval and future training preparation/i)).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: "Enable encrypted personal learning" })).toBeNull();
+    await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
+    await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
+    await screen.findByLabelText("Edit draft 1");
+    const draftCall = request.mock.calls.find(([path]) => path === "/api/drafts");
+    expect(JSON.parse(draftCall?.[1]?.body as string)).not.toHaveProperty("learningExamples");
+
+    const draftCard = screen.getByLabelText("Edit draft 1").closest("article");
+    expect(draftCard).toBeTruthy();
+    for (const label of ["Copy", "Useful", "Not useful"]) expect(within(draftCard as HTMLElement).getByRole("button", { name: label })).toBeTruthy();
+    for (const label of ["Save improvement", "Mark sent", "More", "Save edit", "Reject"]) {
+      expect(within(draftCard as HTMLElement).queryByRole("button", { name: label })).toBeNull();
+    }
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.queryByText("Provider-assisted by default")).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Preferred response for learning" })).toBeNull();
+  }, 30_000);
+
+  it("shows only one response from legacy three-draft history", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.inboxRole = "Network Marketing";
+    workspace.contacts = [{
+      id: "legacy-drafts-contact",
+      name: "Amit Dabral",
+      headline: "",
+      profileNotes: "",
+      platform: "linkedin",
+      platformUrl: "",
+      chat: [{ id: "incoming", role: "them", body: "Happy to connect.", createdAt: "2026-08-02T11:59:00.000Z" }],
+      documents: [],
+      outcomes: [],
+      retentionDays: 90,
+      draftHistory: [{
+        id: "legacy-three-draft-set",
+        agenda: "Continue the conversation",
+        drafts: ["First legacy response", "Second legacy response", "Third legacy response"],
+        createdAt: "2026-08-02T12:00:00.000Z",
+        role: "Network Marketing",
+      }],
+    }];
+    await createDeviceVault(workspace);
+
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+
+    expect((screen.getByLabelText("Edit draft 1") as HTMLTextAreaElement).value).toBe("First legacy response");
+    expect(screen.queryByLabelText("Edit draft 2")).toBeNull();
+    expect(screen.getByRole("button", { name: "Generate Precise Draft" })).toBeTruthy();
+  });
+
+  it("keeps direct draft actions free of legacy controls and LinkedIn commands", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.contacts = [{
+      id: "manual-send-boundary",
+      name: "Taylor Lee",
+      headline: "",
+      profileNotes: "",
+      platform: "linkedin",
+      platformUrl: "https://www.linkedin.com/messaging/thread/taylor-lee/",
+      chat: [{ id: "incoming", role: "them", body: "Happy to connect.", createdAt: "2026-08-02T11:59:00.000Z" }],
+      documents: [],
+      outcomes: [],
+      retentionDays: 90,
+      draftHistory: [{ id: "manual-send-draft", agenda: "", drafts: ["Thanks for connecting."], createdAt: "2026-08-02T12:00:00.000Z", role: workspace.inboxRole }],
+    }];
+    await createDeviceVault(workspace);
+    const postMessage = vi.spyOn(window, "postMessage");
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+
+    for (const label of ["Copy", "Useful", "Not useful"]) expect(screen.getByRole("button", { name: label })).toBeTruthy();
+    for (const label of ["Save improvement", "Rate this draft", "Mark sent", "More", "Dismiss", "Accept", "Save edit", "Reject"]) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
+    expect(postMessage.mock.calls.some(([message]) => (message as { type?: string }).type === LINKEDIN_SYNC_COMMAND_EVENT)).toBe(false);
+    expect((screen.getByLabelText("Edit draft 1") as HTMLTextAreaElement).value).toBe("Thanks for connecting.");
+  });
+
+  it("sends neither stored feedback summaries nor learning examples from the browser", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.cloudInference.consentedAt = "2026-08-01T00:00:00.000Z";
+    workspace.personalLearning.enabled = true;
+    workspace.inboxRole = "Network Marketing";
+    workspace.contacts = [{
+      id: "learning-contact",
+      name: "Taylor Lee",
+      headline: "Talent Partner",
+      profileNotes: "",
+      platform: "linkedin",
+      platformUrl: "",
+      chat: [{ id: "incoming", role: "them", body: "What kind of work are you focused on?", createdAt: "2026-08-02T11:59:00.000Z" }],
+      documents: [],
+      outcomes: [],
+      retentionDays: 90,
+      relationshipStage: "learn_interests",
+      conversationGoal: "Learn which professional priorities matter most",
+    }];
+    workspace.feedback = Array.from({ length: 5 }, (_, index) => ({
+      id: `approved-${index}`,
+      contactId: `other-contact-${index}`,
+      role: "Network Marketing" as const,
+      relationshipStage: "learn_interests" as const,
+      conversationGoal: "Learn which professional priorities matter most",
+      provider: "local" as const,
+      modelId: "independent-user-example",
+      action: "edited" as const,
+      draft: "",
+      preferredResponse: `Approved response ${index}`,
+      outcome: "",
+      reason: "LOCAL FEEDBACK SUMMARY MUST STAY IN THE BROWSER",
+      origin: "independently_user_authored" as const,
+      independentlyAuthoredAttested: true,
+      eligibleForRetrieval: true,
+      enabled: true,
+      createdAt: `2026-08-0${index + 1}T00:00:00.000Z`,
+      updatedAt: `2026-08-0${index + 1}T00:00:00.000Z`,
+    }));
+    await createDeviceVault(workspace);
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      draft: "I focus on helping people explore options that fit their priorities. What matters most in your work right now?",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      mode: "stage-aware-single-draft-v1",
+      usageAccounting: "recorded",
+      requestId: "123e4567-e89b-42d3-a456-426614174000",
+      fallbackReason: null,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", request);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
+
+    await screen.findByLabelText("Edit draft 1");
+    const body = JSON.parse(request.mock.calls[0][1]?.body as string);
+    expect(body).not.toHaveProperty("feedbackSummary");
+    expect(body).not.toHaveProperty("learningExamples");
+    expect(JSON.stringify(body)).not.toContain("LOCAL FEEDBACK SUMMARY MUST STAY IN THE BROWSER");
+    expect(JSON.stringify(body)).not.toContain("Approved response");
+    expect(JSON.stringify(body)).not.toContain("other-contact");
+  }, 20_000);
+
+  it("keeps a local stage suggestion non-authoritative until the user applies it", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.personalLearning.enabled = true;
+    workspace.inboxRole = "Network Marketing";
+    workspace.contacts = [{
+      id: "stage-contact",
+      name: "Taylor Lee",
+      headline: "Talent Partner",
+      profileNotes: "",
+      platform: "linkedin",
+      platformUrl: "",
+      chat: [{ id: "incoming", role: "them", body: "I am thinking about my career priorities.", createdAt: "2026-08-02T11:59:00.000Z" }],
+      documents: [],
+      outcomes: [],
+      retentionDays: 90,
+      relationshipStage: "new_connection",
+      conversationGoal: "Learn about career priorities",
+    }];
+    (workspace as unknown as { stageTrainingRecords: unknown[] }).stageTrainingRecords = Array.from({ length: 4 }, (_, index) => ({
+      id: `confirmation-${index}`,
+      featureSchemaVersion: 1,
+      role: "Network Marketing",
+      messageCountBucket: "low",
+      hasIncomingQuestion: false,
+      hasNeedSignal: false,
+      hasPermissionSignal: false,
+      hasValueDiscussionSignal: false,
+      hasNextStepSignal: false,
+      semanticTokens: ["career", "priorities"],
+      confirmedStage: "learn_interests",
+      humanConfirmed: true,
+      createdAt: `2026-08-0${index + 1}T00:00:00.000Z`,
+    }));
+    await createDeviceVault(workspace);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+
+    await user.click(within(screen.getByRole("region", { name: "Reply to Taylor Lee" })).getByText("Advanced"));
+    const stageSelect = screen.getByRole("combobox", { name: "Relationship stage" }) as HTMLSelectElement;
+    expect(stageSelect.value).toBe("new_connection");
+    expect(screen.getByText(/Suggested stage: Learn interests and situation/)).toBeTruthy();
+    expect(stageSelect.value).toBe("new_connection");
+    await user.click(screen.getByRole("button", { name: "Apply suggested relationship stage" }));
+    expect(stageSelect.value).toBe("learn_interests");
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace as unknown as { stageTrainingRecords: unknown[] };
+      expect(reopened.stageTrainingRecords).toHaveLength(5);
+    });
+  }, 20_000);
+
+  it("retains pending cloud learning until a user retry receives an acknowledgement", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.stageTrainingRecords = [{
+      id: "stage-pending",
+      featureSchemaVersion: 1,
+      role: "Human Resource",
+      messageCountBucket: "low",
+      hasIncomingQuestion: false,
+      hasNeedSignal: false,
+      hasPermissionSignal: false,
+      hasValueDiscussionSignal: false,
+      hasNextStepSignal: false,
+      semanticTokens: [],
+      confirmedStage: "new_connection",
+      humanConfirmed: true,
+      createdAt: "2026-08-09T00:00:00.000Z",
+    }];
+    workspace.pendingLearningRecords = [{
+      mutationKind: "record_upload",
+      recordId: "record-pending",
+      recordKind: "classifier",
+      sanitizedPayload: {
+        recordKind: "classifier",
+        roleId: "human_resource",
+        relationshipStage: "new_connection",
+        goalCategory: "connect",
+        provenance: "human_confirmed",
+        classifierFeatures: {
+          messageCountBucket: "low",
+          hasIncomingQuestion: false,
+          hasNeedSignal: false,
+          hasPermissionSignal: false,
+          hasValueDiscussionSignal: false,
+          hasNextStepSignal: false,
+        },
+      },
+      sourceCollection: "stageTrainingRecords",
+      sourceLocalId: "stage-pending",
+      createdAt: "2026-08-09T00:00:00.000Z",
+      expiresAt: "2027-08-09T00:00:00.000Z",
+    }];
+    await createDeviceVault(workspace);
+    let uploadAttempts = 0;
+    const request = vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
+      if (String(path) === "/api/learning/status") return learningStatusResponse();
+      if (String(path) === "/api/learning/records" && init?.method === "PUT") {
+        uploadAttempts += 1;
+        if (uploadAttempts === 1) throw new Error("offline");
+        return new Response(JSON.stringify({
+          accepted: [{ recordId: "record-pending", contentDigest: "a".repeat(64) }],
+          duplicates: [],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${String(path)}`);
+    });
+    vi.stubGlobal("fetch", request);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    expect(screen.getByText("Cloud learning sync pending")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Retry cloud learning sync" }));
+    await waitFor(async () => expect((await openDeviceVault()).workspace.pendingLearningRecords).toHaveLength(1));
+
+    await user.click(screen.getByRole("button", { name: "Retry cloud learning sync" }));
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace;
+      expect(reopened.pendingLearningRecords).toEqual([]);
+      expect(reopened.stageTrainingRecords).toEqual([]);
+    });
+    expect(request.mock.calls.filter(([path, init]) => path === "/api/learning/records" && init?.method === "PUT")).toHaveLength(2);
+  }, 20_000);
+
+  it("persists acknowledged cloud learning while another encrypted record remains pending", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.stageTrainingRecords = ["accepted", "pending"].map((suffix) => ({
+      id: `stage-${suffix}`,
+      featureSchemaVersion: 1 as const,
+      role: "Human Resource" as const,
+      messageCountBucket: "low" as const,
+      hasIncomingQuestion: false,
+      hasNeedSignal: false,
+      hasPermissionSignal: false,
+      hasValueDiscussionSignal: false,
+      hasNextStepSignal: false,
+      semanticTokens: [],
+      confirmedStage: "new_connection" as const,
+      humanConfirmed: true,
+      createdAt: "2026-08-09T00:00:00.000Z",
+    }));
+    workspace.pendingLearningRecords = ["accepted", "pending"].map((suffix) => ({
+      mutationKind: "record_upload" as const,
+      recordId: `record-${suffix}`,
+      recordKind: "classifier" as const,
+      sanitizedPayload: {
+        recordKind: "classifier",
+        roleId: "human_resource",
+        relationshipStage: "new_connection",
+        goalCategory: "connect",
+        provenance: "human_confirmed",
+        classifierFeatures: {
+          messageCountBucket: "low",
+          hasIncomingQuestion: false,
+          hasNeedSignal: false,
+          hasPermissionSignal: false,
+          hasValueDiscussionSignal: false,
+          hasNextStepSignal: false,
+        },
+      },
+      sourceCollection: "stageTrainingRecords" as const,
+      sourceLocalId: `stage-${suffix}`,
+      createdAt: "2026-08-09T00:00:00.000Z",
+      expiresAt: "2027-08-09T00:00:00.000Z",
+    }));
+    await createDeviceVault(workspace);
+    vi.stubGlobal("fetch", vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
+      if (String(path) === "/api/learning/status") return learningStatusResponse();
+      if (String(path) === "/api/learning/records" && init?.method === "PUT") {
+        return new Response(JSON.stringify({
+          accepted: [{ recordId: "record-accepted", contentDigest: "c".repeat(64) }],
+          duplicates: [],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${String(path)}`);
+    }));
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    await user.click(screen.getByRole("button", { name: "Retry cloud learning sync" }));
+
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace;
+      expect(reopened.pendingLearningRecords.map((record) => record.recordId)).toEqual(["record-pending"]);
+      expect(reopened.stageTrainingRecords.map((record) => record.id)).toEqual(["stage-pending"]);
+      expect(reopened.cloudLearningSync).toEqual([expect.objectContaining({
+        recordId: "record-accepted",
+        contentDigest: "c".repeat(64),
+        status: "synced",
+      })]);
+    });
+    expect(screen.getByText("Cloud learning sync pending")).toBeTruthy();
+  }, 20_000);
+
+  it("preserves ordinary workspace updates made while a cloud learning retry is in flight", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.guidance.voice = "Stale custom voice";
+    workspace.stageTrainingRecords = [{ id: "stage-pending", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" }];
+    workspace.pendingLearningRecords = [{ mutationKind: "record_upload", recordId: "record-pending", recordKind: "classifier", sanitizedPayload: { recordKind: "classifier", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", provenance: "human_confirmed", classifierFeatures: { messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false } }, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-pending", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
+    await createDeviceVault(workspace);
+    let resolveUpload!: (response: Response) => void;
+    const request = vi.fn((path: RequestInfo | URL, init?: RequestInit) => {
+      if (String(path) === "/api/learning/status") return Promise.resolve(learningStatusResponse());
+      if (String(path) === "/api/learning/records" && init?.method === "PUT") {
+        return new Promise<Response>((resolve) => { resolveUpload = resolve; });
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? "GET"} ${String(path)}`));
+    });
+    vi.stubGlobal("fetch", request);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    await user.click(screen.getByRole("button", { name: "Retry cloud learning sync" }));
+    await waitFor(() => expect(request.mock.calls.filter(([path, init]) => path === "/api/learning/records" && init?.method === "PUT")).toHaveLength(1));
+    await user.clear(screen.getByRole("textbox", { name: "How your messages should sound" }));
+    await deliverSnapshot();
+    await act(async () => resolveUpload(new Response(JSON.stringify({
+      accepted: [{ recordId: "record-pending", contentDigest: "a".repeat(64) }],
+      duplicates: [],
+    }), { status: 200, headers: { "Content-Type": "application/json" } })));
+
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace;
+      expect(reopened.contacts.map((contact) => contact.name)).toContain("Taylor Lee");
+      expect(reopened.contacts.find((contact) => contact.name === "Taylor Lee")?.chat.map((message) => message.body)).toEqual(["Could you share the role brief?"]);
+      expect(reopened.guidance.voice).toBe("");
+      expect(reopened.pendingLearningRecords).toEqual([]);
+      expect(reopened.cloudLearningSync).toEqual([expect.objectContaining({ recordId: "record-pending", status: "synced" })]);
+    });
+  }, 20_000);
+
+  it("deletes an individual synced learning record locally only after server success", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.cloudLearningSync = [
+      { recordId: "record-1", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" },
+      { recordId: "record-2", contentDigest: "b".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" },
+    ];
+    await createDeviceVault(workspace);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    let deleteAttempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
+      if (String(path) === "/api/learning/status") return learningStatusResponse({ counts: { classifier: 2, evaluation: 0, generative: 0 } });
+      if (String(path) === "/api/learning/records" && init?.method === "GET") return learningRecordsResponse([
+        { recordId: "record-1", recordKind: "classifier", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", classifierFeatures: managementClassifierFeatures, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" },
+        { recordId: "record-2", recordKind: "classifier", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", classifierFeatures: managementClassifierFeatures, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" },
+      ]);
+      if (String(path) === "/api/learning/records/record-1" && init?.method === "DELETE") {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) throw new Error("offline");
+        return new Response(JSON.stringify({ deleted: true, recordId: "record-1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${String(path)}`);
+    }));
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByText("Advanced"));
+    expect(await screen.findByText("2 loaded")).toBeTruthy();
+
+    await user.click(screen.getAllByRole("button", { name: "Delete classifier learning record" })[0]);
+    await waitFor(async () => expect((await openDeviceVault()).workspace.cloudLearningSync.map((entry) => entry.recordId)).toEqual(["record-1", "record-2"]));
+    expect(screen.getByText("Cloud learning deletion pending")).toBeTruthy();
+
+    await user.click(screen.getAllByRole("button", { name: "Delete classifier learning record" })[0]);
+    await waitFor(async () => expect((await openDeviceVault()).workspace.cloudLearningSync.map((entry) => entry.recordId)).toEqual(["record-2"]));
+  }, 20_000);
+
+  it("disables and deletes eligible learning locally only after server success while preserving ordinary history", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.contacts = [{
+      id: "contact-1", name: "Alex", headline: "", profileNotes: "", platform: "linkedin", platformUrl: "",
+      chat: [{ id: "message-1", role: "them", body: "Keep this ordinary message", createdAt: "2026-08-09T00:00:00.000Z" }],
+      documents: [], outcomes: [], retentionDays: 90,
+      draftHistory: [{ id: "draft-1", agenda: "Keep this draft", drafts: ["Ordinary draft"], createdAt: "2026-08-09T00:00:00.000Z" }],
+    }];
+    workspace.feedback = [
+      { id: "eligible", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "", preferredResponse: "Keep eligible feedback", outcome: "", reason: "", origin: "independently_user_authored", independentlyAuthoredAttested: true, eligibleForRetrieval: true, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
+      { id: "ordinary-feedback", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "Ordinary feedback", preferredResponse: "", outcome: "", reason: "", origin: "provider_assisted", independentlyAuthoredAttested: false, eligibleForRetrieval: false, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
+    ];
+    workspace.stageTrainingRecords = [{ id: "stage-1", featureSchemaVersion: 1, role: "Human Resource", messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection", humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" }];
+    workspace.pendingLearningRecords = [{ mutationKind: "record_upload", recordId: "record-1", recordKind: "classifier", sanitizedPayload: { recordKind: "classifier", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", provenance: "human_confirmed", classifierFeatures: { messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false } }, sourceCollection: "stageTrainingRecords", sourceLocalId: "stage-1", createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }];
+    workspace.cloudLearningSync = [{ recordId: "record-2", contentDigest: "a".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" }];
+    await createDeviceVault(workspace);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    let deleteAttempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
+      if (String(path) === "/api/learning/status") return learningStatusResponse({ counts: { classifier: 1, evaluation: 0, generative: 1 } });
+      if (String(path) === "/api/learning" && init?.method === "DELETE") {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) throw new Error("offline");
+        return new Response(JSON.stringify({ enabled: false, deleted: 2 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${String(path)}`);
+    }));
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    await user.click(screen.getByRole("button", { name: "Disable and delete cloud learning" }));
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace;
+      expect(reopened.personalLearning.enabled).toBe(true);
+      expect(reopened.feedback.map((item) => item.id)).toEqual(["eligible", "ordinary-feedback"]);
+      expect(reopened.pendingLearningRecords).toHaveLength(1);
+      expect(reopened.cloudLearningSync).toHaveLength(1);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Disable and delete cloud learning" }));
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace;
+      expect(reopened.personalLearning.enabled).toBe(false);
+      expect(reopened.feedback.map((item) => item.id)).toEqual(["ordinary-feedback"]);
+      expect(reopened.stageTrainingRecords).toEqual([]);
+      expect(reopened.pendingLearningRecords).toEqual([]);
+      expect(reopened.cloudLearningSync).toEqual([]);
+      expect(reopened.contacts[0].chat.map((message) => message.body)).toEqual(["Keep this ordinary message"]);
+      expect((reopened.contacts[0].draftHistory ?? []).map((history) => history.drafts)).toEqual([["Ordinary draft"]]);
+    });
+  }, 20_000);
+
+  it("persists monotonic learning deletion markers while encrypted recovery is enabled", async () => {
+    const workspace = createEmptyWorkspace();
+    workspace.cloudRecovery.enabled = true;
+    workspace.contacts = [{
+      id: "contact-1", name: "Alex", headline: "", profileNotes: "", platform: "linkedin", platformUrl: "",
+      chat: [{ id: "message-1", role: "them", body: "Keep this message", createdAt: "2026-08-09T00:00:00.000Z" }],
+      documents: [], outcomes: [], retentionDays: 90,
+      draftHistory: [{ id: "draft-1", agenda: "Keep", drafts: ["Keep this draft"], createdAt: "2026-08-09T00:00:00.000Z" }],
+    }];
+    workspace.feedback = [
+      { id: "eligible", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "", preferredResponse: "Eligible", outcome: "", reason: "", origin: "independently_user_authored", independentlyAuthoredAttested: true, eligibleForRetrieval: true, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
+      { id: "ordinary", contactId: "contact-1", role: "Human Resource", relationshipStage: "new_connection", conversationGoal: "", provider: "local", modelId: "", action: "accepted", draft: "Ordinary feedback", preferredResponse: "", outcome: "", reason: "", origin: "provider_assisted", independentlyAuthoredAttested: false, eligibleForRetrieval: false, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z" },
+    ];
+    workspace.stageTrainingRecords = ["acknowledged", "pending"].map((suffix) => ({ id: `stage-${suffix}`, featureSchemaVersion: 1 as const, role: "Human Resource" as const, messageCountBucket: "low" as const, hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false, semanticTokens: [], confirmedStage: "new_connection" as const, humanConfirmed: true, createdAt: "2026-08-09T00:00:00.000Z" }));
+    workspace.pendingLearningRecords = ["acknowledged", "pending"].map((suffix) => ({ mutationKind: "record_upload" as const, recordId: `record-${suffix}`, recordKind: "classifier" as const, sanitizedPayload: { recordKind: "classifier", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", provenance: "human_confirmed", classifierFeatures: { messageCountBucket: "low", hasIncomingQuestion: false, hasNeedSignal: false, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false } }, sourceCollection: "stageTrainingRecords" as const, sourceLocalId: `stage-${suffix}`, createdAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" }));
+    workspace.cloudLearningSync = [{ recordId: "record-delete", contentDigest: "f".repeat(64), status: "synced", updatedAt: "2026-08-09T00:00:00.000Z" }];
+    await createDeviceVault(workspace);
+    await saveCloudRecoveryKey(await importRecoveryKey((await createRecoveryBundle()).encryptionKey));
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/vault") return new Promise<Response>(() => undefined);
+      if (path === "/api/learning/status" && init?.method === "GET") return learningStatusResponse({ counts: { classifier: 2, evaluation: 0, generative: 0 } });
+      if (path === "/api/learning/records" && init?.method === "GET") return learningRecordsResponse([
+        { recordId: "record-delete", recordKind: "classifier", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect", classifierFeatures: managementClassifierFeatures, enabled: true, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z", expiresAt: "2027-08-09T00:00:00.000Z" },
+      ]);
+      if (path === "/api/learning/records" && init?.method === "PUT") return new Response(JSON.stringify({ accepted: [{ recordId: "record-acknowledged", contentDigest: "a".repeat(64) }], duplicates: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (path === "/api/learning/records/record-delete" && init?.method === "DELETE") return new Response(JSON.stringify({ deleted: true, recordId: "record-delete" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (path === "/api/learning" && init?.method === "DELETE") return new Response(JSON.stringify({ enabled: false, deleted: 2 }), { status: 200, headers: { "Content-Type": "application/json" } });
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
+    }));
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    await user.click(screen.getByRole("button", { name: "Retry cloud learning sync" }));
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace;
+      expect(reopened.pendingLearningRecords.map((row) => row.recordId)).toEqual(["record-pending"]);
+      expect(reopened.cloudLearningDeletionMarkers).toEqual([expect.objectContaining({ recordId: "record-acknowledged", disposition: "acknowledged", sourceLocalId: "stage-acknowledged" })]);
+    });
+
+    await user.click(await screen.findByText("Advanced"));
+    expect(await screen.findByText("1 loaded")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Delete classifier learning record" }));
+    await waitFor(async () => expect((await openDeviceVault()).workspace.cloudLearningDeletionMarkers).toEqual(expect.arrayContaining([expect.objectContaining({ recordId: "record-delete", disposition: "deleted" })])));
+
+    await user.click(screen.getByRole("button", { name: "Disable and delete cloud learning" }));
+    await waitFor(async () => {
+      const reopened = (await openDeviceVault()).workspace;
+      expect(reopened.cloudLearningClearedAt).not.toBe("");
+      expect(reopened.feedback.map((row) => row.id)).toEqual(["ordinary"]);
+      expect(reopened.stageTrainingRecords).toEqual([]);
+      expect(reopened.pendingLearningRecords).toEqual([]);
+      expect(reopened.cloudLearningSync).toEqual([]);
+      expect(reopened.contacts[0].chat.map((message) => message.body)).toEqual(["Keep this message"]);
+      expect((reopened.contacts[0].draftHistory ?? []).map((history) => history.drafts)).toEqual([["Keep this draft"]]);
+      expect(reopened.cloudRecovery.enabled).toBe(true);
+    });
+  }, 20_000);
+
+  it("previews and downloads approved training exports without a LoRA upload action", async () => {
+    await createDeviceVault(createEmptyWorkspace());
+    vi.stubGlobal("fetch", vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
+      if (String(path) === "/api/learning/status") {
+        return learningStatusResponse({ counts: { classifier: 1, evaluation: 0, generative: 1 } });
+      }
+      if (String(path) === "/api/learning/records" && init?.method === "GET") {
+        return learningRecordsResponse([
+          { recordId: "classifier-safe-metadata", recordKind: "classifier", roleId: "network_marketing", relationshipStage: "learn_interests", goalCategory: "discover_interests", classifierFeatures: { messageCountBucket: "medium", hasIncomingQuestion: true, hasNeedSignal: true, hasPermissionSignal: false, hasValueDiscussionSignal: false, hasNextStepSignal: false }, enabled: true, createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z", expiresAt: "2027-08-01T00:00:00.000Z" },
+          { recordId: "authored-safe-target", recordKind: "generative", roleId: "network_marketing", relationshipStage: "learn_interests", goalCategory: "discover_interests", enabled: true, target: "Which priority would be most useful to explore?", createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z", expiresAt: "2027-08-01T00:00:00.000Z" },
+        ]);
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${String(path)}`);
+    }));
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByText("1 classifier / 0 evaluation / 1 authored examples")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Download manifest" })).toBeNull();
+    await user.click(await screen.findByText("Advanced"));
+    expect(await screen.findByText("2 loaded")).toBeTruthy();
+    expect(await screen.findByText("1 exportable classifier records loaded")).toBeTruthy();
+    expect(await screen.findByText("1 sanitized authored examples loaded")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Download classifier JSONL" }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Download manifest" }));
+    await user.click(screen.getByRole("button", { name: "Download classifier JSONL" }));
+    await user.click(screen.getByRole("button", { name: "Download user-authored JSONL" }));
+    expect(anchorClick).toHaveBeenCalledTimes(3);
+    expect(screen.queryByRole("button", { name: /upload.*LoRA/i })).toBeNull();
+  }, 20_000);
+
+  it("shows real AI stages behind a persistent accessible arrow panel", async () => {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const encoder = new TextEncoder();
+    const request = vi.fn().mockResolvedValue(new Response(new ReadableStream<Uint8Array>({
+      start(controller) { streamController = controller; },
+    }), { status: 200, headers: { "Content-Type": "text/event-stream; charset=utf-8" } }));
+    vi.stubGlobal("fetch", request);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await announceExtension();
+    await deliverSnapshot();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
+    await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
+
+    const objective = screen.getByRole("textbox", { name: "Optional instruction" });
+    const promptComposer = objective.closest(".prompt-composer");
+    expect(promptComposer).toBeTruthy();
+    expect(within(promptComposer as HTMLElement).getByRole("button", { name: "Generate Precise Draft" })).toBeTruthy();
+    expect(promptComposer?.querySelector(".prompt-composer-actions")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
+    const stopButton = screen.getByRole("button", { name: "Stop generating draft" });
+    expect((stopButton as HTMLButtonElement).disabled).toBe(false);
+    expect(stopButton.getAttribute("aria-busy")).toBe("true");
+    expect(stopButton.querySelector(".draft-button-spinner")).toBeTruthy();
+    expect(stopButton.querySelector(".draft-stop-symbol")).toBeTruthy();
+    expect(stopButton.textContent).not.toContain("Generating");
+    const progressToggle = screen.getByRole("button", { name: "Show AI steps" });
+    expect(progressToggle.getAttribute("aria-expanded")).toBe("false");
+    await user.click(progressToggle);
+    expect(progressToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Analyzing conversation stage")).toBeTruthy();
+
+    streamController?.enqueue(encoder.encode('event: stage\ndata: {"stage":"analyzing","status":"in-progress"}\n\n'));
+    streamController?.enqueue(encoder.encode('event: stage\ndata: {"stage":"analyzing","status":"done"}\n\nevent: stage\ndata: {"stage":"drafting","status":"in-progress"}\n\n'));
+    await waitFor(() => expect(screen.getByText("Writing one precise reply").closest("li")?.dataset.status).toBe("in-progress"));
+    streamController?.enqueue(encoder.encode('event: stage\ndata: {"stage":"drafting","status":"done"}\n\nevent: stage\ndata: {"stage":"reviewing","status":"in-progress"}\n\nevent: stage\ndata: {"stage":"reviewing","status":"done"}\n\nevent: stage\ndata: {"stage":"finalizing","status":"in-progress"}\n\nevent: stage\ndata: {"stage":"finalizing","status":"done"}\n\nevent: result\ndata: {"draft":"One precise reply","provider":"anthropic","model":"claude-opus-4-6","mode":"stage-aware-single-draft-v1","usageAccounting":"recorded","requestId":"123e4567-e89b-42d3-a456-426614174000","fallbackReason":null}\n\n'));
+    streamController?.close();
+
+    expect((await screen.findByRole("button", { name: "Generate Precise Draft" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByRole("button", { name: "Hide AI steps" }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Finalizing precise draft").closest("li")?.dataset.status).toBe("done");
+    expect(screen.getByLabelText("Edit draft 1")).toBeTruthy();
+  }, 20_000);
+
+  it("lets the user stop an in-flight draft request from the animated symbol control", async () => {
+    let requestSignal: AbortSignal | undefined;
+    const request = vi.fn().mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestSignal = init?.signal ?? undefined;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          requestSignal?.addEventListener("abort", () => controller.error(new DOMException("Stopped", "AbortError")), { once: true });
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream; charset=utf-8" } });
+    });
+    vi.stubGlobal("fetch", request);
+    const user = userEvent.setup();
+    render(<ChatHelpApp />);
+    await screen.findByRole("heading", { name: /private conversation studio/i });
+    await announceExtension();
+    await deliverSnapshot();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
+    await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
+
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
+    const stopButton = screen.getByRole("button", { name: "Stop generating draft" });
+    expect(stopButton.textContent).not.toContain("Generating");
+    await user.click(stopButton);
+
+    await waitFor(() => expect(requestSignal?.aborted).toBe(true));
+    expect(await screen.findByRole("button", { name: "Generate Precise Draft" })).toBeTruthy();
+    expect(screen.queryByText("Draft was not generated.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show AI steps" })).toBeNull();
   }, 20_000);
 
   it("uploads, combines, saves, and downloads the selected role's rules document", async () => {
@@ -318,9 +1153,20 @@ describe("secure conversation workspace interaction", () => {
   }, 30_000);
 
   it("keeps role playbooks isolated and applies the persisted Inbox role to every draft request", async () => {
-    const request = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ drafts: ["Network draft one", "Network draft two", "Network draft three"] }), { status: 200, headers: { "Content-Type": "application/json" } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ drafts: ["HR draft one", "HR draft two", "HR draft three"] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const drafts = [
+      { draft: "Network draft one", provider: "cloudflare", model: "@cf/meta/llama-3.1-8b-instruct-fast + @cf/openai/gpt-oss-120b", fallbackReason: "anthropic-pipeline-failed" },
+      { draft: "HR draft one", provider: "anthropic", model: "claude-opus-4-6", fallbackReason: null },
+    ];
+    const request = vi.fn(async (...[path]: [RequestInfo | URL, RequestInit?]) => {
+      if (String(path) === "/api/usage") return usageResponse();
+      if (String(path) === "/api/learning/status") return learningStatusResponse();
+      const next = drafts.shift();
+      if (!next) throw new Error("Unexpected draft request");
+      return new Response(JSON.stringify({ ...next, mode: "stage-aware-single-draft-v1", usageAccounting: "recorded", requestId: "123e4567-e89b-42d3-a456-426614174000" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
     vi.stubGlobal("fetch", request);
     const user = userEvent.setup();
     const firstRender = render(<ChatHelpApp />);
@@ -353,6 +1199,7 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
 
     await user.click(screen.getByRole("button", { name: "Inbox" }));
+    await user.click(within(screen.getByRole("region", { name: "Reply to Taylor Lee" })).getByText("Advanced"));
     const inboxRole = screen.getByLabelText("Your role or team");
     expect(inboxRole.closest(".composer-card")).toBeTruthy();
     expect(firstRender.container.querySelector(".conversation-scroll[aria-label='Conversation history']")).toBeTruthy();
@@ -363,12 +1210,12 @@ describe("secure conversation workspace interaction", () => {
     expect(screen.getByText(/Relationship goal: NETWORK-ONLY-GOAL/)).toBeTruthy();
     expect(screen.getByText(/rule characters loaded/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "About the Network Marketing playbook" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "About the optional reply objective" })).toBeTruthy();
-    await user.type(screen.getByLabelText("What should your reply accomplish?"), "Reply naturally using the selected playbook.");
-    await user.click(screen.getByRole("button", { name: "Generate 3 drafts for Taylor Lee" }));
+    expect(screen.getByRole("textbox", { name: "Optional instruction" })).toBeTruthy();
+    await user.type(screen.getByLabelText("Optional instruction"), "Reply naturally using the selected playbook.");
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
     expect(await screen.findByDisplayValue("Network draft one")).toBeTruthy();
     expect(screen.getByText(/independently reviewed against the full Network Marketing rulebook/)).toBeTruthy();
-    const networkRequest = JSON.parse(request.mock.calls[0][1]?.body as string);
+    const networkRequest = JSON.parse(request.mock.calls.filter(([path]) => path === "/api/drafts")[0][1]?.body as string);
     expect(networkRequest.playbook.role).toBe("Network Marketing");
     expect(networkRequest.playbook.relationshipGoal).toBe("NETWORK-ONLY-GOAL");
     expect(networkRequest.playbook.rulebookFull).toContain("NETWORK-ONLY-RULES");
@@ -377,19 +1224,20 @@ describe("secure conversation workspace interaction", () => {
 
     await user.selectOptions(inboxRole, "Human Resource");
     expect(screen.queryByLabelText("Edit draft 1")).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Generate 3 drafts for Taylor Lee" }));
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
     expect(await screen.findByDisplayValue("HR draft one")).toBeTruthy();
-    const hrRequest = JSON.parse(request.mock.calls[1][1]?.body as string);
+    const hrRequest = JSON.parse(request.mock.calls.filter(([path]) => path === "/api/drafts")[1][1]?.body as string);
     expect(hrRequest.playbook.role).toBe("Human Resource");
     expect(hrRequest.playbook.relationshipGoal).toBe("HR-ONLY-GOAL");
     expect(hrRequest.playbook.rulebookFull).toBe("HR-ONLY-RULES");
     expect(JSON.stringify(hrRequest)).not.toContain("NETWORK-ONLY-GOAL");
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls.filter(([path]) => path === "/api/drafts")).toHaveLength(2);
 
     await waitFor(() => expect(document.querySelector(".save-state")?.textContent).toContain("Encrypted"), { timeout: 3_000 });
     firstRender.unmount();
     render(<ChatHelpApp />);
     await screen.findByRole("heading", { name: /private conversation studio/i });
+    await user.click(within(screen.getByRole("region", { name: "Reply to Taylor Lee" })).getByText("Advanced"));
     expect((screen.getByLabelText("Your role or team") as HTMLSelectElement).value).toBe("Human Resource");
   }, 30_000);
 
@@ -409,9 +1257,9 @@ describe("secure conversation workspace interaction", () => {
     await user.click(screen.getByRole("checkbox", { name: /I understand that relevant visible conversation text/ }));
     await user.click(screen.getByRole("button", { name: "Inbox" }));
     await user.click(within(screen.getByRole("navigation", { name: "Conversations" })).getByRole("button", { name: "Open conversation with Taylor Lee" }));
-    await user.type(screen.getByLabelText("What should your reply accomplish?"), "Write a short reply.");
-    await user.click(screen.getByRole("button", { name: "Generate 3 drafts for Taylor Lee" }));
-    expect((await screen.findByRole("alert")).textContent).toMatch(/Drafts were not generated.*Cloudflare sign-in session could not be verified/);
+    await user.type(screen.getByLabelText("Optional instruction"), "Write a short reply.");
+    await user.click(screen.getByRole("button", { name: "Generate Precise Draft" }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Draft was not generated.*Cloudflare sign-in session could not be verified/);
     expect(request.mock.calls[0][1]?.credentials).toBe("same-origin");
   }, 20_000);
 

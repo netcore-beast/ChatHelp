@@ -1,8 +1,9 @@
-import { Client } from "pg";
+import { queryNeon, resolveNeonContext } from "./neonDb.js";
 
 const TESTING_HOST = "testing-chathelp-private-cloud.project-mission-ai.workers.dev";
 const PRODUCTION_HOST = "chathelp-private-cloud.project-mission-ai.workers.dev";
-const MAX_VAULT_REQUEST_BYTES = 10 * 1024 * 1024;
+const MAX_VAULT_CIPHERTEXT_BYTES = 10 * 1024 * 1024;
+const MAX_VAULT_WIRE_BYTES = 16 * 1024 * 1024;
 const HEX_DIGEST = /^[0-9a-f]{64}$/;
 const BASE64_URL = /^[A-Za-z0-9_-]+$/;
 
@@ -24,21 +25,9 @@ export function resolveVaultBinding(hostname, env) {
   return null;
 }
 
-function expectedEnvironment(hostname) {
-  if (hostname === TESTING_HOST) return "testing";
-  if (hostname === PRODUCTION_HOST) return "production";
-  return "";
-}
-
 async function queryDatabase(binding, text, values, options) {
   if (typeof options?.query === "function") return options.query(binding, text, values);
-  const client = new Client({ connectionString: binding.connectionString });
-  try {
-    await client.connect();
-    return await client.query(text, values);
-  } finally {
-    await client.end().catch(() => undefined);
-  }
+  return queryNeon(binding, text, values);
 }
 
 function base64UrlBytes(value) {
@@ -58,7 +47,7 @@ function validEnvelope(value) {
   if (Object.keys(value).sort().join(",") !== "ciphertext,encryptedBytes,format,iv,savedAt,schemaVersion") return false;
   if (value.format !== "dialogmint-cloud-v1" || value.schemaVersion !== 10) return false;
   if (typeof value.iv !== "string" || value.iv.length !== 16 || base64UrlBytes(value.iv) !== 12) return false;
-  if (!Number.isSafeInteger(value.encryptedBytes) || value.encryptedBytes <= 0 || value.encryptedBytes > MAX_VAULT_REQUEST_BYTES) return false;
+  if (!Number.isSafeInteger(value.encryptedBytes) || value.encryptedBytes <= 0 || value.encryptedBytes > MAX_VAULT_CIPHERTEXT_BYTES) return false;
   if (base64UrlBytes(value.ciphertext) !== value.encryptedBytes) return false;
   return typeof value.savedAt === "string" && value.savedAt.length <= 100 && Number.isFinite(Date.parse(value.savedAt));
 }
@@ -69,12 +58,23 @@ async function sha256Hex(value) {
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+function serializeEnvelope(envelope) {
+  return JSON.stringify({
+    format: envelope.format,
+    schemaVersion: envelope.schemaVersion,
+    iv: envelope.iv,
+    ciphertext: envelope.ciphertext,
+    encryptedBytes: envelope.encryptedBytes,
+    savedAt: envelope.savedAt,
+  });
+}
+
 async function parseVaultWrite(request) {
   if (!request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
     return { response: json({ error: "Expected a JSON request." }, 415) };
   }
   const declaredLength = Number(request.headers.get("Content-Length") ?? "0");
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_VAULT_REQUEST_BYTES) {
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_VAULT_WIRE_BYTES) {
     return { response: json({ error: "Encrypted backup is too large." }, 413) };
   }
   let raw;
@@ -83,7 +83,7 @@ async function parseVaultWrite(request) {
   } catch {
     return { response: json({ error: "Encrypted backup request is invalid." }, 400) };
   }
-  if (new TextEncoder().encode(raw).byteLength > MAX_VAULT_REQUEST_BYTES) {
+  if (new TextEncoder().encode(raw).byteLength > MAX_VAULT_WIRE_BYTES) {
     return { response: json({ error: "Encrypted backup is too large." }, 413) };
   }
   let payload;
@@ -98,7 +98,7 @@ async function parseVaultWrite(request) {
   if (!validEnvelope(payload.envelope) || !Number.isSafeInteger(payload.expectedRevision) || payload.expectedRevision < 0 || !HEX_DIGEST.test(payload.ciphertextDigest ?? "")) {
     return { response: json({ error: "Encrypted backup request is invalid." }, 400) };
   }
-  if (await sha256Hex(JSON.stringify(payload.envelope)) !== payload.ciphertextDigest) {
+  if (await sha256Hex(serializeEnvelope(payload.envelope)) !== payload.ciphertextDigest) {
     return { response: json({ error: "Encrypted backup request is invalid." }, 400) };
   }
   return { payload };
@@ -115,13 +115,17 @@ const WRITE_SQL = `
     UPDATE dialogmint_vault_snapshots
     SET format_version = $2,
         schema_version = $3,
-        revision = revision + 1,
+        revision = CASE
+          WHEN expires_at <= now() AND $7 = 0 THEN 1
+          ELSE revision + 1
+        END,
         ciphertext = $4,
         ciphertext_digest = $5,
         encrypted_bytes = $6,
         updated_at = now(),
         expires_at = now() + interval '90 days'
-    WHERE account_id = $1 AND revision = $7
+    WHERE account_id = $1
+      AND ((revision = $7 AND expires_at > now()) OR ($7 = 0 AND expires_at <= now()))
     RETURNING revision, ciphertext_digest
   ), inserted AS (
     INSERT INTO dialogmint_vault_snapshots (
@@ -141,8 +145,14 @@ export async function handleVaultRequest(request, env, url, identity, options = 
   if (url.pathname !== "/api/vault") return null;
   const origin = request.headers.get("Origin");
   if (origin && origin !== url.origin) return json({ error: "Cross-origin requests are not allowed." }, 403);
-  const binding = resolveVaultBinding(url.hostname, env);
-  if (!binding || identity?.environment !== expectedEnvironment(url.hostname) || !HEX_DIGEST.test(identity?.accountId ?? "")) {
+  let neonContext;
+  try {
+    neonContext = resolveNeonContext(env, url.hostname);
+  } catch {
+    return json({ error: "Encrypted backup is unavailable." }, 503);
+  }
+  const binding = neonContext.binding;
+  if (identity?.environment !== neonContext.environment || !HEX_DIGEST.test(identity?.accountId ?? "")) {
     return json({ error: "Encrypted backup is unavailable." }, 503);
   }
 
@@ -153,7 +163,7 @@ export async function handleVaultRequest(request, env, url, identity, options = 
       if (!row) return json({ error: "Encrypted backup not found." }, 404);
       const revision = Number(row.revision);
       if (!Number.isSafeInteger(revision) || revision <= 0 || !HEX_DIGEST.test(row.ciphertext_digest ?? "") ||
-          !validEnvelope(row.ciphertext) || await sha256Hex(JSON.stringify(row.ciphertext)) !== row.ciphertext_digest) {
+          !validEnvelope(row.ciphertext) || await sha256Hex(serializeEnvelope(row.ciphertext)) !== row.ciphertext_digest) {
         throw new Error("Invalid stored row");
       }
       return json({ envelope: row.ciphertext, revision, ciphertextDigest: row.ciphertext_digest });
@@ -192,15 +202,14 @@ export async function handleVaultRequest(request, env, url, identity, options = 
 
 export async function cleanupExpiredVaults(env, options = {}) {
   const result = { testing: 0, production: 0 };
-  const targets = [["testing", env.NEON_TESTING], ["production", env.NEON_PRODUCTION]];
-  for (const [environment, binding] of targets) {
-    if (!binding?.connectionString) continue;
-    try {
-      const response = await queryDatabase(binding, "DELETE FROM dialogmint_vault_snapshots WHERE expires_at <= now()", [], options);
-      result[environment] = Math.max(0, Number(response?.rowCount) || 0);
-    } catch {
-      result[environment] = 0;
-    }
+  const environment = env.DEPLOYMENT_ENVIRONMENT;
+  const binding = environment === "testing" ? env.NEON_TESTING : environment === "production" ? env.NEON_PRODUCTION : null;
+  if (!binding?.connectionString) return result;
+  try {
+    const response = await queryDatabase(binding, "DELETE FROM dialogmint_vault_snapshots WHERE expires_at <= now()", [], options);
+    result[environment] = Math.max(0, Number(response?.rowCount) || 0);
+  } catch {
+    result[environment] = 0;
   }
   return result;
 }
