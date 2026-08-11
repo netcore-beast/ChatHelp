@@ -58,6 +58,42 @@ describe("draft learning decisions", () => {
     expect(acknowledged.contacts[0].draftHistory?.[0].learningDecision).toMatchObject({ state: "authored", syncStatus: "synced" });
   });
 
+  it("does not mark an authored replacement failed when an older evaluation request fails late", () => {
+    const negative = stageDraftLearningDecision(workspaceWithDraft(), "contact-1", DRAFT_ID, evaluationMutation("not_useful"), new Date(NOW));
+    const authored = stageDraftLearningDecision(negative, "contact-1", DRAFT_ID, {
+      kind: "generative", roleId: "human_resource", relationshipStage: "new_connection", goalCategory: "connect",
+      provenance: "independently_user_authored", target: "My original reply", rightsAttested: true, privacyAttested: true,
+    }, new Date("2026-08-10T10:00:01.000Z"));
+
+    const unchanged = failDraftLearningDecision(authored, RECORD_ID, new Date("2026-08-10T10:00:02.000Z"), evaluationMutation("not_useful"));
+
+    expect(unchanged).toBe(authored);
+    expect(unchanged.contacts[0].draftHistory?.[0].learningDecision).toMatchObject({ state: "authored", syncStatus: "pending" });
+  });
+
+  it("does not acknowledge or fail a newer same-state mutation with an older mutation identity", () => {
+    const first = stageDraftLearningDecision(workspaceWithDraft(), "contact-1", DRAFT_ID, evaluationMutation("useful"), new Date("2026-08-10T10:00:00.000Z"));
+    const older = first.pendingLearningRecords[0];
+    if (older.mutationKind !== "draft_decision") throw new Error("expected a direct decision mutation");
+    const newer = stageDraftLearningDecision(first, "contact-1", DRAFT_ID, evaluationMutation("useful"), new Date("2026-08-10T10:00:01.000Z"));
+    const acknowledged = acknowledgeDraftLearningDecision(newer, { recordId: RECORD_ID, decision: "useful", recordKind: "evaluation", contentDigest: "a".repeat(64), changed: true, updatedAt: "2026-08-10T10:00:02.000Z" }, older);
+    const failed = failDraftLearningDecision(newer, RECORD_ID, new Date("2026-08-10T10:00:02.000Z"), older);
+
+    expect(acknowledged).toBe(newer);
+    expect(failed).toBe(newer);
+    expect(newer.pendingLearningRecords[0]).toMatchObject({ createdAt: "2026-08-10T10:00:01.000Z" });
+  });
+
+  it("retains a pending direct decision across vault reload and recovery merge", async () => {
+    const staged = stageDraftLearningDecision(workspaceWithDraft(), "contact-1", DRAFT_ID, evaluationMutation("not_useful"), new Date("2026-08-10T10:00:00.000Z"));
+    const reloaded = normalizeWorkspace(JSON.parse(JSON.stringify(staged)));
+    const recovered = await mergeCloudWorkspaces(workspaceWithDraft(), reloaded);
+
+    expect(reloaded.pendingLearningRecords).toHaveLength(1);
+    expect(recovered.pendingLearningRecords).toHaveLength(1);
+    expect(recovered.contacts[0].draftHistory?.[0].learningDecision).toMatchObject({ recordId: RECORD_ID, state: "not_useful", syncStatus: "pending" });
+  });
+
   it("marks the current decision failed and clears it with a deletion tombstone", () => {
     const staged = stageDraftLearningDecision(workspaceWithDraft(), "contact-1", DRAFT_ID, evaluationMutation("useful"), new Date(NOW));
     const failed = failDraftLearningDecision(staged, RECORD_ID, new Date("2026-08-10T10:01:00.000Z"));

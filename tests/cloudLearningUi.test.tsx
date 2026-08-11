@@ -17,7 +17,7 @@ Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: tr
 
 const providerDraft = "Thanks, Taylor at Example Co. I can share the role brief here.";
 
-async function renderCompletedDraft(options: { secondContact?: boolean } = {}) {
+async function renderCompletedDraft(options: { secondContact?: boolean } = {}, configureNavigator?: () => void) {
   const workspace = createEmptyWorkspace();
   workspace.inboxRole = "Human Resource";
   workspace.contacts = [{
@@ -63,15 +63,10 @@ async function renderCompletedDraft(options: { secondContact?: boolean } = {}) {
     draftHistory: [{ id: "second-draft-set", agenda: "", drafts: ["Good to meet you too."], createdAt: "2026-08-09T12:05:00.000Z", role: "Human Resource" }],
   });
   await createDeviceVault(workspace);
+  const user = userEvent.setup();
+  configureNavigator?.();
   render(<ChatHelpApp />);
   await screen.findByRole("heading", { name: /private conversation studio/i });
-  return userEvent.setup();
-}
-
-async function openIndependentPath() {
-  const user = await renderCompletedDraft();
-  await user.click(screen.getByRole("button", { name: "Save improvement" }));
-  await user.click(screen.getByRole("button", { name: "Add my own version" }));
   return user;
 }
 
@@ -86,308 +81,6 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-describe.skip("superseded approved draft improvement workflow", () => {
-  it("opens two explicit learning paths from Save improvement", async () => {
-    const user = await renderCompletedDraft();
-
-    await user.click(screen.getByRole("button", { name: "Save improvement" }));
-
-    expect(screen.getByRole("heading", { name: "Help improve future drafts" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Rate this draft" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Add my own version" })).toBeTruthy();
-  });
-
-  it("never prefills the provider draft into the independent editor", async () => {
-    await openIndependentPath();
-
-    expect((screen.getByRole("textbox", { name: "Your independently written response" }) as HTMLTextAreaElement).value).toBe("");
-    expect(within(screen.getByRole("dialog", { name: "Help improve future drafts" })).queryByText(providerDraft)).toBeNull();
-  });
-
-  it("requires rights and exact sanitized-preview attestations", async () => {
-    const user = await openIndependentPath();
-    const editor = screen.getByRole("textbox", { name: "Your independently written response" });
-    await user.type(editor, "Thanks Taylor Lee, what part of Sentinel interests you most?");
-
-    const save = screen.getByRole("button", { name: "Save approved example" });
-    expect((save as HTMLButtonElement).disabled).toBe(true);
-    await user.click(screen.getByRole("checkbox", { name: /I wrote this response independently/ }));
-    expect((save as HTMLButtonElement).disabled).toBe(true);
-    await user.click(screen.getByRole("checkbox", { name: /I reviewed the sanitized preview/ }));
-    expect((save as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  it("invalidates privacy approval when known identifiers change the exact preview", async () => {
-    const user = userEvent.setup();
-    const callbacks = { onClose: vi.fn(), onRate: vi.fn(), onSaveIndependent: vi.fn() };
-    const { rerender } = render(<AddOwnVersionDialog
-      knownIdentifiers={{ contactName: "Taylor Lee", company: "Example Co", profileUrl: "", profileHandle: "" }}
-      {...callbacks}
-    />);
-    await user.click(screen.getByRole("button", { name: "Add my own version" }));
-    await user.type(screen.getByRole("textbox", { name: "Your independently written response" }), "Thanks Taylor Lee at Example Co, which detail matters most?");
-    await user.click(screen.getByRole("checkbox", { name: /I wrote this response independently/ }));
-    const privacy = screen.getByRole("checkbox", { name: /I reviewed the sanitized preview/ }) as HTMLInputElement;
-    await user.click(privacy);
-    expect((screen.getByRole("button", { name: "Save approved example" }) as HTMLButtonElement).disabled).toBe(false);
-
-    rerender(<AddOwnVersionDialog
-      knownIdentifiers={{ contactName: "Jordan Park", company: "Contoso", profileUrl: "", profileHandle: "" }}
-      {...callbacks}
-    />);
-
-    expect(privacy.checked).toBe(false);
-    expect((screen.getByRole("button", { name: "Save approved example" }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it("shows the exact sanitized preview and resets privacy approval when it changes", async () => {
-    const user = await openIndependentPath();
-    const editor = screen.getByRole("textbox", { name: "Your independently written response" });
-    await user.type(editor, "Thanks Taylor Lee at Example Co, which detail matters most?");
-
-    expect((screen.getByRole("status", { name: "Sanitized preview" }) as HTMLOutputElement).value).toBe("Thanks [contact] at [company], which detail matters most?");
-    await user.click(screen.getByRole("checkbox", { name: /I wrote this response independently/ }));
-    const privacy = screen.getByRole("checkbox", { name: /I reviewed the sanitized preview/ }) as HTMLInputElement;
-    await user.click(privacy);
-    expect(privacy.checked).toBe(true);
-
-    await user.type(editor, " Please.");
-    expect(privacy.checked).toBe(false);
-    expect((screen.getByRole("button", { name: "Save approved example" }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it("rejects machine-detectable identifiers before an independent example can be saved", async () => {
-    const user = await openIndependentPath();
-    await user.type(screen.getByRole("textbox", { name: "Your independently written response" }), "Please email me at example@example.com");
-
-    expect(screen.getByRole("alert").textContent).toContain("Remove the email address before saving.");
-    expect(screen.queryByRole("status", { name: "Sanitized preview" })).toBeNull();
-    expect((screen.getByRole("button", { name: "Save approved example" }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it("uploads a text-free evaluation record when the user rates the draft", async () => {
-    const request = vi.fn(async (_path: RequestInfo | URL, init?: RequestInit) => {
-      const recordId = JSON.parse(init?.body as string).records[0].recordId;
-      return new Response(JSON.stringify({ accepted: [{ recordId, contentDigest: "a".repeat(64) }], duplicates: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
-    });
-    vi.stubGlobal("fetch", request);
-    const user = await renderCompletedDraft();
-
-    await user.click(screen.getByRole("button", { name: "Save improvement" }));
-    await user.click(screen.getByRole("button", { name: "Rate this draft" }));
-    await user.click(screen.getByRole("button", { name: "Useful" }));
-
-    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
-    const body = JSON.parse(request.mock.calls[0][1]?.body as string);
-    expect(body.records).toHaveLength(1);
-    expect(body.records[0].record).toEqual({
-      recordKind: "evaluation",
-      roleId: "human_resource",
-      relationshipStage: "learn_interests",
-      goalCategory: "discover_interests",
-      provenance: "human_confirmed",
-      evaluationAction: "useful",
-    });
-    expect(JSON.stringify(body.records[0].record)).not.toContain(providerDraft);
-    expect(body.records[0].record).not.toHaveProperty("target");
-  });
-
-  it("uploads only the sanitized independent target and positive attestations", async () => {
-    const request = vi.fn(async (_path: RequestInfo | URL, init?: RequestInit) => {
-      const recordId = JSON.parse(init?.body as string).records[0].recordId;
-      return new Response(JSON.stringify({ accepted: [{ recordId, contentDigest: "b".repeat(64) }], duplicates: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
-    });
-    vi.stubGlobal("fetch", request);
-    const user = await openIndependentPath();
-    await user.type(screen.getByRole("textbox", { name: "Your independently written response" }), "Thanks Taylor Lee at Example Co, which detail matters most?");
-    await user.click(screen.getByRole("checkbox", { name: /I wrote this response independently/ }));
-    await user.click(screen.getByRole("checkbox", { name: /I reviewed the sanitized preview/ }));
-
-    await user.click(screen.getByRole("button", { name: "Save approved example" }));
-
-    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
-    const record = JSON.parse(request.mock.calls[0][1]?.body as string).records[0].record;
-    expect(record).toEqual({
-      recordKind: "generative",
-      roleId: "human_resource",
-      relationshipStage: "learn_interests",
-      goalCategory: "discover_interests",
-      provenance: "independently_user_authored",
-      target: "Thanks [contact] at [company], which detail matters most?",
-      rightsAttested: true,
-      privacyAttested: true,
-    });
-    expect(record).not.toHaveProperty("rightsAttestedAt");
-    expect(record).not.toHaveProperty("privacyAttestedAt");
-    await waitFor(async () => {
-      const saved = (await openDeviceVault()).workspace;
-      expect(saved.pendingLearningRecords).toEqual([]);
-      expect(saved.cloudLearningSync).toEqual([expect.objectContaining({ status: "synced", contentDigest: "b".repeat(64) })]);
-      expect(saved.cloudLearningDeletionMarkers).toEqual([expect.objectContaining({ disposition: "acknowledged", sourceCollection: "feedback" })]);
-    }, { timeout: 3_000 });
-  });
-
-  it("keeps a failed sanitized upload encrypted and reports pending sync without changing the draft", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
-    const user = await openIndependentPath();
-    await user.type(screen.getByRole("textbox", { name: "Your independently written response" }), "Thanks Taylor Lee at Example Co, which detail matters most?");
-    await user.click(screen.getByRole("checkbox", { name: /I wrote this response independently/ }));
-    await user.click(screen.getByRole("checkbox", { name: /I reviewed the sanitized preview/ }));
-
-    await user.click(screen.getByRole("button", { name: "Save approved example" }));
-
-    expect(await screen.findByText("Cloud learning sync pending")).toBeTruthy();
-    expect((screen.getByLabelText("Edit draft 1") as HTMLTextAreaElement).value).toBe(providerDraft);
-    await waitFor(async () => expect((await openDeviceVault()).workspace.pendingLearningRecords).toEqual([
-      expect.objectContaining({
-        recordKind: "generative",
-        sanitizedPayload: expect.objectContaining({ target: "Thanks [contact] at [company], which detail matters most?" }),
-      }),
-    ]), { timeout: 3_000 });
-    const pending = (await openDeviceVault()).workspace.pendingLearningRecords;
-    expect(JSON.stringify(pending)).not.toContain("Taylor Lee");
-    expect(JSON.stringify(pending)).not.toContain("Example Co");
-    expect(JSON.stringify(pending)).not.toContain(providerDraft);
-  });
-
-  it("retains a sanitized record when a successful response does not acknowledge it", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ accepted: [], duplicates: [] }), { status: 200, headers: { "Content-Type": "application/json" } })));
-    const user = await renderCompletedDraft();
-    await user.click(screen.getByRole("button", { name: "Save improvement" }));
-    await user.click(screen.getByRole("button", { name: "Rate this draft" }));
-    await user.click(screen.getByRole("button", { name: "Useful" }));
-
-    expect(await screen.findByText("Cloud learning sync pending")).toBeTruthy();
-    await waitFor(async () => expect((await openDeviceVault()).workspace.pendingLearningRecords).toEqual([
-      expect.objectContaining({ recordKind: "evaluation", sanitizedPayload: expect.objectContaining({ evaluationAction: "useful" }) }),
-    ]), { timeout: 3_000 });
-  });
-
-  it("keeps focus inside the modal while a deferred upload disables its submit control", async () => {
-    let resolveRating!: () => void;
-    const onClose = vi.fn();
-    const user = userEvent.setup();
-    render(<AddOwnVersionDialog
-      knownIdentifiers={{ contactName: "", company: "", profileUrl: "", profileHandle: "" }}
-      onClose={onClose}
-      onSaveIndependent={vi.fn()}
-    />);
-    await user.click(screen.getByRole("button", { name: "Rate this draft" }));
-    await user.click(screen.getByRole("button", { name: "Useful" }));
-
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close improvement dialog" }));
-    resolveRating();
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-  });
-
-  it("does not overwrite a completed cloud-learning clear with a delayed upload status", async () => {
-    let resolveUpload!: (response: Response) => void;
-    let uploadRecordId = "";
-    let uploadRequestCount = 0;
-    const uploadResponse = new Promise<Response>((resolve) => { resolveUpload = resolve; });
-    vi.stubGlobal("confirm", vi.fn(() => true));
-    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input);
-      if (path === "/api/learning/status" && init?.method === "GET") {
-        return Promise.resolve(learningJson(enabledLearningStatus));
-      }
-      if (path === "/api/learning/records" && init?.method === "PUT") {
-        uploadRequestCount += 1;
-        uploadRecordId = JSON.parse(init.body as string).records[0].recordId;
-        return uploadResponse;
-      }
-      if (path === "/api/learning" && init?.method === "DELETE") {
-        return Promise.resolve(new Response(JSON.stringify({ enabled: false, deleted: 1 }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      return Promise.resolve(new Response("{}", { status: 503, headers: { "Content-Type": "application/json" } }));
-    }));
-    const user = await renderCompletedDraft();
-    await user.click(screen.getByRole("button", { name: "Save improvement" }));
-    await user.click(screen.getByRole("button", { name: "Rate this draft" }));
-    await user.click(screen.getByRole("button", { name: "Useful" }));
-    await waitFor(() => expect(uploadRecordId).not.toBe(""));
-    await user.click(screen.getByRole("button", { name: "Close improvement dialog" }));
-    await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.click(await screen.findByRole("button", { name: "Retry cloud learning sync" }));
-    await waitFor(() => expect(uploadRequestCount).toBe(2));
-    await user.click(screen.getByRole("button", { name: "Disable and delete cloud learning" }));
-    expect(await screen.findByText("Cloud learning disabled and deleted")).toBeTruthy();
-
-    await act(async () => {
-      resolveUpload(new Response(JSON.stringify({ accepted: [{ recordId: uploadRecordId, contentDigest: "d".repeat(64) }], duplicates: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      await Promise.resolve();
-    });
-
-    expect(screen.queryByText("Cloud learning sync complete")).toBeNull();
-    expect(screen.getByText("Cloud learning disabled and deleted")).toBeTruthy();
-    await waitFor(async () => {
-      const saved = (await openDeviceVault()).workspace;
-      expect(saved.pendingLearningRecords).toEqual([]);
-      expect(saved.cloudLearningSync).toEqual([]);
-    }, { timeout: 3_000 });
-  }, 20_000);
-
-  it("moves focus into the dialog and returns it to Save improvement after close", async () => {
-    const user = await renderCompletedDraft();
-    const opener = screen.getByRole("button", { name: "Save improvement" });
-
-    await user.click(opener);
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close improvement dialog" }));
-    await user.click(screen.getByRole("button", { name: "Close improvement dialog" }));
-
-    expect(document.activeElement).toBe(opener);
-  });
-
-  it("keeps focus inside the modal when switching between improvement paths", async () => {
-    const user = await renderCompletedDraft();
-    await user.click(screen.getByRole("button", { name: "Save improvement" }));
-
-    await user.click(screen.getByRole("button", { name: "Rate this draft" }));
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Useful" }));
-
-    await user.click(screen.getByRole("button", { name: "Back" }));
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Rate this draft" }));
-
-    await user.click(screen.getByRole("button", { name: "Add my own version" }));
-    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Your independently written response" }));
-  });
-
-  it("closes the improvement dialog when the active contact changes", async () => {
-    const user = await renderCompletedDraft({ secondContact: true });
-    await user.click(screen.getByRole("button", { name: "Save improvement" }));
-    await user.click(screen.getByRole("button", { name: "Add my own version" }));
-
-    fireEvent.click(screen.getByRole("button", { name: "Open conversation with Morgan Chen" }));
-    expect(screen.queryByRole("dialog", { name: "Help improve future drafts" })).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Open conversation with Taylor Lee" }));
-    expect(screen.queryByRole("dialog", { name: "Help improve future drafts" })).toBeNull();
-  });
-
-  it("closes on Escape and restores focus to the opener", async () => {
-    const user = await renderCompletedDraft();
-    const opener = screen.getByRole("button", { name: "Save improvement" });
-    await user.click(opener);
-
-    fireEvent.keyDown(screen.getByRole("button", { name: "Close improvement dialog" }), { key: "Escape" });
-
-    expect(screen.queryByRole("dialog", { name: "Help improve future drafts" })).toBeNull();
-    expect(document.activeElement).toBe(opener);
-  });
-
-  it("contains Tab and Shift+Tab focus within the modal", async () => {
-    const user = await renderCompletedDraft();
-    await user.click(screen.getByRole("button", { name: "Save improvement" }));
-    const close = screen.getByRole("button", { name: "Close improvement dialog" });
-    const last = screen.getByRole("button", { name: "Add my own version" });
-
-    expect(document.activeElement).toBe(close);
-    await user.keyboard("{Shift>}{Tab}{/Shift}");
-    expect(document.activeElement).toBe(last);
-    await user.tab();
-    expect(document.activeElement).toBe(close);
-  });
-});
 
 function completedDraftCardProps(overrides: Partial<CompletedDraftCardProps> = {}): CompletedDraftCardProps {
   return {
@@ -409,6 +102,190 @@ function renderCompletedDraftCard(overrides: Partial<CompletedDraftCardProps> = 
 }
 
 describe("direct draft learning controls", () => {
+  it("stages the active history decision and sends a text-free useful request", async () => {
+    const postMessage = vi.spyOn(window, "postMessage");
+    const request = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void init;
+      const recordId = String(input).split("/").at(-1)!;
+      return learningJson({ recordId, decision: "useful", recordKind: "evaluation", contentDigest: "a".repeat(64), changed: true, updatedAt: "2026-08-10T12:00:00.000Z" });
+    });
+    vi.stubGlobal("fetch", request);
+    const user = await renderCompletedDraft();
+
+    await user.click(screen.getByRole("button", { name: "Useful" }));
+
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    expect(request.mock.calls[0][0]).toBe("/api/learning/decisions/learning-decision-completed-draft-set");
+    expect(JSON.parse(request.mock.calls[0][1]?.body as string)).toEqual({ decision: {
+      kind: "evaluation", roleId: "human_resource", relationshipStage: "learn_interests", goalCategory: "discover_interests", action: "useful",
+    } });
+    expect(JSON.stringify(request.mock.calls[0][1]?.body)).not.toContain(providerDraft);
+    expect(screen.getByRole("button", { name: "Useful" }).getAttribute("aria-pressed")).toBe("true");
+    expect(postMessage.mock.calls.some(([message]) => (message as { type?: string }).type === "CHATHELP_LINKEDIN_SYNC_COMMAND")).toBe(false);
+  });
+
+  it("copies before marking the same decision useful on every successful copy", async () => {
+    const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
+    const postMessage = vi.spyOn(window, "postMessage");
+    const request = vi.fn(async (input: RequestInfo | URL) => {
+      const recordId = String(input).split("/").at(-1)!;
+      return learningJson({ recordId, decision: "useful", recordKind: "evaluation", contentDigest: "c".repeat(64), changed: true, updatedAt: "2026-08-10T12:00:00.000Z" });
+    });
+    vi.stubGlobal("fetch", request);
+    const user = await renderCompletedDraft({}, () => {
+      vi.spyOn(navigator.clipboard, "writeText").mockImplementation(clipboardWriteText);
+    });
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => String(path).includes("/api/learning/decisions/"))).toHaveLength(1));
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => String(path).includes("/api/learning/decisions/"))).toHaveLength(2));
+
+    expect(clipboardWriteText).toHaveBeenCalledTimes(2);
+    expect(clipboardWriteText.mock.invocationCallOrder[0]).toBeLessThan(request.mock.invocationCallOrder.find((_, index) => String(request.mock.calls[index][0]).includes("/api/learning/decisions/"))!);
+    expect(request.mock.calls.filter(([path]) => String(path).includes("/api/learning/decisions/")).map(([path]) => path)).toEqual([
+      "/api/learning/decisions/learning-decision-completed-draft-set",
+      "/api/learning/decisions/learning-decision-completed-draft-set",
+    ]);
+    expect(postMessage.mock.calls.some(([message]) => (message as { type?: string }).type === "CHATHELP_LINKEDIN_SYNC_COMMAND")).toBe(false);
+  });
+
+  it("does not save learning when clipboard access is rejected", async () => {
+    const clipboardWriteText = vi.fn().mockRejectedValue(new Error("blocked"));
+    const request = vi.fn();
+    vi.stubGlobal("fetch", request);
+    const user = await renderCompletedDraft({}, () => {
+      vi.spyOn(navigator.clipboard, "writeText").mockImplementation(clipboardWriteText);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+
+    expect(await screen.findByText("Clipboard access was blocked.")).toBeTruthy();
+    expect(clipboardWriteText).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls.some(([path]) => String(path).includes("/api/learning/decisions/"))).toBe(false);
+  });
+
+  it("replaces a negative decision with an authored version under the active history record ID", async () => {
+    const requests: Array<{ path: string; body: unknown }> = [];
+    const postMessage = vi.spyOn(window, "postMessage");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const body = JSON.parse(String(init?.body));
+      requests.push({ path, body });
+      const decision = body.decision as { kind: string; action?: string };
+      return learningJson({
+        recordId: path.split("/").at(-1),
+        decision: decision.kind === "generative" ? "authored" : decision.action,
+        recordKind: decision.kind === "generative" ? "generative" : "evaluation",
+        contentDigest: "b".repeat(64),
+        changed: true,
+        updatedAt: "2026-08-10T12:01:00.000Z",
+      });
+    }));
+    const user = await renderCompletedDraft();
+
+    await user.click(screen.getByRole("button", { name: "Not useful" }));
+    await screen.findByRole("button", { name: "Add my own version" });
+    await user.click(screen.getByRole("button", { name: "Add my own version" }));
+    await user.type(screen.getByRole("textbox", { name: "Your independently written response" }), "Thanks Taylor Lee at Example Co, which detail matters most?");
+    await user.click(screen.getByRole("checkbox", { name: /I wrote this response independently/ }));
+    await user.click(screen.getByRole("checkbox", { name: /I reviewed the sanitized preview/ }));
+    await user.click(screen.getByRole("button", { name: "Save approved example" }));
+
+    await waitFor(() => expect(requests).toHaveLength(2));
+    expect(requests.map((request) => request.path)).toEqual([
+      "/api/learning/decisions/learning-decision-completed-draft-set",
+      "/api/learning/decisions/learning-decision-completed-draft-set",
+    ]);
+    expect(requests[0].body).toEqual({ decision: {
+      kind: "evaluation", roleId: "human_resource", relationshipStage: "learn_interests", goalCategory: "discover_interests", action: "not_useful",
+    } });
+    expect(requests[1].body).toEqual({
+      decision: {
+        kind: "generative", roleId: "human_resource", relationshipStage: "learn_interests", goalCategory: "discover_interests",
+        provenance: "independently_user_authored", target: "Thanks [contact] at [company], which detail matters most?", rightsAttested: true, privacyAttested: true,
+      },
+      knownIdentifiers: { contactName: "Taylor Lee", company: "Example Co", profileUrl: "https://www.linkedin.com/in/taylor-lee/", profileHandle: "taylor-lee" },
+    });
+    expect(screen.getByRole("button", { name: "Useful" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByRole("button", { name: "Add my own version" })).toBeNull();
+    const saved = (await openDeviceVault()).workspace;
+    expect(JSON.stringify(saved.pendingLearningRecords)).not.toContain("Taylor Lee");
+    expect(JSON.stringify(saved.pendingLearningRecords)).not.toContain("Example Co");
+    expect(postMessage.mock.calls.some(([message]) => (message as { type?: string }).type === "CHATHELP_LINKEDIN_SYNC_COMMAND")).toBe(false);
+  });
+
+  it("does not let a deferred retry overwrite a newer authored decision for the same history record", async () => {
+    let decisionAttempts = 0;
+    const postMessage = vi.spyOn(window, "postMessage");
+    let resolveRetry!: (response: Response) => void;
+    const retryResponse = new Promise<Response>((resolve) => { resolveRetry = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (!path.includes("/api/learning/decisions/")) throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
+      const decision = JSON.parse(String(init?.body)).decision as { kind: string; action?: string };
+      if (decision.kind === "evaluation") {
+        decisionAttempts += 1;
+        if (decisionAttempts === 1) return learningJson({ error: "temporarily unavailable" }, 503);
+        return retryResponse;
+      }
+      return learningJson({ recordId: "learning-decision-completed-draft-set", decision: "authored", recordKind: "generative", contentDigest: "e".repeat(64), changed: true, updatedAt: "2026-08-10T12:03:00.000Z" });
+    }));
+    const user = await renderCompletedDraft();
+
+    await user.click(screen.getByRole("button", { name: "Not useful" }));
+    await screen.findByRole("button", { name: "Retry learning sync" });
+    await user.click(screen.getByRole("button", { name: "Retry learning sync" }));
+    await waitFor(() => expect(decisionAttempts).toBe(2));
+    await user.click(screen.getByRole("button", { name: "Add my own version" }));
+    await user.type(screen.getByRole("textbox", { name: "Your independently written response" }), "I wrote this replacement myself.");
+    await user.click(screen.getByRole("checkbox", { name: /I wrote this response independently/ }));
+    await user.click(screen.getByRole("checkbox", { name: /I reviewed the sanitized preview/ }));
+    await user.click(screen.getByRole("button", { name: "Save approved example" }));
+    await screen.findByText("Learning saved");
+
+    await act(async () => resolveRetry(learningJson({ recordId: "learning-decision-completed-draft-set", decision: "not_useful", recordKind: "evaluation", contentDigest: "f".repeat(64), changed: true, updatedAt: "2026-08-10T12:04:00.000Z" })));
+    await waitFor(async () => {
+      const saved = (await openDeviceVault()).workspace;
+      expect(saved.contacts[0].draftHistory?.[0].learningDecision).toMatchObject({ state: "authored", syncStatus: "synced" });
+      expect(saved.pendingLearningRecords).toEqual([]);
+    });
+    expect(postMessage.mock.calls.some(([message]) => (message as { type?: string }).type === "CHATHELP_LINKEDIN_SYNC_COMMAND")).toBe(false);
+  });
+
+  it("replaces failed activity with saved activity when the same direct decision retry succeeds", async () => {
+    let attempt = 0;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      attempt += 1;
+      if (attempt === 1) return Promise.resolve(learningJson({ error: "temporarily unavailable" }, 503));
+      const recordId = String(input).split("/").at(-1)!;
+      return Promise.resolve(learningJson({ recordId, decision: "not_useful", recordKind: "evaluation", contentDigest: "a".repeat(64), changed: true, updatedAt: "2026-08-10T12:08:00.000Z" }));
+    }));
+    const user = await renderCompletedDraft();
+
+    await user.click(screen.getByRole("button", { name: "Not useful" }));
+    await user.click(await screen.findByRole("button", { name: "Retry learning sync" }));
+
+    expect(await screen.findByText("Learning saved")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry learning sync" })).toBeNull();
+  });
+
+  it("persists a deferred decision for its source draft without showing saved activity after a contact switch", async () => {
+    let resolvePut!: (response: Response) => void;
+    const putResponse = new Promise<Response>((resolve) => { resolvePut = resolve; });
+    vi.stubGlobal("fetch", vi.fn(() => putResponse));
+    const user = await renderCompletedDraft({ secondContact: true });
+
+    await user.click(screen.getByRole("button", { name: "Useful" }));
+    await user.click(screen.getByRole("button", { name: "Open conversation with Morgan Chen" }));
+    await act(async () => resolvePut(learningJson({ recordId: "learning-decision-completed-draft-set", decision: "useful", recordKind: "evaluation", contentDigest: "a".repeat(64), changed: true, updatedAt: "2026-08-10T12:07:00.000Z" })));
+
+    await waitFor(async () => expect((await openDeviceVault()).workspace.contacts[0].draftHistory?.[0].learningDecision).toMatchObject({ state: "useful", syncStatus: "synced" }));
+    expect(screen.queryByText("Learning saved")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Open conversation with Taylor Lee" }));
+    expect(screen.getByRole("button", { name: "Useful" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByText("Learning saved")).toBeNull();
+  });
+
   it("shows only Copy Useful and Not useful as completed-draft actions", () => {
     renderCompletedDraftCard();
 
@@ -1069,34 +946,27 @@ describe("approved cloud learning settings", () => {
     expect(screen.queryByRole("button", { name: "Disable and delete cloud learning" })).toBeNull();
   });
 
-  it.skip("lets confirmed scoped deletion win over a delayed direct-upload acknowledgement", async () => {
-    let uploadRecordId = "";
-    let resolveUpload!: (response: Response) => void;
-    const uploadResponse = new Promise<Response>((resolve) => { resolveUpload = resolve; });
+  it("clears an acknowledged direct decision only after its scoped server deletion succeeds", async () => {
+    const recordId = "learning-decision-completed-draft-set";
     vi.stubGlobal("confirm", vi.fn(() => true));
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      if (path === "/api/learning/records" && init?.method === "PUT") {
-        uploadRecordId = JSON.parse(init.body as string).records[0].recordId;
-        return uploadResponse;
+      if (path === `/api/learning/decisions/${recordId}` && init?.method === "PUT") {
+        return Promise.resolve(learningJson({ recordId, decision: "useful", recordKind: "evaluation", contentDigest: "d".repeat(64), changed: true, updatedAt: "2026-08-10T12:00:00.000Z" }));
       }
       if (path === "/api/learning/status" && init?.method === "GET") {
         return Promise.resolve(learningJson({ ...enabledLearningStatus, counts: { classifier: 0, evaluation: 1, generative: 0 } }));
       }
       if (path === "/api/learning/records" && init?.method === "GET") {
-        return Promise.resolve(learningJson({ records: [learningRecord("evaluation", uploadRecordId)], nextCursor: null }));
+        return Promise.resolve(learningJson({ records: [learningRecord("evaluation", recordId)], nextCursor: null }));
       }
-      if (path === `/api/learning/records/${uploadRecordId}` && init?.method === "DELETE") {
-        return Promise.resolve(learningJson({ deleted: true, recordId: uploadRecordId }));
+      if (path === `/api/learning/records/${recordId}` && init?.method === "DELETE") {
+        return Promise.resolve(learningJson({ deleted: true, recordId }));
       }
       return Promise.resolve(learningJson({ error: "unexpected request" }, 503));
     }));
     const user = await renderCompletedDraft();
-    await user.click(screen.getByRole("button", { name: "Save improvement" }));
-    await user.click(screen.getByRole("button", { name: "Rate this draft" }));
     await user.click(screen.getByRole("button", { name: "Useful" }));
-    await waitFor(() => expect(uploadRecordId).not.toBe(""));
-    await user.click(screen.getByRole("button", { name: "Close improvement dialog" }));
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(await screen.findByText("Advanced"));
     expect(await screen.findByText("Evaluation")).toBeTruthy();
@@ -1108,15 +978,69 @@ describe("approved cloud learning settings", () => {
       const saved = (await openDeviceVault()).workspace;
       expect(saved.pendingLearningRecords).toEqual([]);
       expect(saved.cloudLearningSync).toEqual([]);
-      expect(saved.cloudLearningDeletionMarkers).toEqual([expect.objectContaining({ recordId: uploadRecordId, disposition: "deleted", sourceCollection: "feedback", sourceLocalId: uploadRecordId })]);
+      expect(saved.contacts[0].draftHistory?.[0].learningDecision).toBeUndefined();
+      expect(saved.cloudLearningDeletionMarkers).toEqual([expect.objectContaining({ recordId, disposition: "deleted", sourceCollection: "draftHistory", sourceLocalId: "completed-draft-set" })]);
     });
+  }, 20_000);
 
-    await act(async () => resolveUpload(learningJson({ accepted: [{ recordId: uploadRecordId, contentDigest: "d".repeat(64) }], duplicates: [] })));
+  it("does not restore a direct decision or saved activity after Settings deletes it while its request is pending", async () => {
+    const recordId = "learning-decision-completed-draft-set";
+    let resolvePut!: (response: Response) => void;
+    const putResponse = new Promise<Response>((resolve) => { resolvePut = resolve; });
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === `/api/learning/decisions/${recordId}` && init?.method === "PUT") return putResponse;
+      if (path === "/api/learning/status" && init?.method === "GET") return Promise.resolve(learningJson({ ...enabledLearningStatus, counts: { classifier: 0, evaluation: 1, generative: 0 } }));
+      if (path === "/api/learning/records" && init?.method === "GET") return Promise.resolve(learningJson({ records: [learningRecord("evaluation", recordId)], nextCursor: null }));
+      if (path === `/api/learning/records/${recordId}` && init?.method === "DELETE") return Promise.resolve(learningJson({ deleted: true, recordId }));
+      return Promise.resolve(learningJson({ error: "unexpected request" }, 503));
+    }));
+    const user = await renderCompletedDraft();
+    await user.click(screen.getByRole("button", { name: "Useful" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByText("Advanced"));
+    await user.click(screen.getByRole("button", { name: "Delete evaluation learning record" }));
+    await waitFor(async () => expect((await openDeviceVault()).workspace.contacts[0].draftHistory?.[0].learningDecision).toBeUndefined());
+
+    await act(async () => resolvePut(learningJson({ recordId, decision: "useful", recordKind: "evaluation", contentDigest: "d".repeat(64), changed: true, updatedAt: "2026-08-10T12:05:00.000Z" })));
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
     await waitFor(async () => {
       const saved = (await openDeviceVault()).workspace;
+      expect(saved.contacts[0].draftHistory?.[0].learningDecision).toBeUndefined();
       expect(saved.pendingLearningRecords).toEqual([]);
-      expect(saved.cloudLearningSync).toEqual([]);
-      expect(saved.cloudLearningDeletionMarkers).toEqual([expect.objectContaining({ recordId: uploadRecordId, disposition: "deleted" })]);
     });
+    expect(screen.queryByText("Learning saved")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry learning sync" })).toBeNull();
+  }, 20_000);
+
+  it("does not restore a direct decision or saved activity after global disable while its request is pending", async () => {
+    const recordId = "learning-decision-completed-draft-set";
+    let resolvePut!: (response: Response) => void;
+    const putResponse = new Promise<Response>((resolve) => { resolvePut = resolve; });
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === `/api/learning/decisions/${recordId}` && init?.method === "PUT") return putResponse;
+      if (path === "/api/learning/status" && init?.method === "GET") return Promise.resolve(learningJson(enabledLearningStatus));
+      if (path === "/api/learning" && init?.method === "DELETE") return Promise.resolve(learningJson({ enabled: false, deleted: 1 }));
+      return Promise.resolve(learningJson({ error: "unexpected request" }, 503));
+    }));
+    const user = await renderCompletedDraft();
+    await user.click(screen.getByRole("button", { name: "Useful" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByRole("button", { name: "Disable and delete cloud learning" }));
+    expect(await screen.findByText("Cloud learning disabled and deleted")).toBeTruthy();
+
+    await act(async () => resolvePut(learningJson({ recordId, decision: "useful", recordKind: "evaluation", contentDigest: "d".repeat(64), changed: true, updatedAt: "2026-08-10T12:06:00.000Z" })));
+    await user.click(screen.getByRole("button", { name: "Inbox" }));
+    await waitFor(async () => {
+      const saved = (await openDeviceVault()).workspace;
+      expect(saved.contacts[0].draftHistory?.[0].learningDecision).toBeUndefined();
+      expect(saved.pendingLearningRecords).toEqual([]);
+      expect(saved.personalLearning.enabled).toBe(false);
+    });
+    expect(screen.queryByText("Learning saved")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry learning sync" })).toBeNull();
   }, 20_000);
 });

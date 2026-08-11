@@ -13,6 +13,29 @@ export function decisionStateForPayload(decision: DraftLearningDecisionPayload):
   return decision.kind === "generative" ? "authored" : decision.action;
 }
 
+export interface DraftLearningDecisionMutationIdentity {
+  recordId: string;
+  sourceLocalId: string;
+  createdAt: string;
+  decision: DraftLearningDecisionPayload;
+}
+
+export function sameDraftLearningDecisionPayload(left: DraftLearningDecisionPayload, right: DraftLearningDecisionPayload): boolean {
+  if (left.kind !== right.kind || left.roleId !== right.roleId || left.relationshipStage !== right.relationshipStage || left.goalCategory !== right.goalCategory) return false;
+  if (left.kind === "evaluation" && right.kind === "evaluation") return left.action === right.action;
+  return left.kind === "generative" && right.kind === "generative"
+    && left.provenance === right.provenance && left.target === right.target
+    && left.rightsAttested === right.rightsAttested && left.privacyAttested === right.privacyAttested;
+}
+
+export function sameDraftLearningDecisionMutation(
+  left: Pick<PendingDraftLearningDecisionMutation, "recordId" | "sourceLocalId" | "createdAt" | "decision">,
+  right: DraftLearningDecisionMutationIdentity,
+): boolean {
+  return left.recordId === right.recordId && left.sourceLocalId === right.sourceLocalId
+    && left.createdAt === right.createdAt && sameDraftLearningDecisionPayload(left.decision, right.decision);
+}
+
 export interface DraftLearningDecisionAcknowledgement {
   recordId: string;
   decision: "useful" | "not_useful" | "authored";
@@ -78,9 +101,10 @@ export function stageDraftLearningDecision(workspace: WorkspaceData, contactId: 
   };
 }
 
-export function acknowledgeDraftLearningDecision(workspace: WorkspaceData, response: DraftLearningDecisionAcknowledgement): WorkspaceData {
+export function acknowledgeDraftLearningDecision(workspace: WorkspaceData, response: DraftLearningDecisionAcknowledgement, expectedMutation?: DraftLearningDecisionMutationIdentity): WorkspaceData {
   const pending = latestPendingDecisionMutation(workspace, response.recordId);
-  if (!pending || workspace.cloudLearningDeletionMarkers.some((marker) => marker.recordId === response.recordId)) return workspace;
+  if (!pending || expectedMutation && !sameDraftLearningDecisionMutation(pending, expectedMutation)
+      || workspace.cloudLearningDeletionMarkers.some((marker) => marker.recordId === response.recordId)) return workspace;
   const state = decisionStateForPayload(pending.decision);
   const compatible = state === response.decision || response.decision === "authored" && state === "useful";
   if (!compatible) return workspace;
@@ -91,20 +115,26 @@ export function acknowledgeDraftLearningDecision(workspace: WorkspaceData, respo
   return { ...updated, pendingLearningRecords: updated.pendingLearningRecords.filter((item) => !(item.mutationKind === "draft_decision" && item.recordId === response.recordId)) };
 }
 
-export function failDraftLearningDecision(workspace: WorkspaceData, recordId: string, now = new Date()): WorkspaceData {
+export function failDraftLearningDecision(workspace: WorkspaceData, recordId: string, now = new Date(), expected?: DraftLearningDecisionPayload | DraftLearningDecisionMutationIdentity): WorkspaceData {
+  const pending = latestPendingDecisionMutation(workspace, recordId);
+  if (!pending) return workspace;
+  if (expected && "createdAt" in expected && !sameDraftLearningDecisionMutation(pending, expected)) return workspace;
+  if (expected && !("createdAt" in expected) && !sameDraftLearningDecisionPayload(pending.decision, expected)) return workspace;
   return updateDecision(workspace, recordId, (decision) => decision?.syncStatus === "pending"
     ? { ...decision, syncStatus: "failed", updatedAt: now.toISOString() }
     : decision);
 }
 
 export function clearDraftLearningDecision(workspace: WorkspaceData, recordId: string, now = new Date()): WorkspaceData {
+  const pending = workspace.pendingLearningRecords.find((item): item is PendingDraftLearningDecisionMutation => item.mutationKind === "draft_decision" && item.recordId === recordId);
+  const draftHistoryId = pending?.sourceLocalId ?? workspace.contacts.flatMap((contact) => contact.draftHistory ?? [])
+    .find((draft) => draft.learningDecision?.recordId === recordId)?.id ?? "";
   const removed = updateDecision(workspace, recordId, () => undefined);
-  const pending = removed.pendingLearningRecords.find((item): item is PendingDraftLearningDecisionMutation => item.mutationKind === "draft_decision" && item.recordId === recordId);
   if (removed === workspace && !pending) return workspace;
   const deletedAt = now.toISOString();
   const markers = new Map(removed.cloudLearningDeletionMarkers.map((marker) => [marker.recordId, marker]));
   const current = markers.get(recordId);
-  const deletion = { recordId, disposition: "deleted" as const, sourceCollection: "draftHistory" as const, sourceLocalId: pending?.sourceLocalId ?? "", deletedAt };
+  const deletion = { recordId, disposition: "deleted" as const, sourceCollection: "draftHistory" as const, sourceLocalId: draftHistoryId, deletedAt };
   if (!current || current.disposition !== "deleted" || Date.parse(deletion.deletedAt) > Date.parse(current.deletedAt)) markers.set(recordId, deletion);
   return {
     ...removed,
