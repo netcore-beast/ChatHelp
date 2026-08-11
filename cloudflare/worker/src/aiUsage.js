@@ -1,5 +1,5 @@
 import { MAX_USAGE_TOKENS, PRICING_EFFECTIVE_DATE, PRICING_VERSION } from "./aiPricing.js";
-import { queryNeon, resolveNeonContext } from "./neonDb.js";
+import { queryNeon, resolveNeonContext, withNeonTransaction } from "./neonDb.js";
 
 const ACCOUNT_ID = /^[0-9a-f]{64}$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -13,6 +13,7 @@ const PRICING_SOURCES = new Set(["published-model", "published-proxy"]);
 const MAX_PRIOR_MONTHS = 12;
 const RETENTION_DAYS = 365;
 const MAX_MODELS_PER_PROVIDER = 100;
+const STARTED_ATTEMPT_LEASE_MS = 10 * 60 * 1000;
 
 const USAGE_HEADERS = {
   "Cache-Control": "no-store",
@@ -115,6 +116,14 @@ async function queryDatabase(binding, text, values, options) {
   return queryNeon(binding, text, values);
 }
 
+async function transactDatabase(binding, options, operation) {
+  if (typeof options?.transaction === "function") return options.transaction(binding, operation);
+  if (typeof options?.query === "function") {
+    return operation((text, values = []) => options.query(binding, text, values));
+  }
+  return withNeonTransaction(binding, operation);
+}
+
 function validateAttemptInput(input, options) {
   const startedAt = timestamp(input?.startedAt, requestNow(options));
   if (!ACCOUNT_ID.test(input?.accountId ?? "") || !UUID.test(input?.requestId ?? "")
@@ -142,9 +151,23 @@ function freezeAttemptHandle(input) {
 async function admitUsageAttempt(input, options) {
   const defaults = resolveAllowanceDefaults(options?.env);
   const { periodStart, nextResetAt } = monthPeriod(input.startedAt.slice(0, 7), options);
-  const result = await queryDatabase(input.binding, `
-    WITH admission_lock AS (
+  const staleCompletedAt = requestNow(options);
+  const staleCutoffAt = new Date(staleCompletedAt.getTime() - STARTED_ATTEMPT_LEASE_MS).toISOString();
+  const result = await transactDatabase(input.binding, options, async (query) => {
+    await query(`
       SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2 || ':' || $3, 0))
+    `, [input.accountId, input.provider, input.environment]);
+    return query(`
+    WITH stale_attempts AS (
+      UPDATE dialogmint_ai_usage_attempts
+      SET status = 'cancelled',
+          completed_at = $15
+      WHERE account_id = $1
+        AND provider = $2
+        AND environment = $3
+        AND status = 'started'
+        AND started_at < $14
+      RETURNING 1
     ), allowance_state AS (
       SELECT
         COALESCE((SELECT monthly_allowance_micro_usd
@@ -154,9 +177,10 @@ async function admitUsageAttempt(input, options) {
           WHERE status <> 'started' AND environment = $3 AND started_at >= $4 AND started_at < $5
         ), 0) AS consumed_micro_usd,
         count(*) FILTER (
-          WHERE status = 'started' AND environment = $3
+          WHERE status = 'started' AND environment = $3 AND started_at >= $14
         ) AS started_attempts
-      FROM dialogmint_ai_usage_attempts, admission_lock
+      FROM dialogmint_ai_usage_attempts,
+           (SELECT count(*) FROM stale_attempts) AS stale_reap
       WHERE account_id = $1 AND provider = $2
     ), inserted AS (
       INSERT INTO dialogmint_ai_usage_attempts (
@@ -186,7 +210,10 @@ async function admitUsageAttempt(input, options) {
     defaults[input.provider],
     PRICING_VERSION,
     PRICING_EFFECTIVE_DATE,
-  ], options);
+    staleCutoffAt,
+    staleCompletedAt.toISOString(),
+  ]);
+  });
   const row = result?.rows?.[0];
   if (!row || typeof row !== "object"
       || !Object.prototype.hasOwnProperty.call(row, "monthly_allowance_micro_usd")
@@ -336,7 +363,9 @@ function terminalRowMatches(row, terminal) {
 
 async function updateTerminalAttempt(handle, terminal, options) {
   const result = await queryDatabase(options.binding, `
-    WITH updated AS (
+    WITH terminal_lock AS (
+      SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $22 || ':' || $23, 0))
+    ), updated AS (
       UPDATE dialogmint_ai_usage_attempts
       SET status = $4,
           usage_quality = $5,
@@ -356,13 +385,16 @@ async function updateTerminalAttempt(handle, terminal, options) {
           estimator_version = $19,
           pricing_source = $20,
           completed_at = $21
-      WHERE account_id = $1 AND request_id = $2 AND attempt_id = $3 AND status = 'started'
+      FROM terminal_lock
+      WHERE account_id = $1 AND request_id = $2 AND attempt_id = $3
+        AND provider = $22 AND environment = $23 AND status = 'started'
       RETURNING *
     )
     SELECT * FROM updated
     UNION ALL
     SELECT * FROM dialogmint_ai_usage_attempts
     WHERE account_id = $1 AND request_id = $2 AND attempt_id = $3
+      AND provider = $22 AND environment = $23
       AND NOT EXISTS (SELECT 1 FROM updated)
     LIMIT 1
   `, [
@@ -387,6 +419,8 @@ async function updateTerminalAttempt(handle, terminal, options) {
     terminal.estimatorVersion,
     terminal.pricingSource,
     terminal.completedAt,
+    handle.provider,
+    handle.environment,
   ], options);
   const row = result?.rows?.[0];
   if (!row) throw new Error("usage_attempt_not_found");

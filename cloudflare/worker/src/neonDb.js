@@ -24,3 +24,24 @@ export async function queryNeon(binding, text, values = []) {
     await client.end().catch(() => undefined);
   }
 }
+
+export async function withNeonTransaction(binding, operation, options = {}) {
+  const createClient = typeof options.createClient === "function"
+    ? options.createClient
+    : (config) => new Client(config);
+  const client = createClient({ connectionString: binding.connectionString });
+  try {
+    await client.connect();
+    await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+    try {
+      const result = await operation((text, values = []) => client.query(text, values));
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    }
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}

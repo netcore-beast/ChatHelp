@@ -509,11 +509,12 @@ describe("Cloudflare private inference Worker", () => {
     let terminalUpdates = 0;
     const query = vi.fn(async (_binding: unknown, sql: string, values: unknown[] = []) => {
       if (sql.includes("dialogmint_learning_preferences")) return { rows: [{ enabled: false }] };
+      if (/^\s*SELECT pg_advisory_xact_lock/u.test(sql)) return { rows: [{}] };
       if (sql.includes("monthly_allowance_micro_usd")) {
         return { rows: [{ monthly_allowance_micro_usd: 10_000_000, consumed_micro_usd: 0, started_attempts: 0, inserted: true }] };
       }
       if (sql.includes("INSERT INTO dialogmint_ai_usage_attempts")) return { rows: [{ inserted: true }], rowCount: 1 };
-      if (sql.includes("WITH updated AS")) {
+      if (/\bupdated AS\s*\(/u.test(sql)) {
         terminalUpdates += 1;
         if (terminalUpdates === 1) throw new Error("SYNTHETIC_TRANSIENT_TERMINAL_OUTAGE");
         return {
