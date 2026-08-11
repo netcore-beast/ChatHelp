@@ -104,6 +104,7 @@ describe("deployment security boundary", () => {
       expect(notice).toMatch(/Copy.*Useful.*Not useful/is);
       expect(notice).toMatch(/Copy.*successful clipboard write/is);
       expect(notice).toMatch(/Useful and Not useful.*text-free evaluation/is);
+      expect(notice).toMatch(/known identifiers.*transient.*sanitizer input/is);
       expect(notice).toMatch(/one.*record|same.*row/is);
       expect(notice).toMatch(/independently authored.*sanitized/is);
       expect(notice).not.toMatch(/Save improvement uploads/i);
