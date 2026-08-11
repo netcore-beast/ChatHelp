@@ -85,12 +85,26 @@ describe("deployment security boundary", () => {
       expect(notice).toContain("Usage attempts are retained for 365 days.");
       expect(notice).toContain("Encrypted recovery snapshots are retained for at most 90 days.");
       expect(notice).toContain("Usage is a server-authoritative, per-signed-in-account ChatHelp app allowance estimate. It is not provider credit, a billing balance, a prepaid balance, or a provider account balance.");
-      expect(notice).toContain("Save improvement never uploads raw prompts, raw replies, provider reasoning, or original drafts.");
       expect(notice).toContain("Saving a Neon record does not train a model.");
       expect(notice).toContain("Learning, usage, recovery, and the local workspace have separate deletion controls; deleting one does not silently delete the others.");
       expect(notice).not.toMatch(/storage-free|local-only workspace|Workers AI only|does not provide cross-device recovery|no export or recovery/iu);
       expect(notice).not.toMatch(/(?:is|are|represents?|equals?)\s+(?!not\b)(?:an?\s+)?provider (?:credits?|billing balance|prepaid balance|account balance)/iu);
       expect(notice).not.toMatch(/(?:learning|training)\s+(?:stores|includes|uploads|uses)\s+(?:raw\s+)?(?:provider|generated)\s+(?:output|draft|reply|reasoning)/iu);
+    }
+  });
+
+  it("documents direct text-free decisions and atomic authored replacement", async () => {
+    const notices = await Promise.all([
+      readFile("PRIVACY.md", "utf8"),
+      readFile("SECURITY.md", "utf8"),
+      readFile("docs/cloud-learning-usage-release.md", "utf8"),
+    ]);
+
+    for (const notice of notices) {
+      expect(notice).toMatch(/Copy.*Useful.*Not useful/is);
+      expect(notice).toMatch(/one.*record|same.*row/is);
+      expect(notice).toMatch(/independently authored.*sanitized/is);
+      expect(notice).not.toMatch(/Save improvement uploads/i);
     }
   });
 

@@ -43,6 +43,14 @@ describe("installable client boundaries", () => {
     expect(releaseDoc).toContain("post-rollback compatibility checks");
   });
 
+  it("keeps the release smoke on the direct draft-learning actions", () => {
+    const releaseDoc = read("docs/cloud-learning-usage-release.md");
+
+    expect(releaseDoc).toMatch(/Copy.*Useful.*Not useful/is);
+    expect(releaseDoc).toContain("Add my own version");
+    expect(releaseDoc).not.toMatch(/Save improvement uploads/i);
+  });
+
   it("routes static assets through the selected Worker version before serving them", () => {
     const config = JSON.parse(read("wrangler.jsonc"));
     expect(config.assets.run_worker_first).toBe(true);
