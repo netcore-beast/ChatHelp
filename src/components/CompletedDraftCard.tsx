@@ -53,6 +53,7 @@ export function CompletedDraftCard({
   onAddOwnVersion = () => undefined,
 }: CompletedDraftCardProps) {
   const titleId = useId();
+  const authoredGuidanceId = useId();
   const fallback = fallbackLabel(fallbackReason);
   const usefulSelected = learningDecision?.state === "useful" || learningDecision?.state === "authored";
   const notUsefulSelected = learningDecision?.state === "not_useful";
@@ -69,8 +70,9 @@ export function CompletedDraftCard({
         <div className="draft-primary-actions">
           <button type="button" onClick={onCopy}>Copy</button>
           <button type="button" className={`draft-learning-action useful${usefulSelected ? " is-selected" : ""}`} aria-pressed={usefulSelected} disabled={learningBusy} onClick={onUseful}>Useful</button>
-          <button type="button" className={`draft-learning-action not-useful${notUsefulSelected ? " is-selected" : ""}`} aria-pressed={notUsefulSelected} disabled={learningBusy || learningDecision?.state === "authored"} onClick={onNotUseful}>Not useful</button>
-          {notUsefulSelected && <button type="button" className="draft-learning-add-own" disabled={learningBusy} onClick={onAddOwnVersion}>Add my own version</button>}
+          <button type="button" className={`draft-learning-action not-useful${notUsefulSelected ? " is-selected" : ""}`} aria-pressed={notUsefulSelected} aria-describedby={learningDecision?.state === "authored" ? authoredGuidanceId : undefined} disabled={learningBusy || learningDecision?.state === "authored"} onClick={onNotUseful}>Not useful</button>
+          {notUsefulSelected && <button type="button" className="draft-learning-add-own" onClick={onAddOwnVersion}>Add my own version</button>}
+          {learningDecision?.state === "authored" && <p id={authoredGuidanceId} className="draft-learning-guidance">Delete the authored example in Settings before choosing Not useful.</p>}
         </div>
       </header>
 

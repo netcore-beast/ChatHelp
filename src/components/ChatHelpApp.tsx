@@ -733,6 +733,7 @@ function UnlockedWorkspace({ initial, session }: { initial: WorkspaceData; sessi
         updateWorkspace((current) => failDraftLearningDecision(current, recordId, new Date(), expectedMutation));
       }
       if (applied && isActiveDraftHistory(contactId, draftHistoryId)) setDraftLearningActivity({ recordId, kind: "failed" });
+      if (decision.kind === "generative") throw new Error("The improvement could not be saved. Please try again.");
     }
   }
 

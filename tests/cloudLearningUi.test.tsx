@@ -214,6 +214,27 @@ describe("direct draft learning controls", () => {
     expect(postMessage.mock.calls.some(([message]) => (message as { type?: string }).type === "CHATHELP_LINKEDIN_SYNC_COMMAND")).toBe(false);
   });
 
+  it("keeps the authored dialog open when its request fails", async () => {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (!path.includes("/api/learning/decisions/")) return Promise.resolve(learningJson({ enabled: true, noticeVersion: "2026-08-09", retentionDays: 365, counts: { classifier: 0, evaluation: 0, generative: 0 } }));
+      const decision = JSON.parse(String(init?.body)).decision as { kind: string; action?: string };
+      if (decision.kind === "generative") return Promise.resolve(learningJson({ error: "temporarily unavailable" }, 503));
+      return Promise.resolve(learningJson({ recordId: path.split("/").at(-1), decision: decision.action, recordKind: "evaluation", contentDigest: "c".repeat(64), changed: true, updatedAt: "2026-08-10T12:02:00.000Z" }));
+    }));
+    const user = await renderCompletedDraft();
+
+    await user.click(screen.getByRole("button", { name: "Not useful" }));
+    await user.click(await screen.findByRole("button", { name: "Add my own version" }));
+    await user.type(screen.getByRole("textbox", { name: "Your independently written response" }), "I wrote this replacement myself.");
+    await user.click(screen.getByRole("checkbox", { name: /I wrote this response independently/ }));
+    await user.click(screen.getByRole("checkbox", { name: /I reviewed the sanitized preview/ }));
+    await user.click(screen.getByRole("button", { name: "Save approved example" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Add your independently written version" });
+    expect(within(dialog).getByRole("alert").textContent).toContain("The improvement could not be saved. Please try again.");
+  });
+
   it("does not let a deferred retry overwrite a newer authored decision for the same history record", async () => {
     let decisionAttempts = 0;
     const postMessage = vi.spyOn(window, "postMessage");
@@ -326,7 +347,17 @@ describe("direct draft learning controls", () => {
     })} />);
     expect(screen.getByRole("button", { name: "Useful" }).getAttribute("aria-pressed")).toBe("true");
     expect((screen.getByRole("button", { name: "Not useful" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("Delete the authored example in Settings before choosing Not useful.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Add my own version" })).toBeNull();
+  });
+
+  it("keeps authored replacement available while a negative decision is saving", () => {
+    renderCompletedDraftCard({
+      learningDecision: { recordId: "learning-decision-card", state: "not_useful", syncStatus: "pending", updatedAt: "2026-08-10T12:00:00.000Z" },
+      learningStatus: { kind: "saving" },
+    });
+
+    expect((screen.getByRole("button", { name: "Add my own version" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("renders saved inside Ready to review and leaves failure retryable", async () => {
