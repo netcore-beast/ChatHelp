@@ -14,7 +14,7 @@ Approved learning records are server-readable, de-identified, purpose-limited, a
 
 Copy stores a bounded text-free Useful evaluation only after a successful clipboard write. Useful and Not useful directly store bounded text-free evaluations. Each generated draft uses one mutable learning record. Add my own version starts blank, sanitizes and previews the independently authored sanitized target, requires both rights and privacy attestations, and atomically replaces the same Not useful decision row. Copy, Useful, and Not useful never upload raw prompts, raw replies, provider reasoning, original drafts, or direct identifiers. For Add my own version, known identifiers are transient sanitizer input to the same-origin Worker only; they are not persisted, logged, or returned. Known values are replaced before preview, residual direct identifiers are rejected, and the exact sanitized target must be reviewed before both attestations are accepted.
 
-The numeric/model-only usage ledger contains no conversation or draft text. It records the server-derived account key, deployment environment, provider/model and pipeline-stage labels, request/attempt identifiers, terminal status, timestamps, token or neuron counts, usage-quality labels, and numeric cost estimates. Usage attempts are retained for 365 days.
+The numeric/model-only usage ledger contains no conversation or draft text. It records the server-derived account key, deployment environment, provider/model and pipeline-stage labels, request/attempt identifiers, terminal status, timestamps, token or neuron counts, usage-quality labels, and numeric cost estimates. Usage attempts are retained for 365 days. The usage coordination table stores only the opaque account key, provider, deployment environment, and last-used timestamp; it contains no conversation or draft text. Usage coordination rows are retained for 365 days.
 
 Saving a Neon record does not train a model. Saving an approved record provides bounded retrieval context and does not itself train Anthropic, Llama, GPT-OSS, the local relationship-stage classifier, or any other model. During generation, the Worker may retrieve at most three enabled, unexpired, same-account approved generative targets as lower-priority untrusted context.
 
@@ -42,17 +42,17 @@ Any future dataset or adapter project requires a separate review of provenance, 
 
 ## Migration and promotion order
 
-`cloudflare/neon/0002_dialogmint_cloud_learning_usage.sql` is an additive, idempotent migration for the learning preferences, learning records, usage attempts, and allowance tables plus the usage lifecycle trigger. The user applies the reviewed file separately to testing and production through each Neon project's trusted SQL editor. The user confirms the four tables and trigger there without sharing a connection string, credential, token, secret value, API-key assignment, account ID, binding ID, or SQL-console session.
+`cloudflare/neon/0002_dialogmint_cloud_learning_usage.sql` is an additive, idempotent migration for the learning preferences, learning records, usage attempts, and allowance tables plus the usage lifecycle trigger. `cloudflare/neon/0003_dialogmint_ai_usage_scopes.sql` is a second additive, idempotent migration for a privacy-safe usage coordination row that replaces PostgreSQL advisory locks, which Cloudflare Hyperdrive does not support. The user applies each reviewed file separately to testing and production through each Neon project's trusted SQL editor. The user confirms the five tables and trigger there without sharing a connection string, credential, token, secret value, API-key assignment, account ID, binding ID, or SQL-console session.
 
 There is no runtime migration route or admin schema route. A Worker request, deployment command, build, or CI job must never apply this migration automatically. Do not add `/api/migrate`, `/api/admin/schema`, or an equivalent schema-management endpoint.
 
 The required order is:
 
-1. The user applies and verifies the testing migration in Neon's trusted SQL editor.
+1. The user confirms `0002` is present, then applies and verifies `0003` in the testing Neon project's trusted SQL editor.
 2. GitHub CI passes for the exact release SHA.
 3. The verified release is deployed only to testing, while the prior testing Worker version and deployment IDs remain recorded.
 4. Signed-in users complete the authenticated testing smoke, isolation, deletion, recovery, and rollback-readiness checks below.
-5. The user applies and verifies the same migration separately in production; no testing rows are copied.
+5. The user confirms `0002` is present, then applies and verifies `0003` separately in production; no testing rows are copied.
 6. The exact tested release is deployed to production, while the prior production Worker version and deployment IDs remain recorded.
 7. A signed-in user completes the production smoke checks with synthetic data.
 8. The operator verifies rollback readiness and the post-rollback compatibility checklist without changing Neon schema or data.
@@ -99,7 +99,7 @@ After the separately confirmed production migration and deployment of the same t
 
 Retain the previous Worker version and deployment IDs for testing and production before changing either environment. If rollback is required, deploy only the saved prior Worker version to 100% in the affected environment.
 
-A Worker rollback does not revert the Neon schema or data. Leave the additive tables, trigger, approved records, usage rows, and encrypted recovery ciphertext in place; do not run a down migration, delete rows in bulk, or copy data between environments as part of application rollback. If the prior Worker is not compatible with the additive schema, stop and prepare a forward application fix rather than changing schema or data.
+A Worker rollback does not revert the Neon schema or data. Leave the additive tables, trigger, approved records, usage rows, usage coordination rows, and encrypted recovery ciphertext in place; do not run a down migration, delete rows in bulk, or copy data between environments as part of application rollback. If the prior Worker is not compatible with the additive schema, stop and prepare a forward application fix rather than changing schema or data.
 
 Run these post-rollback compatibility checks:
 

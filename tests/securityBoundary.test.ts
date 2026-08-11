@@ -60,6 +60,22 @@ describe("deployment security boundary", () => {
     expect(releaseDoc).not.toMatch(/(?:postgres(?:ql)?:\/\/|ANTHROPIC_API_KEY\s*=|CF_API_TOKEN\s*=|DATABASE_URL\s*=)/u);
   });
 
+  it("documents the additive privacy-safe usage coordination migration", async () => {
+    const [privacy, security, releaseDoc] = await Promise.all([
+      readFile("PRIVACY.md", "utf8"),
+      readFile("SECURITY.md", "utf8"),
+      readFile("docs/cloud-learning-usage-release.md", "utf8"),
+    ]);
+
+    expect(releaseDoc).toContain("cloudflare/neon/0003_dialogmint_ai_usage_scopes.sql");
+    expect(releaseDoc).toMatch(/testing.*0003.*production.*0003/is);
+    for (const notice of [privacy, security, releaseDoc]) {
+      expect(notice).toMatch(/usage coordination.*opaque account.*provider.*environment.*timestamp/is);
+      expect(notice).toMatch(/usage coordination.*365 days/is);
+      expect(notice).toMatch(/usage coordination.*contains no conversation or draft text/is);
+    }
+  });
+
   it("states retrieval and future-training boundaries accurately", async () => {
     const releaseDoc = await readFile("docs/cloud-learning-usage-release.md", "utf8");
 

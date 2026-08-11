@@ -114,7 +114,7 @@ describe("server-authoritative AI usage ledger", () => {
   it("permits one started-to-terminal transition and an identical retry", async () => {
     let storedTerminal: ReturnType<typeof terminalRow> | null = null;
     const query = vi.fn(async (_binding: unknown, sql: string) => {
-      if (/^\s*SELECT pg_advisory_xact_lock/u.test(sql)) return { rows: [{}] };
+      if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) return { rows: [{ locked: true }] };
       if (/SELECT[\s\S]+monthly_allowance_micro_usd/iu.test(sql)) {
         return { rows: [{ monthly_allowance_micro_usd: null, consumed_micro_usd: "0", started_attempts: "0", inserted: true }] };
       }
@@ -141,9 +141,11 @@ describe("server-authoritative AI usage ledger", () => {
   });
 
   it("does not insert a started row after the app allowance is consumed", async () => {
-    const query = vi.fn().mockResolvedValue({
-      rows: [{ monthly_allowance_micro_usd: "100", consumed_micro_usd: "100", started_attempts: "0", inserted: false }],
-    });
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [{ locked: true }] })
+      .mockResolvedValueOnce({
+        rows: [{ monthly_allowance_micro_usd: "100", consumed_micro_usd: "100", started_attempts: "0", inserted: false }],
+      });
 
     await expect(beginUsageAttempt(validAttempt, { query, now: NOW })).resolves.toEqual({
       kind: "allowance-exhausted",
@@ -154,26 +156,33 @@ describe("server-authoritative AI usage ledger", () => {
 
   it("fails closed without inserting a started attempt when the allowance aggregate is missing or malformed", async () => {
     for (const result of [{ rows: [] }, { rows: [{ monthly_allowance_micro_usd: null }] }]) {
-      const query = vi.fn().mockResolvedValue(result);
+      const query = vi.fn()
+        .mockResolvedValueOnce({ rows: [{ locked: true }] })
+        .mockResolvedValueOnce(result);
       await expect(beginUsageAttempt(validAttempt, { query, now: NOW })).rejects.toThrow("usage_allowance_unavailable");
       expect(query).toHaveBeenCalledTimes(2);
     }
   });
 
-  it("fails closed when the locked allowance admission sees an in-flight attempt", async () => {
-    const query = vi.fn().mockResolvedValue({ rows: [{
-      monthly_allowance_micro_usd: "100",
-      consumed_micro_usd: "0",
-      started_attempts: "1",
-      inserted: false,
-    }] });
+  it("takes a Hyperdrive-supported scope-row lock before checking an in-flight attempt", async () => {
+    const query = vi.fn(async (_binding: unknown, sql: string) => {
+      if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) return { rows: [{ locked: true }] };
+      if (/SELECT[\s\S]+monthly_allowance_micro_usd/iu.test(sql)) return { rows: [{
+        monthly_allowance_micro_usd: "100",
+        consumed_micro_usd: "0",
+        started_attempts: "1",
+        inserted: false,
+      }] };
+      throw new Error("unsupported usage SQL");
+    });
     await expect(beginUsageAttempt(validAttempt, { query, now: NOW })).resolves.toEqual({
       kind: "allowance-unavailable",
       nextResetAt: "2026-09-01T00:00:00.000Z",
     });
     expect(query).toHaveBeenCalledTimes(2);
-    expect(query.mock.calls[0][1]).toMatch(/pg_advisory_xact_lock/u);
-    expect(query.mock.calls[1][1]).not.toMatch(/pg_advisory_xact_lock/u);
+    expect(query.mock.calls[0][1]).toMatch(/INSERT INTO dialogmint_ai_usage_scopes[\s\S]+ON CONFLICT \(account_id, provider, environment\) DO UPDATE[\s\S]+last_used_at = GREATEST\([\s\S]+RETURNING true AS locked/iu);
+    expect(query.mock.calls[0][2]).toEqual([ACCOUNT_A, "anthropic", "testing", NOW.toISOString()]);
+    expect(query.mock.calls.map((call) => call[1]).join("\n")).not.toMatch(/pg_advisory/iu);
   });
 
   it("self-heals a stale same-scope attempt after acquiring the transaction lock", async () => {
@@ -190,7 +199,7 @@ describe("server-authoritative AI usage ledger", () => {
     const transaction = vi.fn(async (_binding: unknown, operation: TestTransactionOperation) => operation(
       async (sql: string, values: unknown[] = []) => {
         commands.push({ sql, values });
-        if (/^\s*SELECT pg_advisory_xact_lock/iu.test(sql)) {
+        if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) {
           lockHeld = true;
           return { rows: [{ locked: true }] };
         }
@@ -225,8 +234,8 @@ describe("server-authoritative AI usage ledger", () => {
     expect(outsideTransaction).not.toHaveBeenCalled();
     expect(commands).toHaveLength(2);
     expect(commands[0]).toEqual({
-      sql: expect.stringMatching(/^\s*SELECT pg_advisory_xact_lock/iu),
-      values: [ACCOUNT_A, "anthropic", "testing"],
+      sql: expect.stringMatching(/INSERT INTO dialogmint_ai_usage_scopes/iu),
+      values: [ACCOUNT_A, "anthropic", "testing", NOW.toISOString()],
     });
     expect(staleAttempt).toMatchObject({
       status: "cancelled",
@@ -239,7 +248,7 @@ describe("server-authoritative AI usage ledger", () => {
     const transaction = vi.fn(async (_binding: unknown, operation: TestTransactionOperation) => operation(
       async (sql: string, values: unknown[] = []) => {
         commands.push({ sql, values });
-        if (/^\s*SELECT pg_advisory_xact_lock/iu.test(sql)) return { rows: [{}] };
+        if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) return { rows: [{ locked: true }] };
         return { rows: [{
           monthly_allowance_micro_usd: "100",
           consumed_micro_usd: "0",
@@ -268,7 +277,7 @@ describe("server-authoritative AI usage ledger", () => {
     const transaction = vi.fn(async (_binding: unknown, operation: TestTransactionOperation) => operation(
       async (sql: string, values: unknown[] = []) => {
         commands.push({ sql, values });
-        if (/^\s*SELECT pg_advisory_xact_lock/iu.test(sql)) return { rows: [{}] };
+        if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) return { rows: [{ locked: true }] };
         return { rows: [{
           monthly_allowance_micro_usd: "100",
           consumed_micro_usd: "0",
@@ -299,7 +308,7 @@ describe("server-authoritative AI usage ledger", () => {
     const transaction = vi.fn(async (_binding: unknown, operation: TestTransactionOperation) => operation(
       async (sql: string, values: unknown[] = []) => {
         commands.push({ sql, values });
-        if (/^\s*SELECT pg_advisory_xact_lock/iu.test(sql)) return { rows: [{}] };
+        if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) return { rows: [{ locked: true }] };
         return { rows: [{
           monthly_allowance_micro_usd: "100",
           consumed_micro_usd: "0",
@@ -333,12 +342,12 @@ describe("server-authoritative AI usage ledger", () => {
       let holdsLock = false;
       try {
         return await operation(async (sql: string, values: unknown[] = []) => {
-          if (/^\s*SELECT pg_advisory_xact_lock/iu.test(sql)) {
+          if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) {
             const previousLock = nextLock;
             nextLock = new Promise<void>((resolve) => { releaseLock = resolve; });
             await previousLock;
             holdsLock = true;
-            return { rows: [{}] };
+            return { rows: [{ locked: true }] };
           }
           if (!holdsLock) throw new Error("admission ran before its transaction lock");
           const cutoff = String(values[13]);
@@ -390,7 +399,7 @@ describe("server-authoritative AI usage ledger", () => {
     const transaction = vi.fn(async (_binding: unknown, operation: TestTransactionOperation) => operation(
       async (sql: string) => {
         commands.push(sql);
-        if (/^\s*SELECT pg_advisory_xact_lock/iu.test(sql)) return { rows: [{}] };
+        if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) return { rows: [{ locked: true }] };
         return { rows: [{
           monthly_allowance_micro_usd: "100",
           consumed_micro_usd: "0",
@@ -427,7 +436,7 @@ describe("server-authoritative AI usage ledger", () => {
     };
     const transaction = vi.fn(async (_binding: unknown, operation: TestTransactionOperation) => operation(
       async (sql: string, values: unknown[] = []) => {
-        if (/^\s*SELECT pg_advisory_xact_lock/iu.test(sql)) return { rows: [{}] };
+        if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) return { rows: [{ locked: true }] };
         const cutoff = String(values[13]);
         if (/started_at < \$14/u.test(sql) && priorMonthAttempt.startedAt < cutoff) {
           priorMonthAttempt.status = "cancelled";
@@ -470,21 +479,34 @@ describe("server-authoritative AI usage ledger", () => {
   });
 
   it("does not let a late terminal write overwrite a lease-cancelled attempt", async () => {
-    const query = vi.fn().mockResolvedValue({ rows: [{
-      ...terminalRow(),
-      status: "cancelled",
-      usage_quality: "unavailable",
-      completed_at: NOW.toISOString(),
-    }] });
+    const commands: Array<{ sql: string; values: unknown[] }> = [];
+    const transaction = vi.fn(async (_binding: unknown, operation: TestTransactionOperation) => operation(
+      async (sql: string, values: unknown[] = []) => {
+        commands.push({ sql, values });
+        if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) return { rows: [{ locked: true }] };
+        return { rows: [{
+          ...terminalRow(),
+          status: "cancelled",
+          usage_quality: "unavailable",
+          completed_at: NOW.toISOString(),
+        }] };
+      },
+    ));
+    const outsideTransaction = vi.fn().mockRejectedValue(new Error("query escaped transaction"));
 
     await expect(finishUsageAttempt(Object.freeze({ ...validAttempt }), succeededUsage, {
-      query,
+      query: outsideTransaction,
+      transaction,
       now: NOW,
     })).rejects.toThrow("usage_terminal_conflict");
-    const [, sql, values] = query.mock.calls[0];
-    expect(sql).toMatch(/terminal_lock\s+AS\s*\([\s\S]*?pg_advisory_xact_lock/iu);
-    expect(sql).toMatch(/UPDATE dialogmint_ai_usage_attempts[\s\S]*?FROM terminal_lock[\s\S]*?account_id = \$1[\s\S]*?provider = \$22[\s\S]*?environment = \$23[\s\S]*?status = 'started'/u);
+    expect(outsideTransaction).not.toHaveBeenCalled();
+    expect(commands).toHaveLength(2);
+    expect(commands[0].sql).toMatch(/INSERT INTO dialogmint_ai_usage_scopes[\s\S]+ON CONFLICT/iu);
+    expect(commands[0].values).toEqual([ACCOUNT_A, "anthropic", "testing", NOW.toISOString()]);
+    const { sql, values } = commands[1];
+    expect(sql).toMatch(/UPDATE dialogmint_ai_usage_attempts[\s\S]*?account_id = \$1[\s\S]*?provider = \$22[\s\S]*?environment = \$23[\s\S]*?status = 'started'/u);
     expect(sql).toMatch(/SELECT \* FROM dialogmint_ai_usage_attempts[\s\S]*?provider = \$22[\s\S]*?environment = \$23/u);
+    expect(commands.map((command) => command.sql).join("\n")).not.toMatch(/pg_advisory/iu);
     expect(values.slice(21)).toEqual(["anthropic", "testing"]);
     expect(JSON.stringify(values)).not.toContain("SYNTHETIC_PROVIDER_BODY");
   });
@@ -506,32 +528,32 @@ describe("server-authoritative AI usage ledger", () => {
     let terminalHasScopeLock = false;
     let storedStatus = "started";
     let storedCost = 0;
-    const terminalQuery = vi.fn(async (_binding: unknown, sql: string) => {
-      terminalHasScopeLock = /terminal_lock\s+AS[\s\S]*?pg_advisory_xact_lock/iu.test(sql)
-        && /UPDATE dialogmint_ai_usage_attempts[\s\S]*?FROM terminal_lock/iu.test(sql);
-      terminalStarted.resolve();
-      await releaseTerminal.promise;
-      storedStatus = "succeeded";
-      storedCost = succeededUsage.usage.estimatedCostMicroUsd;
+    const terminalTransaction = vi.fn(async (_binding: unknown, operation: TestTransactionOperation) => {
+      const result = await operation(async (sql: string) => {
+        if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) {
+          terminalHasScopeLock = true;
+          terminalStarted.resolve();
+          return { rows: [{ locked: true }] };
+        }
+        await releaseTerminal.promise;
+        storedStatus = "succeeded";
+        storedCost = succeededUsage.usage.estimatedCostMicroUsd;
+        return { rows: [terminalRow()], rowCount: 1 };
+      });
+      terminalHasScopeLock = false;
       terminalCommitted.resolve();
-      return { rows: [terminalRow()], rowCount: 1 };
+      return result;
     });
     const transaction = vi.fn(async (_binding: unknown, operation: TestTransactionOperation) => operation(
       async (sql: string) => {
-        if (/^\s*SELECT pg_advisory_xact_lock/iu.test(sql)) {
+        if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) {
           if (terminalHasScopeLock) {
             admissionReady.resolve();
             await terminalCommitted.promise;
           }
-          return { rows: [{}] };
+          return { rows: [{ locked: true }] };
         }
-        const snapshot = { status: storedStatus, cost: storedCost };
-        if (!terminalHasScopeLock) {
-          admissionReady.resolve();
-          await terminalCommitted.promise;
-        }
-        const visible = terminalHasScopeLock ? { status: storedStatus, cost: storedCost } : snapshot;
-        const consumed = visible.status === "started" ? 0 : visible.cost;
+        const consumed = storedStatus === "started" ? 0 : storedCost;
         return { rows: [{
           monthly_allowance_micro_usd: String(succeededUsage.usage.estimatedCostMicroUsd),
           consumed_micro_usd: String(consumed),
@@ -541,7 +563,11 @@ describe("server-authoritative AI usage ledger", () => {
       },
     ));
 
-    const terminal = finishUsageAttempt(staleHandle, succeededUsage, { query: terminalQuery, now: NOW });
+    const terminal = finishUsageAttempt(staleHandle, succeededUsage, {
+      query: vi.fn().mockRejectedValue(new Error("query escaped transaction")),
+      transaction: terminalTransaction,
+      now: NOW,
+    });
     await terminalStarted.promise;
     const admission = beginUsageAttempt(nextAttempt, {
       query: vi.fn().mockRejectedValue(new Error("query escaped transaction")),
@@ -576,9 +602,9 @@ describe("server-authoritative AI usage ledger", () => {
     let terminalSettled = false;
     const transaction = vi.fn(async (_binding: unknown, operation: TestTransactionOperation) => {
       const result = await operation(async (sql: string) => {
-        if (/^\s*SELECT pg_advisory_xact_lock/iu.test(sql)) {
+        if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) {
           admissionHasScopeLock = true;
-          return { rows: [{}] };
+          return { rows: [{ locked: true }] };
         }
         admissionUpdated.resolve();
         return { rows: [{
@@ -593,17 +619,20 @@ describe("server-authoritative AI usage ledger", () => {
       admissionCommitted.resolve();
       return result;
     });
-    const terminalQuery = vi.fn(async (_binding: unknown, sql: string) => {
-      const terminalHasScopeLock = /terminal_lock\s+AS[\s\S]*?pg_advisory_xact_lock/iu.test(sql)
-        && /UPDATE dialogmint_ai_usage_attempts[\s\S]*?FROM terminal_lock/iu.test(sql);
-      terminalReady.resolve();
-      if (terminalHasScopeLock && admissionHasScopeLock) await admissionCommitted.promise;
-      return { rows: [{
-        ...terminalRow(),
-        status: "cancelled",
-        usage_quality: "unavailable",
-      }], rowCount: 1 };
-    });
+    const terminalTransaction = vi.fn(async (_binding: unknown, operation: TestTransactionOperation) => operation(
+      async (sql: string) => {
+        if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) {
+          terminalReady.resolve();
+          if (admissionHasScopeLock) await admissionCommitted.promise;
+          return { rows: [{ locked: true }] };
+        }
+        return { rows: [{
+          ...terminalRow(),
+          status: "cancelled",
+          usage_quality: "unavailable",
+        }], rowCount: 1 };
+      },
+    ));
 
     const admission = beginUsageAttempt(nextAttempt, {
       query: vi.fn().mockRejectedValue(new Error("query escaped transaction")),
@@ -612,7 +641,8 @@ describe("server-authoritative AI usage ledger", () => {
     });
     await admissionUpdated.promise;
     const terminal = finishUsageAttempt(staleHandle, succeededUsage, {
-      query: terminalQuery,
+      query: vi.fn().mockRejectedValue(new Error("query escaped transaction")),
+      transaction: terminalTransaction,
       now: NOW,
     }).then(
       (result) => { terminalSettled = true; return result; },
@@ -893,18 +923,40 @@ describe("server-authoritative AI usage ledger", () => {
 
   it("schedules exactly one retry with only the strict terminal SQL parameters", async () => {
     const retryRow = terminalRow();
-    const query = vi.fn()
-      .mockRejectedValueOnce(new Error("synthetic database outage"))
-      .mockResolvedValueOnce({ rows: [retryRow], rowCount: 1 });
+    const commands: Array<{ sql: string; values: unknown[] }> = [];
+    let terminalWrites = 0;
+    const transaction = vi.fn(async (_binding: unknown, operation: TestTransactionOperation) => operation(
+      async (sql: string, values: unknown[] = []) => {
+        commands.push({ sql, values });
+        if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) return { rows: [{ locked: true }] };
+        terminalWrites += 1;
+        if (terminalWrites === 1) throw new Error("synthetic database outage");
+        return { rows: [retryRow], rowCount: 1 };
+      },
+    ));
+    const outsideTransaction = vi.fn().mockRejectedValue(new Error("query escaped transaction"));
     const scheduled: Promise<unknown>[] = [];
     const executionContext = { waitUntil: vi.fn((promise: Promise<unknown>) => scheduled.push(promise)) };
     const handle = Object.freeze({ ...validAttempt });
 
-    expect(await finishUsageAttempt(handle, succeededUsage, { query, now: NOW, executionContext })).toBe("pending");
+    expect(await finishUsageAttempt(handle, succeededUsage, {
+      query: outsideTransaction,
+      transaction,
+      now: () => NOW,
+      executionContext,
+    })).toBe("pending");
     expect(executionContext.waitUntil).toHaveBeenCalledTimes(1);
     await Promise.all(scheduled);
-    expect(query).toHaveBeenCalledTimes(2);
-    expect(query.mock.calls[1][2]).toEqual([
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(outsideTransaction).not.toHaveBeenCalled();
+    const scopeLocks = commands.filter((command) => /INSERT INTO dialogmint_ai_usage_scopes/iu.test(command.sql));
+    expect(scopeLocks).toHaveLength(2);
+    expect(scopeLocks.map((command) => command.values)).toEqual([
+      [ACCOUNT_A, "anthropic", "testing", NOW.toISOString()],
+      [ACCOUNT_A, "anthropic", "testing", NOW.toISOString()],
+    ]);
+    const terminalWrite = commands.filter((command) => /UPDATE dialogmint_ai_usage_attempts/iu.test(command.sql)).at(-1);
+    expect(terminalWrite?.values).toEqual([
       ACCOUNT_A, REQUEST_ID, ATTEMPT_ID, "succeeded", "exact", 100, 30, 10, 20, 30, 50, 5,
       null, null, null, null, 2_000, "2026-08-09-v1", null, "published-model", NOW.toISOString(),
       "anthropic", "testing",
@@ -912,13 +964,61 @@ describe("server-authoritative AI usage ledger", () => {
   });
 
   it("cleans only the active environment after 365 days and leaves allowances untouched", async () => {
-    const query = vi.fn().mockResolvedValue({ rowCount: 3, rows: [] });
+    const query = vi.fn().mockResolvedValue({
+      rowCount: 1,
+      rows: [{ deleted_attempts: "3", deleted_scopes: "2" }],
+    });
     const deleted = await cleanupExpiredUsageAttempts(env(), { query, now: NOW });
 
     expect(deleted).toBe(3);
     expect(query).toHaveBeenCalledTimes(1);
-    expect(query.mock.calls[0][1]).toMatch(/DELETE FROM dialogmint_ai_usage_attempts[\s\S]+environment = \$1[\s\S]+started_at < \$2/iu);
-    expect(query.mock.calls[0][1]).not.toContain("dialogmint_ai_allowances");
+    const sql = query.mock.calls[0][1];
+    expect(sql).toMatch(/deleted_scopes AS \([\s\S]+DELETE FROM dialogmint_ai_usage_scopes[\s\S]+environment = \$1[\s\S]+last_used_at < \$2[\s\S]+RETURNING 1/iu);
+    expect(sql).toMatch(/deleted_scopes AS \([\s\S]+scope_cleanup AS \([\s\S]+count\(\*\) AS deleted_scopes[\s\S]+FROM deleted_scopes[\s\S]+deleted_attempts AS \([\s\S]+DELETE FROM dialogmint_ai_usage_attempts[\s\S]+USING scope_cleanup[\s\S]+environment = \$1[\s\S]+started_at < \$2[\s\S]+scope_cleanup\.deleted_scopes >= 0[\s\S]+RETURNING 1/iu);
+    expect(sql).toMatch(/SELECT[\s\S]+count\(\*\) FROM deleted_attempts[\s\S]+deleted_scopes FROM scope_cleanup/iu);
+    expect(sql).not.toContain("dialogmint_ai_allowances");
     expect(query.mock.calls[0][2]).toEqual(["testing", "2025-08-09T12:00:00.000Z"]);
+  });
+
+  it("waits on the scope row before deleting attempts during an interleaved begin", async () => {
+    const beginScopeLocked = deferred();
+    const cleanupStarted = deferred();
+    const beginCommitted = deferred();
+    const transaction = vi.fn(async (_binding: unknown, operation: TestTransactionOperation) => {
+      const result = await operation(async (sql: string) => {
+        if (/INSERT INTO dialogmint_ai_usage_scopes/iu.test(sql)) {
+          beginScopeLocked.resolve();
+          await cleanupStarted.promise;
+          return { rows: [{ locked: true }] };
+        }
+        return { rows: [{
+          monthly_allowance_micro_usd: "100",
+          consumed_micro_usd: "0",
+          started_attempts: "0",
+          inserted: true,
+        }] };
+      });
+      beginCommitted.resolve();
+      return result;
+    });
+    const cleanupQuery = vi.fn(async (_binding: unknown, sql: string) => {
+      cleanupStarted.resolve();
+      const scopeBeforeAttempt = sql.indexOf("deleted_scopes AS") < sql.indexOf("deleted_attempts AS");
+      const attemptDependsOnScope = /deleted_attempts AS \([\s\S]+USING scope_cleanup[\s\S]+scope_cleanup\.deleted_scopes >= 0/iu.test(sql);
+      if (!scopeBeforeAttempt || !attemptDependsOnScope) throw new Error("synthetic_cleanup_lock_order_inversion");
+      await beginCommitted.promise;
+      return { rows: [{ deleted_attempts: "2", deleted_scopes: "1" }] };
+    });
+
+    const begin = beginUsageAttempt(validAttempt, {
+      query: vi.fn().mockRejectedValue(new Error("query escaped transaction")),
+      transaction,
+      now: NOW,
+    });
+    await beginScopeLocked.promise;
+    const cleanup = cleanupExpiredUsageAttempts(env(), { query: cleanupQuery, now: NOW });
+
+    await expect(begin).resolves.toMatchObject({ kind: "started" });
+    await expect(cleanup).resolves.toBe(2);
   });
 });

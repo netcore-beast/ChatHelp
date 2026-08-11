@@ -28,7 +28,7 @@ describe("Neon transaction boundary", () => {
     const withNeonTransaction = transactionExport();
 
     const result = await withNeonTransaction(binding, async (query) => {
-      await query("SELECT pg_advisory_xact_lock($1)", ["scope"]);
+      await query("INSERT scope row lock", ["scope"]);
       await query("SELECT admission", ["fresh-snapshot"]);
       return "admitted";
     }, { createClient });
@@ -38,7 +38,7 @@ describe("Neon transaction boundary", () => {
     expect(client.connect).toHaveBeenCalledOnce();
     expect(commands).toEqual([
       { sql: "BEGIN ISOLATION LEVEL READ COMMITTED", values: [] },
-      { sql: "SELECT pg_advisory_xact_lock($1)", values: ["scope"] },
+      { sql: "INSERT scope row lock", values: ["scope"] },
       { sql: "SELECT admission", values: ["fresh-snapshot"] },
       { sql: "COMMIT", values: [] },
     ]);
@@ -59,13 +59,13 @@ describe("Neon transaction boundary", () => {
     const withNeonTransaction = transactionExport();
 
     await expect(withNeonTransaction(binding, async (query) => {
-      await query("SELECT pg_advisory_xact_lock($1)", ["scope"]);
+      await query("INSERT scope row lock", ["scope"]);
       await query("UPDATE stale and INSERT admission");
     }, { createClient: () => client })).rejects.toThrow("synthetic admission failure");
 
     expect(commands).toEqual([
       "BEGIN ISOLATION LEVEL READ COMMITTED",
-      "SELECT pg_advisory_xact_lock($1)",
+      "INSERT scope row lock",
       "UPDATE stale and INSERT admission",
       "ROLLBACK",
     ]);

@@ -148,15 +148,25 @@ function freezeAttemptHandle(input) {
   return Object.freeze({ ...input });
 }
 
+async function lockUsageScope(query, input, lastUsedAt) {
+  const result = await query(`
+    INSERT INTO dialogmint_ai_usage_scopes (
+      account_id, provider, environment, last_used_at
+    ) VALUES ($1, $2, $3, $4)
+    ON CONFLICT (account_id, provider, environment) DO UPDATE
+    SET last_used_at = GREATEST(dialogmint_ai_usage_scopes.last_used_at, EXCLUDED.last_used_at)
+    RETURNING true AS locked
+  `, [input.accountId, input.provider, input.environment, lastUsedAt]);
+  if (result?.rows?.[0]?.locked !== true) throw new Error("usage_scope_unavailable");
+}
+
 async function admitUsageAttempt(input, options) {
   const defaults = resolveAllowanceDefaults(options?.env);
   const { periodStart, nextResetAt } = monthPeriod(input.startedAt.slice(0, 7), options);
   const staleCompletedAt = requestNow(options);
   const staleCutoffAt = new Date(staleCompletedAt.getTime() - STARTED_ATTEMPT_LEASE_MS).toISOString();
   const result = await transactDatabase(input.binding, options, async (query) => {
-    await query(`
-      SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2 || ':' || $3, 0))
-    `, [input.accountId, input.provider, input.environment]);
+    await lockUsageScope(query, input, staleCompletedAt.toISOString());
     return query(`
     WITH stale_attempts AS (
       UPDATE dialogmint_ai_usage_attempts
@@ -362,10 +372,11 @@ function terminalRowMatches(row, terminal) {
 }
 
 async function updateTerminalAttempt(handle, terminal, options) {
-  const result = await queryDatabase(options.binding, `
-    WITH terminal_lock AS (
-      SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $22 || ':' || $23, 0))
-    ), updated AS (
+  const scopeLastUsedAt = requestNow(options).toISOString();
+  const result = await transactDatabase(options.binding, options, async (query) => {
+    await lockUsageScope(query, handle, scopeLastUsedAt);
+    return query(`
+    WITH updated AS (
       UPDATE dialogmint_ai_usage_attempts
       SET status = $4,
           usage_quality = $5,
@@ -385,7 +396,6 @@ async function updateTerminalAttempt(handle, terminal, options) {
           estimator_version = $19,
           pricing_source = $20,
           completed_at = $21
-      FROM terminal_lock
       WHERE account_id = $1 AND request_id = $2 AND attempt_id = $3
         AND provider = $22 AND environment = $23 AND status = 'started'
       RETURNING *
@@ -398,30 +408,31 @@ async function updateTerminalAttempt(handle, terminal, options) {
       AND NOT EXISTS (SELECT 1 FROM updated)
     LIMIT 1
   `, [
-    handle.accountId,
-    handle.requestId,
-    handle.attemptId,
-    terminal.status,
-    terminal.usageQuality,
-    terminal.uncachedInputTokens,
-    terminal.cacheWriteTokens,
-    terminal.cacheWrite5mTokens,
-    terminal.cacheWrite1hTokens,
-    terminal.cacheReadTokens,
-    terminal.outputTokens,
-    terminal.thinkingTokens,
-    terminal.promptTokens,
-    terminal.completionTokens,
-    terminal.totalTokens,
-    terminal.estimatedNeurons,
-    terminal.estimatedCostMicroUsd,
-    terminal.pricingVersion,
-    terminal.estimatorVersion,
-    terminal.pricingSource,
-    terminal.completedAt,
-    handle.provider,
-    handle.environment,
-  ], options);
+      handle.accountId,
+      handle.requestId,
+      handle.attemptId,
+      terminal.status,
+      terminal.usageQuality,
+      terminal.uncachedInputTokens,
+      terminal.cacheWriteTokens,
+      terminal.cacheWrite5mTokens,
+      terminal.cacheWrite1hTokens,
+      terminal.cacheReadTokens,
+      terminal.outputTokens,
+      terminal.thinkingTokens,
+      terminal.promptTokens,
+      terminal.completionTokens,
+      terminal.totalTokens,
+      terminal.estimatedNeurons,
+      terminal.estimatedCostMicroUsd,
+      terminal.pricingVersion,
+      terminal.estimatorVersion,
+      terminal.pricingSource,
+      terminal.completedAt,
+      handle.provider,
+      handle.environment,
+    ]);
+  });
   const row = result?.rows?.[0];
   if (!row) throw new Error("usage_attempt_not_found");
   if (!terminalRowMatches(row, terminal)) throw new Error("usage_terminal_conflict");
@@ -432,7 +443,12 @@ function validateAttemptHandle(handle) {
 }
 
 function retryTerminalAttemptOnce(handle, terminal, options) {
-  const retryOptions = Object.freeze({ binding: options.binding, query: options.query });
+  const retryOptions = Object.freeze({
+    binding: options.binding,
+    query: options.query,
+    transaction: options.transaction,
+    now: options.now,
+  });
   return updateTerminalAttempt(handle, terminal, retryOptions).catch(() => undefined);
 }
 
@@ -670,10 +686,26 @@ export async function cleanupExpiredUsageAttempts(env, options = {}) {
   const cutoff = new Date(requestNow(options).getTime() - RETENTION_DAYS * 24 * 60 * 60 * 1_000).toISOString();
   try {
     const result = await queryDatabase(binding, `
-      DELETE FROM dialogmint_ai_usage_attempts
-      WHERE environment = $1 AND started_at < $2
+      WITH deleted_scopes AS (
+        DELETE FROM dialogmint_ai_usage_scopes
+        WHERE environment = $1 AND last_used_at < $2
+        RETURNING 1
+      ), scope_cleanup AS (
+        SELECT count(*) AS deleted_scopes
+        FROM deleted_scopes
+      ), deleted_attempts AS (
+        DELETE FROM dialogmint_ai_usage_attempts
+        USING scope_cleanup
+        WHERE dialogmint_ai_usage_attempts.environment = $1
+          AND dialogmint_ai_usage_attempts.started_at < $2
+          AND scope_cleanup.deleted_scopes >= 0
+        RETURNING 1
+      )
+      SELECT
+        (SELECT count(*) FROM deleted_attempts) AS deleted_attempts,
+        (SELECT deleted_scopes FROM scope_cleanup) AS deleted_scopes
     `, [environment, cutoff], options);
-    return safeRowCount(result?.rowCount);
+    return safeRowCount(result?.rows?.[0]?.deleted_attempts);
   } catch {
     return 0;
   }

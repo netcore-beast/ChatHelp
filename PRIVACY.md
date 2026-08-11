@@ -22,7 +22,7 @@ Saving a Neon record does not train a model. It supplies bounded retrieval conte
 
 ## Usage records
 
-The numeric/model-only usage ledger contains no conversation or draft text. It stores provider/model and pipeline-stage labels, request/attempt identifiers, terminal state, timestamps, numeric token or neuron counts, usage-quality labels, and numeric cost estimates under the server-derived account key and deployment environment. Usage attempts are retained for 365 days.
+The numeric/model-only usage ledger contains no conversation or draft text. It stores provider/model and pipeline-stage labels, request/attempt identifiers, terminal state, timestamps, numeric token or neuron counts, usage-quality labels, and numeric cost estimates under the server-derived account key and deployment environment. Usage attempts are retained for 365 days. The usage coordination table stores only the opaque account key, provider, deployment environment, and last-used timestamp; it contains no conversation or draft text. Usage coordination rows are retained for 365 days.
 
 Usage is a server-authoritative, per-signed-in-account ChatHelp app allowance estimate. It is not provider credit, a billing balance, a prepaid balance, or a provider account balance.
 
